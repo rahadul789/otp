@@ -1,0 +1,94 @@
+import { Router } from "express"
+
+import { requireAuth, requireRole } from "../../common/middleware/auth"
+import {
+  getOwnerOpeningHours,
+  getOwnerReviews,
+  patchOwnerRestaurantStatus,
+  getOwnerStoreSettings,
+  getOwnerSupportCases,
+  patchOwnerStoreSettings,
+  postOwnerReviewReply,
+  postOwnerSupportCase,
+  putOwnerOpeningHours
+} from "./business.controller"
+import {
+  getOwnerDashboardSummary,
+  getOwnerPayoutHistory,
+  getOwnerPayoutSummary,
+  getOwnerPayoutTransactions,
+  postOwnerPayoutRequest,
+  putOwnerPayoutMethod
+} from "./finance.controller"
+import {
+  getOwnerMe,
+  patchOwnerMe,
+  patchOwnerPassword
+} from "./owner.controller"
+import {
+  deleteOwnerCategory,
+  deleteOwnerMenuItem,
+  getOwnerCategories,
+  getOwnerMenuItems,
+  getOwnerNotifications,
+  getOwnerOrderById,
+  getOwnerOrders,
+  getOwnerRiderAssignmentOptions,
+  patchOwnerCategory,
+  patchOwnerMenuItem,
+  patchOwnerNotificationRead,
+  patchOwnerNotificationsReadAll,
+  postOwnerCategory,
+  postOwnerMenuItem,
+  postOwnerOrderAssignRider,
+  postOwnerOrderTransition
+} from "./operational.controller"
+import {
+  getOnboardingDraft,
+  getReviewStatus,
+  submitOnboardingDraft,
+  updateOnboardingDraft
+} from "./onboarding.controller"
+
+export const ownerRouter = Router()
+
+ownerRouter.use(requireAuth, requireRole("owner"))
+
+ownerRouter.get("/me", getOwnerMe)
+ownerRouter.patch("/me", patchOwnerMe)
+ownerRouter.patch("/me/password", patchOwnerPassword)
+ownerRouter.get("/onboarding/draft", getOnboardingDraft)
+ownerRouter.put("/onboarding/draft", updateOnboardingDraft)
+ownerRouter.post("/onboarding/submit", submitOnboardingDraft)
+ownerRouter.get("/review-status", getReviewStatus)
+ownerRouter.get("/categories", getOwnerCategories)
+ownerRouter.post("/categories", postOwnerCategory)
+ownerRouter.patch("/categories/:categoryId", patchOwnerCategory)
+ownerRouter.delete("/categories/:categoryId", deleteOwnerCategory)
+ownerRouter.get("/menu-items", getOwnerMenuItems)
+ownerRouter.post("/menu-items", postOwnerMenuItem)
+ownerRouter.patch("/menu-items/:itemId", patchOwnerMenuItem)
+ownerRouter.delete("/menu-items/:itemId", deleteOwnerMenuItem)
+ownerRouter.get("/orders", getOwnerOrders)
+ownerRouter.get("/orders/:orderId", getOwnerOrderById)
+ownerRouter.get("/riders/assignment-options", getOwnerRiderAssignmentOptions)
+ownerRouter.post("/orders/:orderId/assign-rider", postOwnerOrderAssignRider)
+ownerRouter.post("/orders/:orderId/transition", postOwnerOrderTransition)
+ownerRouter.get("/notifications", getOwnerNotifications)
+ownerRouter.patch("/notifications/:notificationId/read", patchOwnerNotificationRead)
+ownerRouter.patch("/notifications/read-all", patchOwnerNotificationsReadAll)
+ownerRouter.get("/payouts/summary", getOwnerPayoutSummary)
+ownerRouter.get("/payouts/history", getOwnerPayoutHistory)
+ownerRouter.get("/payout-transactions", getOwnerPayoutTransactions)
+ownerRouter.put("/payout-method", putOwnerPayoutMethod)
+ownerRouter.post("/payouts/request", postOwnerPayoutRequest)
+ownerRouter.get("/dashboard/summary", getOwnerDashboardSummary)
+ownerRouter.get("/store-settings", getOwnerStoreSettings)
+ownerRouter.patch("/store-settings", patchOwnerStoreSettings)
+ownerRouter.patch("/restaurant-status", patchOwnerRestaurantStatus)
+ownerRouter.get("/opening-hours", getOwnerOpeningHours)
+ownerRouter.put("/opening-hours", putOwnerOpeningHours)
+ownerRouter.get("/reviews", getOwnerReviews)
+ownerRouter.post("/reviews/:reviewId/reply", postOwnerReviewReply)
+ownerRouter.get("/support-cases", getOwnerSupportCases)
+ownerRouter.post("/support-cases", postOwnerSupportCase)

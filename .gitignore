@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+
+node_modules
+dist
+dist-ssr
+logs
+*.log
+.docker-config/
+
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
