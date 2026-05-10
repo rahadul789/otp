@@ -1,0 +1,2676 @@
+import * as React from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  Bell,
+  CalendarClock,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Eye,
+  Headphones,
+  Image as ImageIcon,
+  Info,
+  Loader2,
+  Megaphone,
+  RefreshCcw,
+  ReceiptText,
+  Send,
+  Smartphone,
+  Store,
+  Truck,
+  UserRound,
+  UsersRound,
+  XCircle,
+} from "lucide-react"
+import { toast } from "sonner"
+
+import {
+  listAdminCustomers,
+  checkAdminNotificationCampaignReceipts,
+  getAdminNotificationCampaignRecipients,
+  listAdminNotifications,
+  listAdminRestaurants,
+  refreshAdminNotificationCampaignConversions,
+  listAdminRiders,
+  cancelAdminNotificationSchedule,
+  markAdminNotificationRead,
+  retryAdminNotificationSchedule,
+  sendAdminNotification,
+  uploadAdminMedia,
+  type AdminNotificationCenterItem,
+  type AdminNotificationRecipientReportStatus,
+  type AdminNotificationSendPayload,
+} from "@/lib/admin-api"
+import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
+
+type SourceFilter =
+  | "all"
+  | "customer"
+  | "owner"
+  | "rider"
+  | "campaign"
+  | "scheduled"
+  | "ops"
+type StatusFilter = "all" | "read" | "unread"
+const pageSizeOptions = [10, 20, 50]
+const recipientReportFilters: Array<{
+  value: AdminNotificationRecipientReportStatus
+  label: string
+}> = [
+  { value: "all", label: "All" },
+  { value: "received", label: "Received" },
+  { value: "opened", label: "Opened" },
+  { value: "not_reached", label: "Not reached" },
+]
+
+type NotificationTemplateCategory = "customer" | "owner" | "rider" | "ops"
+
+const notificationTemplates = [
+  {
+    key: "customer-weekend-offer",
+    category: "customer",
+    label: "Weekend offer",
+    description: "Drive weekend orders with a broad customer promotion.",
+    recipientType: "customers",
+    type: "promotion",
+    contentType: "text",
+    title: "Weekend deals are live",
+    body: "Your weekend cravings are covered. Explore fresh offers from restaurants near you.",
+    path: "/(tabs)/browse",
+  },
+  {
+    key: "customer-free-delivery",
+    category: "customer",
+    label: "Free delivery",
+    description: "Announce a free delivery or delivery-fee campaign.",
+    recipientType: "customers",
+    type: "promotion",
+    contentType: "image_text",
+    title: "Free delivery is available today",
+    body: "Order from selected restaurants today and enjoy free delivery while the offer lasts.",
+    path: "/(tabs)/browse",
+  },
+  {
+    key: "customer-rain-delay",
+    category: "customer",
+    label: "Rain delay notice",
+    description: "Set expectations during weather or traffic delays.",
+    recipientType: "customers",
+    type: "system",
+    contentType: "text",
+    title: "Deliveries may take a little longer",
+    body: "Heavy rain may slow down some deliveries today. We will keep your order updates clear and timely.",
+    path: "/(tabs)/orders",
+  },
+  {
+    key: "customer-payment-issue",
+    category: "customer",
+    label: "Payment issue",
+    description: "Tell customers when an online payment option is unavailable.",
+    recipientType: "customers",
+    type: "system",
+    contentType: "text",
+    title: "Payment option temporarily unavailable",
+    body: "One payment option is temporarily unavailable. You can still place orders using the available payment methods.",
+    path: "/(tabs)/cart",
+  },
+  {
+    key: "customer-new-restaurants",
+    category: "customer",
+    label: "New restaurants nearby",
+    description: "Bring customers back to browse newly available restaurants.",
+    recipientType: "customers",
+    type: "promotion",
+    contentType: "image_text",
+    title: "New restaurants are available near you",
+    body: "Fresh choices have been added around your delivery location. Open Foodbela and see what is new.",
+    path: "/(tabs)/browse",
+  },
+  {
+    key: "owner-opening-hours",
+    category: "owner",
+    label: "Update opening hours",
+    description: "Ask owners to update special-day or holiday hours.",
+    recipientType: "owners",
+    type: "system",
+    contentType: "text",
+    title: "Please update your restaurant opening hours",
+    body: "Review your opening hours so customers see accurate availability before ordering.",
+    path: "/store-settings",
+  },
+  {
+    key: "owner-prepare-time",
+    category: "owner",
+    label: "Prepare time reminder",
+    description: "Remind owners to keep average preparation time accurate.",
+    recipientType: "owners",
+    type: "system",
+    contentType: "text",
+    title: "Keep your preparation time accurate",
+    body: "Please review your average preparation time so customers and riders receive reliable order timing.",
+    path: "/orders",
+  },
+  {
+    key: "owner-profile-completion",
+    category: "owner",
+    label: "Profile completion",
+    description: "Encourage owners to complete profile/menu information.",
+    recipientType: "owners",
+    type: "system",
+    contentType: "text",
+    title: "Complete your restaurant profile",
+    body: "Add missing restaurant details, photos, and menu information to help customers order with confidence.",
+    path: "/store-settings",
+  },
+  {
+    key: "owner-payout-notice",
+    category: "owner",
+    label: "Payout notice",
+    description: "Notify restaurant owners about payout updates.",
+    recipientType: "owners",
+    type: "payout",
+    contentType: "text",
+    title: "Your payout update is ready",
+    body: "Please review your latest payout information from the restaurant dashboard.",
+    path: "/finance",
+  },
+  {
+    key: "rider-high-demand",
+    category: "rider",
+    label: "High demand area",
+    description: "Ask riders to go online or move toward demand.",
+    recipientType: "riders",
+    type: "system",
+    contentType: "text",
+    title: "High order demand nearby",
+    body: "There is higher demand in your area. Go online to receive delivery requests.",
+    path: "/(app)/available",
+  },
+  {
+    key: "rider-location-reminder",
+    category: "rider",
+    label: "Location reminder",
+    description: "Remind riders to keep location permission active.",
+    recipientType: "riders",
+    type: "system",
+    contentType: "text",
+    title: "Keep location enabled while delivering",
+    body: "Please keep location permission enabled while online so dispatch and customers receive accurate updates.",
+    path: "/(app)/profile",
+  },
+  {
+    key: "rider-weather-safety",
+    category: "rider",
+    label: "Weather safety",
+    description: "Send safety guidance during rain or risky conditions.",
+    recipientType: "riders",
+    type: "system",
+    contentType: "text",
+    title: "Ride safely today",
+    body: "Weather may affect delivery conditions. Please ride carefully and update your status if you need a break.",
+    path: "/(app)/active",
+  },
+  {
+    key: "rider-payout-summary",
+    category: "rider",
+    label: "Payout summary",
+    description: "Tell riders payout details are ready.",
+    recipientType: "riders",
+    type: "payout",
+    contentType: "text",
+    title: "Your payout summary is ready",
+    body: "Open the rider app to review your latest payout and delivery summary.",
+    path: "/(app)/profile",
+  },
+  {
+    key: "ops-maintenance",
+    category: "ops",
+    label: "Maintenance notice",
+    description: "Send a planned maintenance update to customers.",
+    recipientType: "customers",
+    type: "system",
+    contentType: "image_text",
+    title: "Scheduled maintenance notice",
+    body: "Foodbela may be briefly unavailable during scheduled maintenance. We will keep the interruption as short as possible.",
+    path: "/(tabs)/home",
+  },
+  {
+    key: "ops-policy-update",
+    category: "ops",
+    label: "Policy update",
+    description: "Notify owners about platform policy changes.",
+    recipientType: "owners",
+    type: "system",
+    contentType: "text",
+    title: "Platform policy update",
+    body: "A platform policy update is available. Please review it from your restaurant dashboard.",
+    path: "/support",
+  },
+] satisfies Array<
+  Pick<
+    AdminNotificationSendPayload,
+    "recipientType" | "type" | "contentType" | "title" | "body" | "path"
+  > & {
+    category: NotificationTemplateCategory
+    description: string
+    key: string
+    label: string
+  }
+>
+
+const templateCategoryOrder: NotificationTemplateCategory[] = [
+  "customer",
+  "owner",
+  "rider",
+  "ops",
+]
+
+function templateCategoryLabel(category: NotificationTemplateCategory) {
+  if (category === "customer") return "Customers"
+  if (category === "owner") return "Restaurant owners"
+  if (category === "rider") return "Riders"
+  return "Operations"
+}
+
+function templateCategoryClass(category: NotificationTemplateCategory) {
+  if (category === "customer") return "border-sky-200 bg-sky-50 text-sky-700"
+  if (category === "owner")
+    return "border-violet-200 bg-violet-50 text-violet-700"
+  if (category === "rider") return "border-cyan-200 bg-cyan-50 text-cyan-700"
+  return "border-amber-200 bg-amber-50 text-amber-700"
+}
+
+function defaultScheduleDateTimeInput() {
+  const date = new Date(Date.now() + 60 * 60 * 1000)
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 16)
+}
+
+function formatNumber(value?: number) {
+  return Math.round(value || 0).toLocaleString()
+}
+
+function formatCurrency(value?: number | null) {
+  return `Tk ${Math.round(Number(value ?? 0)).toLocaleString()}`
+}
+
+function numericValue(value?: number) {
+  return Number.isFinite(value) ? Number(value) : 0
+}
+
+function notificationDeliveredCount(item: AdminNotificationCenterItem) {
+  return Math.max(numericValue(item.sentCount), numericValue(item.inAppCount))
+}
+
+function notificationDeliveryRate(item: AdminNotificationCenterItem) {
+  const targets = numericValue(item.totalTargets)
+  if (targets <= 0) return 0
+  return Math.min(
+    100,
+    Math.round((notificationDeliveredCount(item) / targets) * 100)
+  )
+}
+
+function notificationOpenRate(item: AdminNotificationCenterItem) {
+  const delivered = notificationDeliveredCount(item)
+  if (delivered <= 0) return 0
+  return Math.min(100, Math.round((numericValue(item.openCount) / delivered) * 100))
+}
+
+function isCampaignLike(item: AdminNotificationCenterItem) {
+  return item.source === "campaign" || item.source === "scheduled"
+}
+
+function audienceLabel(item: AdminNotificationCenterItem) {
+  const recipientType = item.recipientType || item.recipientName
+  if (recipientType === "customers") return "Customers"
+  if (recipientType === "owners") return "Restaurant owners"
+  if (recipientType === "riders") return "Riders"
+  return item.recipientName || "Audience"
+}
+
+type CampaignTimelineTone = "done" | "current" | "upcoming" | "danger"
+
+function campaignTimelineSteps(item: AdminNotificationCenterItem) {
+  const isScheduled = item.source === "scheduled" || item.sendMode === "scheduled"
+  const status = item.deliveryStatus
+  const sentAt = item.sentAt || item.readAt
+  const hasOpened = numericValue(item.openCount) > 0
+
+  const steps: Array<{
+    key: string
+    label: string
+    helper: string
+    tone: CampaignTimelineTone
+  }> = [
+    {
+      key: "created",
+      label: "Created",
+      helper: formatDateTime(item.createdAt),
+      tone: "done" as const,
+    },
+  ]
+
+  if (isScheduled) {
+    steps.push({
+      key: "scheduled",
+      label: "Scheduled",
+      helper: formatDateTime(item.scheduledAt),
+      tone:
+        status === "scheduled" ? ("current" as const) : ("done" as const),
+    })
+  }
+
+  steps.push({
+    key: status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "sent",
+    label:
+      status === "failed"
+        ? "Failed"
+        : status === "cancelled"
+          ? "Cancelled"
+          : status === "scheduled"
+            ? "Waiting"
+            : "Sent",
+    helper:
+      status === "scheduled"
+        ? "Scheduler will send this automatically"
+        : formatDateTime(sentAt),
+    tone:
+      status === "failed" || status === "cancelled"
+        ? ("danger" as const)
+        : status === "scheduled"
+          ? ("upcoming" as const)
+          : ("done" as const),
+  })
+
+  steps.push({
+    key: "opened",
+    label: "Opened",
+    helper: hasOpened
+      ? `${formatNumber(item.openCount)} recipient${numericValue(item.openCount) === 1 ? "" : "s"}`
+      : "No opens yet",
+    tone: hasOpened ? ("done" as const) : ("upcoming" as const),
+  })
+
+  return steps
+}
+
+function campaignTimelineClass(tone: CampaignTimelineTone) {
+  if (tone === "done") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (tone === "current") return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+  if (tone === "danger") return "border-rose-200 bg-rose-50 text-rose-700"
+  return "border-slate-200 bg-slate-50 text-slate-500"
+}
+
+function recipientReportStatusClass(status: string) {
+  if (status === "opened") return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+  if (status === "received") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  return "border-amber-200 bg-amber-50 text-amber-700"
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "N/A"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "N/A"
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date)
+}
+
+function formatMetadataValue(value: unknown) {
+  if (typeof value === "number") return formatNumber(value)
+  if (typeof value === "string") return value || "N/A"
+  if (typeof value === "boolean") return value ? "Yes" : "No"
+  return "N/A"
+}
+
+function getLateDetailRows(item: AdminNotificationCenterItem) {
+  const metadata = item.metadata ?? {}
+  const rows: Array<{ label: string; value: unknown; helper?: string }> = []
+
+  if ("lateByMinutes" in metadata) {
+    rows.push({ label: "Late by", value: `${metadata.lateByMinutes} min` })
+  }
+  if ("expectedPrepMinutes" in metadata) {
+    rows.push({
+      label: "Restaurant avg prep time",
+      value: `${metadata.expectedPrepMinutes} min`,
+      helper: "Configured from restaurant profile/onboarding",
+    })
+  }
+  if ("prepElapsedMinutes" in metadata) {
+    rows.push({
+      label: "Preparing for",
+      value: `${metadata.prepElapsedMinutes} min`,
+    })
+  }
+  if ("prepLateGraceMinutes" in metadata) {
+    rows.push({
+      label: "Prep alert grace",
+      value: `${metadata.prepLateGraceMinutes} min`,
+    })
+  }
+  if ("expectedStartMinutes" in metadata) {
+    rows.push({
+      label: "Prep start grace",
+      value: `${metadata.expectedStartMinutes} min`,
+    })
+  }
+  if ("acceptedMinutes" in metadata) {
+    rows.push({
+      label: "Accepted for",
+      value: `${metadata.acceptedMinutes} min`,
+    })
+  }
+  if ("readyMinutes" in metadata) {
+    rows.push({
+      label: "Ready for",
+      value: `${metadata.readyMinutes} min`,
+    })
+  }
+  if ("assignedMinutes" in metadata) {
+    rows.push({
+      label: "Assigned for",
+      value: `${metadata.assignedMinutes} min`,
+    })
+  }
+  if ("assignmentTimeoutMinutes" in metadata) {
+    rows.push({
+      label: "Assignment/response timeout",
+      value: `${metadata.assignmentTimeoutMinutes} min`,
+    })
+  }
+  if ("pickupLateGraceMinutes" in metadata) {
+    rows.push({
+      label: "Pickup window",
+      value: `${metadata.pickupLateGraceMinutes} min`,
+    })
+  }
+  if ("pickupMinutes" in metadata) {
+    rows.push({
+      label: "Out for delivery",
+      value: `${metadata.pickupMinutes} min`,
+    })
+  }
+  if ("remainingMinutes" in metadata) {
+    rows.push({
+      label: "ETA baseline",
+      value: `${metadata.remainingMinutes} min`,
+    })
+  }
+  if ("deliveryLateGraceMinutes" in metadata) {
+    rows.push({
+      label: "Delivery ETA grace",
+      value: `${metadata.deliveryLateGraceMinutes} min`,
+    })
+  }
+
+  return rows
+}
+
+function sourceLabel(source: AdminNotificationCenterItem["source"]) {
+  if (source === "customer") return "Customer"
+  if (source === "owner") return "Owner"
+  if (source === "rider") return "Rider"
+  if (source === "scheduled") return "Scheduled"
+  if (source === "ops") return "Ops alert"
+  return "Campaign"
+}
+
+function sourceBadgeClass(source: AdminNotificationCenterItem["source"]) {
+  if (source === "customer") return "border-sky-200 bg-sky-50 text-sky-700"
+  if (source === "owner")
+    return "border-violet-200 bg-violet-50 text-violet-700"
+  if (source === "rider") return "border-cyan-200 bg-cyan-50 text-cyan-700"
+  if (source === "campaign")
+    return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+  if (source === "ops")
+    return "border-rose-200 bg-rose-50 text-rose-700"
+  return "border-amber-200 bg-amber-50 text-amber-700"
+}
+
+function deliveryBadgeClass(status: string) {
+  if (["sent", "push_ready", "campaign"].includes(status)) {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  }
+  if (["scheduled", "sending"].includes(status)) {
+    return "border-blue-200 bg-blue-50 text-blue-700"
+  }
+  if (["in_app", "in_app_only"].includes(status)) {
+    return "border-slate-200 bg-slate-100 text-slate-700"
+  }
+  if (["failed", "cancelled", "critical"].includes(status)) {
+    return "border-rose-200 bg-rose-50 text-rose-700"
+  }
+  if (status === "warning") return "border-amber-200 bg-amber-50 text-amber-700"
+  return "border-border bg-background text-foreground"
+}
+
+function readBadgeClass(isRead: boolean) {
+  return isRead
+    ? "border-slate-200 bg-slate-100 text-slate-700"
+    : "border-rose-200 bg-rose-50 text-rose-700"
+}
+
+function deliveryStatusLabel(status: string) {
+  switch (status) {
+    case "push_ready":
+      return "Push ready"
+    case "in_app_only":
+      return "In-app only"
+    case "in_app":
+      return "In app"
+    case "scheduled":
+      return "Scheduled"
+    case "sending":
+      return "Sending"
+    case "sent":
+      return "Sent"
+    case "failed":
+      return "Failed"
+    case "cancelled":
+      return "Cancelled"
+    case "campaign":
+      return "Campaign"
+    case "warning":
+      return "Warning"
+    case "critical":
+      return "Critical"
+    default:
+      return status.replaceAll("_", " ")
+  }
+}
+
+function recipientLabel(source: AdminNotificationCenterItem["source"]) {
+  if (source === "owner") return "Restaurant owner"
+  if (source === "rider") return "Rider"
+  if (source === "customer") return "Customer"
+  if (source === "campaign") return "Audience"
+  if (source === "ops") return "Operational alert"
+  return "Recipient"
+}
+
+function notificationIcon(
+  item: Pick<AdminNotificationCenterItem, "source" | "type" | "deliveryStatus">
+) {
+  if (item.deliveryStatus === "failed") return XCircle
+  if (item.source === "ops" && item.type.includes("support")) return Headphones
+  if (item.source === "ops" && item.type.includes("rider")) return Truck
+  if (
+    item.source === "ops" &&
+    (item.type.includes("prep") || item.type.includes("food"))
+  )
+    return Store
+  if (item.source === "ops" && item.type.includes("order")) return ReceiptText
+  if (item.deliveryStatus === "sent") return CheckCircle2
+  if (item.source === "scheduled") return CalendarClock
+  if (item.source === "campaign" || item.type === "promotion") return Megaphone
+  if (item.type === "support") return Headphones
+  if (item.type === "order_status") return ReceiptText
+  if (item.source === "owner") return Store
+  if (item.source === "rider") return Truck
+  if (item.source === "customer") return UserRound
+  return Info
+}
+
+export function NotificationsPage() {
+  const queryClient = useQueryClient()
+  const [search, setSearch] = React.useState("")
+  const [source, setSource] = React.useState<SourceFilter>("all")
+  const [status, setStatus] = React.useState<StatusFilter>("all")
+  const [page, setPage] = React.useState(1)
+  const [pageSize, setPageSize] = React.useState(10)
+  const [selectedItem, setSelectedItem] =
+    React.useState<AdminNotificationCenterItem | null>(null)
+  const [recipientReportStatus, setRecipientReportStatus] =
+    React.useState<AdminNotificationRecipientReportStatus>("all")
+  const [selectedTemplateKey, setSelectedTemplateKey] = React.useState("")
+  const [isUploadingImage, setIsUploadingImage] = React.useState(false)
+  const [scheduleMode, setScheduleMode] = React.useState(false)
+  const [scheduledAt, setScheduledAt] = React.useState("")
+  const [testRecipientId, setTestRecipientId] = React.useState("")
+  const [form, setForm] = React.useState<AdminNotificationSendPayload>({
+    recipientType: "customers",
+    audience: "all",
+    recipientIds: [],
+    title: "",
+    body: "",
+    path: "/(tabs)/home",
+    type: "system",
+    contentType: "text",
+    imageUrl: "",
+    imagePublicId: "",
+    customerAudienceType: "all_users",
+    customerGroupKey: "",
+    restaurantScope: "all_restaurants",
+    selectedRestaurantIds: [],
+    abTest: {
+      enabled: false,
+      splitPercent: 50,
+      variantBTitle: "",
+      variantBBody: "",
+      variantBPath: "",
+    },
+    conversionWindowDays: 7,
+    pushEnabled: true,
+  })
+
+  const notificationsQuery = useQuery({
+    queryKey: ["admin-notifications", source, status, search, page, pageSize],
+    queryFn: () =>
+      listAdminNotifications({
+        source,
+        status,
+        search,
+        page,
+        pageSize,
+      }),
+  })
+  const selectedCampaignId = selectedItem?.campaignId || selectedItem?.id || ""
+  const recipientsQuery = useQuery({
+    queryKey: [
+      "admin-notification-recipients",
+      selectedCampaignId,
+      recipientReportStatus,
+    ],
+    enabled: Boolean(selectedItem && isCampaignLike(selectedItem) && selectedCampaignId),
+    queryFn: () =>
+      getAdminNotificationCampaignRecipients({
+        campaignId: selectedCampaignId,
+        status: recipientReportStatus,
+        page: 1,
+        pageSize: 50,
+      }),
+  })
+
+  React.useEffect(() => {
+    setRecipientReportStatus("all")
+  }, [selectedCampaignId])
+
+  const customersQuery = useQuery({
+    queryKey: ["admin-customers", "notification-targets"],
+    queryFn: () =>
+      listAdminCustomers({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
+  })
+
+  const restaurantsQuery = useQuery({
+    queryKey: ["admin-restaurants", "notification-targets"],
+    queryFn: () =>
+      listAdminRestaurants({ page: 1, pageSize: 50, sortBy: "newestUpdated" }),
+  })
+
+  const ridersQuery = useQuery({
+    queryKey: ["admin-riders", "notification-targets"],
+    queryFn: () =>
+      listAdminRiders({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
+  })
+
+  const sendMutation = useMutation({
+    mutationFn: sendAdminNotification,
+    onSuccess: (result) => {
+      toast.success(
+        result.scheduledAt
+          ? `Notification scheduled for ${formatDateTime(result.scheduledAt)}`
+          : `Notification processed for ${formatNumber(result.totalTargets)} targets`
+      )
+      setForm((current) => ({
+        ...current,
+        title: "",
+        body: "",
+        recipientIds: [],
+        contentType: "text",
+        imageUrl: "",
+        imagePublicId: "",
+      }))
+      setScheduleMode(false)
+      setScheduledAt("")
+      setSelectedTemplateKey("")
+      void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-customers"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to send notification"
+      )
+    },
+  })
+
+  const markReadMutation = useMutation({
+    mutationFn: markAdminNotificationRead,
+    onSuccess: () => {
+      toast.success("Notification marked as read")
+      setSelectedItem((current) =>
+        current
+          ? { ...current, isRead: true, readAt: new Date().toISOString() }
+          : current
+      )
+      void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to mark as read"
+      )
+    },
+  })
+
+  const cancelScheduleMutation = useMutation({
+    mutationFn: cancelAdminNotificationSchedule,
+    onSuccess: () => {
+      toast.success("Scheduled notification cancelled")
+      setSelectedItem((current) =>
+        current
+          ? { ...current, isRead: true, deliveryStatus: "cancelled" }
+          : current
+      )
+      void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to cancel schedule"
+      )
+    },
+  })
+
+  const retryScheduleMutation = useMutation({
+    mutationFn: retryAdminNotificationSchedule,
+    onSuccess: () => {
+      toast.success("Scheduled notification retried")
+      setSelectedItem((current) =>
+        current
+          ? {
+              ...current,
+              isRead: true,
+              deliveryStatus: "sent",
+              sentAt: new Date().toISOString(),
+              failureReason: "",
+            }
+          : current
+      )
+      void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to retry schedule"
+      )
+    },
+  })
+  const refreshConversionsMutation = useMutation({
+    mutationFn: refreshAdminNotificationCampaignConversions,
+    onSuccess: (result) => {
+      if (result.refreshed) {
+        toast.success(
+          `Conversions refreshed: ${formatNumber(result.orderCount)} orders`
+        )
+      } else {
+        toast.info(result.unavailableReason || "Conversions unavailable")
+      }
+      void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Failed to refresh conversions"),
+  })
+  const checkReceiptsMutation = useMutation({
+    mutationFn: checkAdminNotificationCampaignReceipts,
+    onSuccess: (result) => {
+      if (result.unavailableReason) {
+        toast.info(result.unavailableReason)
+      } else {
+        toast.success(
+          `Receipts checked: ${formatNumber(result.deliveredToProvider)} accepted, ${formatNumber(result.deviceNotRegistered)} uninstalled`
+        )
+      }
+      void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-notification-recipients"] })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Failed to check receipts"),
+  })
+
+  const data = notificationsQuery.data
+  const summary = data?.summary
+  const notifications = data?.items ?? []
+  const activeFilterCount =
+    (search.trim() ? 1 : 0) + (source !== "all" ? 1 : 0) + (status !== "all" ? 1 : 0)
+  const safePage = data?.page ?? page
+  const pageCount = data?.pageCount ?? 1
+  const recipientOptions = React.useMemo(() => {
+    if (form.recipientType === "customers") {
+      return (customersQuery.data?.items ?? []).map((customer) => ({
+        id: customer.id,
+        title: customer.fullName || customer.phone || "Customer",
+        subtitle: `${customer.phone || "No phone"} - ${customer.hasPushToken ? "push ready" : "in-app only"}`,
+      }))
+    }
+    if (form.recipientType === "owners") {
+      return (restaurantsQuery.data?.items ?? []).map((restaurant) => ({
+        id: restaurant.id,
+        title: restaurant.name,
+        subtitle: `${restaurant.ownerName || "Owner"} - ${restaurant.ownerPhone || "No phone"}`,
+      }))
+    }
+    return (ridersQuery.data?.items ?? []).map((rider) => ({
+      id: rider.id,
+      title: rider.fullName,
+      subtitle: `${rider.phone} - ${rider.isAvailableForAssignments ? "available" : "unavailable"}`,
+    }))
+  }, [
+    customersQuery.data?.items,
+    form.recipientType,
+    restaurantsQuery.data?.items,
+    ridersQuery.data?.items,
+  ])
+
+  const selectedIds = new Set(form.recipientIds ?? [])
+  const selectedCount =
+    form.audience === "all" ? "All eligible" : `${selectedIds.size} selected`
+  const groupedNotificationTemplates = React.useMemo(
+    () =>
+      templateCategoryOrder.map((category) => ({
+        category,
+        items: notificationTemplates.filter(
+          (template) => template.category === category
+        ),
+      })),
+    []
+  )
+
+  function toggleRecipient(id: string, checked: boolean) {
+    setForm((current) => {
+      const next = new Set(current.recipientIds ?? [])
+      if (checked) next.add(id)
+      else next.delete(id)
+      return { ...current, recipientIds: Array.from(next) }
+    })
+  }
+
+  function submitForm(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!form.title.trim() || !form.body.trim()) {
+      toast.error("Title and message body are required")
+      return
+    }
+    if (form.audience === "selected" && !(form.recipientIds ?? []).length) {
+      toast.error("Select at least one recipient")
+      return
+    }
+    if (form.contentType !== "text" && !form.imageUrl?.trim()) {
+      toast.error("Upload an image for image notification mode")
+      return
+    }
+    if (scheduleMode && !scheduledAt) {
+      toast.error("Choose schedule date and time")
+      return
+    }
+    sendMutation.mutate({
+      ...form,
+      scheduledAt:
+        scheduleMode && scheduledAt
+          ? new Date(scheduledAt).toISOString()
+          : undefined,
+    })
+  }
+
+  function sendTestNotification() {
+    if (!form.title.trim() || !form.body.trim()) {
+      toast.error("Title and message body are required")
+      return
+    }
+    if (form.contentType !== "text" && !form.imageUrl?.trim()) {
+      toast.error("Upload an image for image notification mode")
+      return
+    }
+    if (!testRecipientId) {
+      toast.error("Choose a test recipient first")
+      return
+    }
+
+    sendMutation.mutate({
+      ...form,
+      audience: "selected",
+      recipientIds: [testRecipientId],
+      title: `[TEST] ${form.title}`,
+      scheduledAt: undefined,
+      testMode: true,
+    })
+  }
+
+  function resetFilters() {
+    setSearch("")
+    setSource("all")
+    setStatus("all")
+    setPage(1)
+  }
+
+  function applyTemplate(key: string) {
+    const template = notificationTemplates.find((item) => item.key === key)
+    if (!template) return
+    setSelectedTemplateKey(key)
+    setForm((current) => ({
+      ...current,
+      recipientType: template.recipientType,
+      recipientIds: [],
+      audience: "all",
+      title: template.title,
+      body: template.body,
+      path: template.path,
+      type: template.type,
+      contentType: template.contentType,
+      pushEnabled: template.recipientType !== "owners",
+    }))
+    setScheduleMode(true)
+    setScheduledAt((current) => current || defaultScheduleDateTimeInput())
+    toast.success(`${template.label} template applied`)
+  }
+
+  React.useEffect(() => {
+    setTestRecipientId("")
+  }, [form.recipientType])
+
+  async function uploadNotificationImage(file: File) {
+    setIsUploadingImage(true)
+    try {
+      const result = await uploadAdminMedia(
+        file,
+        "foodbela/admin/notification-campaigns"
+      )
+      setForm((current) => ({
+        ...current,
+        contentType:
+          current.contentType === "text" ? "image_text" : current.contentType,
+        imageUrl: result.url,
+        imagePublicId: result.publicId,
+      }))
+      toast.success("Notification image uploaded")
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Notification image upload failed"
+      )
+    } finally {
+      setIsUploadingImage(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Bell className="size-5" />
+            </span>
+            Notifications
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Send, monitor, and audit customer, restaurant-owner, rider, and
+            campaign notifications.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => notificationsQuery.refetch()}
+          disabled={notificationsQuery.isFetching}
+        >
+          {notificationsQuery.isFetching ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <RefreshCcw className="size-4" />
+          )}
+          Refresh
+        </Button>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <Card>
+          <CardContent className="pt-2">
+            <p className="text-sm text-muted-foreground">Unread</p>
+            <p className="mt-2 text-3xl font-semibold">
+              {formatNumber(
+                (summary?.customerUnread ?? 0) + (summary?.ownerUnread ?? 0)
+              )}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+                Customer + owner unread notifications
+              </p>
+            </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-2">
+            <p className="text-sm text-muted-foreground">
+              Customer push tokens
+            </p>
+            <p className="mt-2 text-3xl font-semibold">
+              {formatNumber(summary?.customerPushActiveTokens)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {formatNumber(summary?.customerPushDisabledTokens)} disabled
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-2">
+            <p className="text-sm text-muted-foreground">Rider push tokens</p>
+            <p className="mt-2 text-3xl font-semibold">
+              {formatNumber(summary?.riderPushActiveTokens)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {formatNumber(summary?.riderPushDisabledTokens)} disabled
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-2">
+            <p className="text-sm text-muted-foreground">Campaign open rate</p>
+            <p className="mt-2 text-3xl font-semibold">
+              {formatNumber(summary?.campaignOpenRate)}%
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {formatNumber(summary?.campaignOpens)} opens /{" "}
+              {formatNumber(summary?.campaignDelivered)} sent
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-2">
+            <p className="text-sm text-muted-foreground">Scheduled</p>
+            <p className="mt-2 text-3xl font-semibold">
+              {formatNumber(summary?.scheduledCount)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Future notifications waiting for dispatch
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Send className="size-4" />
+              Compose notification
+            </CardTitle>
+            <CardDescription>
+              Customer supports in-app + push; owner supports in-app; rider
+              supports push.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-4" onSubmit={submitForm}>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <Label>Scheduled notification templates</Label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Choose a ready-made template, confirm the copy, then pick
+                      the date and time.
+                    </p>
+                  </div>
+                  {selectedTemplateKey ? (
+                    <Badge variant="outline" className="bg-background">
+                      Template applied
+                    </Badge>
+                  ) : null}
+                </div>
+                <Select value={selectedTemplateKey} onValueChange={applyTemplate}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {notificationTemplates.map((template) => (
+                      <SelectItem key={template.key} value={template.key}>
+                        {templateCategoryLabel(template.category)} -{" "}
+                        {template.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <ScrollArea className="h-72 rounded-xl border bg-muted/20">
+                  <div className="space-y-4 p-3">
+                    {groupedNotificationTemplates.map((group) => (
+                      <div key={group.category} className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={templateCategoryClass(group.category)}
+                          >
+                            {templateCategoryLabel(group.category)}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {group.items.length} templates
+                          </span>
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                          {group.items.map((template) => {
+                            const isSelected =
+                              selectedTemplateKey === template.key
+                            return (
+                              <button
+                                key={template.key}
+                                type="button"
+                                className={cn(
+                                  "rounded-lg border bg-background p-3 text-left transition hover:border-primary/50 hover:bg-primary/5",
+                                  isSelected &&
+                                    "border-primary bg-primary/10 ring-1 ring-primary/30"
+                                )}
+                                onClick={() => applyTemplate(template.key)}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="font-medium">
+                                    {template.label}
+                                  </div>
+                                  <Badge
+                                    variant="outline"
+                                    className="shrink-0 bg-background"
+                                  >
+                                    {template.type}
+                                  </Badge>
+                                </div>
+                                <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                                  {template.description}
+                                </div>
+                                <div className="mt-2 truncate text-xs text-muted-foreground">
+                                  {template.title}
+                                </div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Recipient type</Label>
+                  <Select
+                    value={form.recipientType}
+                    onValueChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        recipientType:
+                          value as AdminNotificationSendPayload["recipientType"],
+                        recipientIds: [],
+                      }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="customers">Customers</SelectItem>
+                      <SelectItem value="owners">Restaurant owners</SelectItem>
+                      <SelectItem value="riders">Riders</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Audience</Label>
+                  <Select
+                    value={form.audience}
+                    onValueChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        audience: value as "all" | "selected",
+                        recipientIds: [],
+                      }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All eligible</SelectItem>
+                      <SelectItem value="selected">Selected only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {form.recipientType === "customers" ? (
+                <div className="rounded-xl border bg-muted/20 p-3">
+                  <div className="mb-3">
+                    <Label>Customer campaign targeting</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Migrated from CMS push: smart segments, restaurant-based
+                      audience, A/B test, and conversion window.
+                    </p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Customer audience</Label>
+                      <Select
+                        value={form.customerAudienceType ?? "all_users"}
+                        onValueChange={(value) =>
+                          setForm((current) => ({
+                            ...current,
+                            customerAudienceType:
+                              value as AdminNotificationSendPayload["customerAudienceType"],
+                            audience: value === "selected_users" ? "selected" : "all",
+                          }))
+                        }
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all_users">All users</SelectItem>
+                          <SelectItem value="new_users">New users</SelectItem>
+                          <SelectItem value="returning_users">Returning users</SelectItem>
+                          <SelectItem value="selected_users">Specific users</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Smart segment</Label>
+                      <Select
+                        value={form.customerGroupKey || "none"}
+                        onValueChange={(value) =>
+                          setForm((current) => ({
+                            ...current,
+                            customerGroupKey: value === "none" ? "" : value,
+                          }))
+                        }
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">No smart segment</SelectItem>
+                          <SelectItem value="has_push_token">Users with push token</SelectItem>
+                          <SelectItem value="ordered_last_30_days">Ordered in last 30 days</SelectItem>
+                          <SelectItem value="inactive_30_days">Inactive for 30 days</SelectItem>
+                          <SelectItem value="high_value_customers">High-value customers</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Restaurant scope</Label>
+                      <Select
+                        value={form.restaurantScope ?? "all_restaurants"}
+                        onValueChange={(value) =>
+                          setForm((current) => ({
+                            ...current,
+                            restaurantScope:
+                              value as AdminNotificationSendPayload["restaurantScope"],
+                            selectedRestaurantIds:
+                              value === "selected_restaurants"
+                                ? current.selectedRestaurantIds ?? []
+                                : [],
+                          }))
+                        }
+                      >
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all_restaurants">No restaurant filter</SelectItem>
+                          <SelectItem value="selected_restaurants">Users from selected restaurants</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Conversion window</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={form.conversionWindowDays ?? 7}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            conversionWindowDays: Number(event.target.value || 7),
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  {form.restaurantScope === "selected_restaurants" ? (
+                    <ScrollArea className="mt-3 h-44 rounded-lg border bg-background">
+                      <div className="space-y-2 p-3">
+                        {(restaurantsQuery.data?.items ?? []).map((restaurant) => {
+                          const selected = new Set(form.selectedRestaurantIds ?? [])
+                          return (
+                            <label
+                              key={restaurant.id}
+                              className="flex cursor-pointer items-start gap-3 rounded-md border p-2"
+                            >
+                              <Checkbox
+                                checked={selected.has(restaurant.id)}
+                                onCheckedChange={(checked) =>
+                                  setForm((current) => ({
+                                    ...current,
+                                    selectedRestaurantIds:
+                                      checked === true
+                                        ? [...(current.selectedRestaurantIds ?? []), restaurant.id]
+                                        : (current.selectedRestaurantIds ?? []).filter((id) => id !== restaurant.id),
+                                  }))
+                                }
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-medium">{restaurant.name}</span>
+                                <span className="block truncate text-xs text-muted-foreground">{restaurant.city}</span>
+                              </span>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </ScrollArea>
+                  ) : null}
+
+                  <div className="mt-3 rounded-lg border bg-background p-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={form.abTest?.enabled === true}
+                        onCheckedChange={(checked) =>
+                          setForm((current) => ({
+                            ...current,
+                            abTest: {
+                              ...(current.abTest ?? {}),
+                              enabled: checked === true,
+                            },
+                          }))
+                        }
+                      />
+                      A/B test this campaign
+                    </label>
+                    {form.abTest?.enabled ? (
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <Input
+                          value={form.abTest.variantBTitle ?? ""}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              abTest: { ...(current.abTest ?? {}), variantBTitle: event.target.value },
+                            }))
+                          }
+                          placeholder="Variant B title"
+                        />
+                        <Input
+                          value={form.abTest.variantBBody ?? ""}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              abTest: { ...(current.abTest ?? {}), variantBBody: event.target.value },
+                            }))
+                          }
+                          placeholder="Variant B body"
+                        />
+                        <Input
+                          value={form.abTest.variantBPath ?? ""}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              abTest: { ...(current.abTest ?? {}), variantBPath: event.target.value },
+                            }))
+                          }
+                          placeholder="Variant B path"
+                        />
+                        <Input
+                          type="number"
+                          min={1}
+                          max={99}
+                          value={form.abTest.splitPercent ?? 50}
+                          onChange={(event) =>
+                            setForm((current) => ({
+                              ...current,
+                              abTest: { ...(current.abTest ?? {}), splitPercent: Number(event.target.value || 50) },
+                            }))
+                          }
+                          placeholder="Variant B split %"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {form.audience === "selected" ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label>Recipients</Label>
+                    <Badge variant="outline">{selectedCount}</Badge>
+                  </div>
+                  <ScrollArea className="h-52 rounded-lg border">
+                    <div className="space-y-2 p-3">
+                      {recipientOptions.map((recipient) => (
+                        <label
+                          key={recipient.id}
+                          className="flex cursor-pointer items-start gap-3 rounded-md border bg-background p-2"
+                        >
+                          <Checkbox
+                            checked={selectedIds.has(recipient.id)}
+                            onCheckedChange={(checked) =>
+                              toggleRecipient(recipient.id, checked === true)
+                            }
+                          />
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium">
+                              {recipient.title}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {recipient.subtitle}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              ) : null}
+
+              <div className="rounded-xl border p-3">
+                <div className="grid gap-3 lg:grid-cols-[0.8fr_1.2fr]">
+                  <div className="space-y-2">
+                    <Label>Content mode</Label>
+                    <Select
+                      value={form.contentType ?? "text"}
+                      onValueChange={(value) =>
+                        setForm((current) => ({
+                          ...current,
+                          contentType:
+                            value as AdminNotificationSendPayload["contentType"],
+                        }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="text">Text only</SelectItem>
+                        <SelectItem value="image">Image focus</SelectItem>
+                        <SelectItem value="image_text">Image + text</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Image modes use Expo rich notifications so the mobile
+                      notification can expand and show the full campaign image.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Campaign image</Label>
+                    <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 sm:flex-row sm:items-center">
+                      {form.imageUrl ? (
+                        <img
+                          src={form.imageUrl}
+                          alt="Notification campaign"
+                          className="h-28 w-full rounded-lg border object-cover sm:w-44"
+                        />
+                      ) : (
+                        <div className="flex h-28 w-full items-center justify-center rounded-lg border border-dashed bg-background text-muted-foreground sm:w-44">
+                          <ImageIcon className="size-7" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <Input
+                          type="file"
+                          accept="image/*"
+                          disabled={isUploadingImage}
+                          onChange={(event) => {
+                            const file = event.target.files?.[0]
+                            event.target.value = ""
+                            if (file) void uploadNotificationImage(file)
+                          }}
+                        />
+                        <div className="text-xs text-muted-foreground">
+                          Recommended: wide promotional image. The app will send
+                          it as notification rich media and keep text as fallback.
+                        </div>
+                        {form.imageUrl ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              setForm((current) => ({
+                                ...current,
+                                imageUrl: "",
+                                imagePublicId: "",
+                                contentType: "text",
+                              }))
+                            }
+                          >
+                            Remove image
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Title</Label>
+                <Input
+                  value={form.title}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }))
+                  }
+                  placeholder="Order update, campaign, payout note..."
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Message</Label>
+                <Textarea
+                  value={form.body}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      body: event.target.value,
+                    }))
+                  }
+                  placeholder="Write the notification body"
+                  rows={4}
+                />
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Path</Label>
+                  <Input
+                    value={form.path}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        path: event.target.value,
+                      }))
+                    }
+                    placeholder="/(tabs)/home"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Type</Label>
+                  <Select
+                    value={form.type}
+                    onValueChange={(value) =>
+                      setForm((current) => ({ ...current, type: value }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="system">System</SelectItem>
+                      <SelectItem value="promotion">Promotion</SelectItem>
+                      <SelectItem value="support">Support</SelectItem>
+                      <SelectItem value="order_status">Order status</SelectItem>
+                      <SelectItem value="payout">Payout</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 rounded-lg border p-3 text-sm">
+                <Checkbox
+                  checked={form.pushEnabled}
+                  disabled={form.recipientType === "owners"}
+                  onCheckedChange={(checked) =>
+                    setForm((current) => ({
+                      ...current,
+                      pushEnabled: checked === true,
+                    }))
+                  }
+                />
+                <span>
+                  Send push when supported
+                  <span className="block text-xs text-muted-foreground">
+                    Owner notifications are in-app only for now.
+                  </span>
+                </span>
+              </label>
+              <div className="rounded-lg border p-3">
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={scheduleMode}
+                    onCheckedChange={(checked) =>
+                      setScheduleMode(checked === true)
+                    }
+                  />
+                  <span>
+                    Schedule for later
+                    <span className="block text-xs text-muted-foreground">
+                      Future notifications will be sent by the backend
+                      scheduler.
+                    </span>
+                  </span>
+                </label>
+                {scheduleMode ? (
+                  <div className="mt-3 space-y-2">
+                    <Label>Schedule date and time</Label>
+                    <Input
+                      type="datetime-local"
+                      value={scheduledAt}
+                      onChange={(event) => setScheduledAt(event.target.value)}
+                    />
+                  </div>
+                ) : null}
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+                  <div className="space-y-2">
+                    <Label>Test notification</Label>
+                    <Select value={testRecipientId} onValueChange={setTestRecipientId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a test recipient" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {recipientOptions.map((recipient) => (
+                          <SelectItem key={recipient.id} value={recipient.id}>
+                            {recipient.title} - {recipient.subtitle}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Sends only to this recipient and does not create campaign
+                      history or analytics.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={sendMutation.isPending || isUploadingImage}
+                    onClick={sendTestNotification}
+                  >
+                    {sendMutation.isPending ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Send className="size-4" />
+                    )}
+                    Send test
+                  </Button>
+                </div>
+              </div>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={sendMutation.isPending || isUploadingImage}
+              >
+                {sendMutation.isPending || isUploadingImage ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : scheduleMode ? (
+                  <CalendarClock className="size-4" />
+                ) : (
+                  <Send className="size-4" />
+                )}
+                {scheduleMode ? "Schedule notification" : "Send notification"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Smartphone className="size-4" />
+                  Notification history
+                </CardTitle>
+                <CardDescription>
+                  Customer, owner, rider, scheduled, and operational notification history.
+                </CardDescription>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => notificationsQuery.refetch()}
+                disabled={notificationsQuery.isFetching}
+              >
+                {notificationsQuery.isFetching ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <RefreshCcw className="size-4" />
+                )}
+                Refresh
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_170px_150px_auto]">
+              <Input
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value)
+                  setPage(1)
+                }}
+                placeholder="Search notifications"
+              />
+              <Select
+                value={source}
+                onValueChange={(value) => {
+                  setSource(value as SourceFilter)
+                  setPage(1)
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All sources</SelectItem>
+                  <SelectItem value="customer">Customers</SelectItem>
+                  <SelectItem value="owner">Owners</SelectItem>
+                  <SelectItem value="rider">Riders</SelectItem>
+                  <SelectItem value="campaign">Campaigns</SelectItem>
+                  <SelectItem value="scheduled">Scheduled</SelectItem>
+                  <SelectItem value="ops">Ops alerts</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={status}
+                onValueChange={(value) => {
+                  setStatus(value as StatusFilter)
+                  setPage(1)
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All status</SelectItem>
+                  <SelectItem value="unread">Unread</SelectItem>
+                  <SelectItem value="read">Read</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button type="button" variant="outline" onClick={resetFilters}>
+                <RefreshCcw className="size-4" />
+                Reset
+              </Button>
+            </div>
+
+            {activeFilterCount > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {search.trim() ? (
+                  <Badge variant="outline" className="bg-background">
+                    Search: {search.trim()}
+                  </Badge>
+                ) : null}
+                {source !== "all" ? (
+                  <Badge variant="outline" className={sourceBadgeClass(source as AdminNotificationCenterItem["source"])}>
+                    {sourceLabel(source as AdminNotificationCenterItem["source"])}
+                  </Badge>
+                ) : null}
+                {status !== "all" ? (
+                  <Badge variant="outline" className="bg-background">
+                    {status === "unread" ? "Unread only" : "Read only"}
+                  </Badge>
+                ) : null}
+                <Button type="button" variant="ghost" size="sm" onClick={resetFilters}>
+                  Clear filters
+                </Button>
+              </div>
+            ) : null}
+
+            <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+              <Table>
+                <TableHeader className="bg-muted/40">
+                  <TableRow>
+                    <TableHead>Notification</TableHead>
+                    <TableHead>Recipient</TableHead>
+                    <TableHead>Delivery</TableHead>
+                    <TableHead>Created</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {notifications.map((item) => {
+                    const Icon = notificationIcon(item)
+                    return (
+                      <TableRow
+                        key={`${item.source}-${item.id}`}
+                        className="cursor-pointer align-top hover:bg-muted/40"
+                        onClick={() => setSelectedItem(item)}
+                      >
+                        <TableCell>
+                          <div className="max-w-[340px]">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                                <Icon className="size-4" />
+                              </span>
+                              <p className="truncate font-medium">
+                                {item.title}
+                              </p>
+                              <Badge
+                                variant="outline"
+                                className={sourceBadgeClass(item.source)}
+                              >
+                                {sourceLabel(item.source)}
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className={readBadgeClass(item.isRead)}
+                              >
+                                {item.isRead ? "Read" : "Unread"}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                              {item.description}
+                            </p>
+                            {item.path ? (
+                              <p className="mt-1 truncate text-xs text-muted-foreground">
+                                Path: {item.path}
+                              </p>
+                            ) : null}
+                            {item.imageUrl ? (
+                              <p className="mt-1 truncate text-xs text-muted-foreground">
+                                Image campaign
+                              </p>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <p className="font-medium">
+                            {item.recipientName || "Audience"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.restaurantName
+                              ? `${recipientLabel(item.source)} • ${item.restaurantName}`
+                              : item.recipientPhone || item.type}
+                          </p>
+                        </TableCell>
+                        <TableCell>
+                          <Badge
+                            variant="outline"
+                            className={deliveryBadgeClass(item.deliveryStatus)}
+                          >
+                            {deliveryStatusLabel(item.deliveryStatus)}
+                          </Badge>
+                          {item.source === "campaign" ? (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {formatNumber(item.openCount)} opens /{" "}
+                              {formatNumber(item.sentCount)} sent
+                            </p>
+                          ) : null}
+                          {item.source === "scheduled" ? (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {formatNumber(item.openCount)} opens /{" "}
+                              {formatNumber(item.totalTargets)} targets
+                            </p>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-sm whitespace-nowrap">
+                          {formatDateTime(item.createdAt)}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                  {notificationsQuery.isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={4}>
+                        <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                          <Loader2 className="size-4 animate-spin" />
+                          Loading notifications...
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                  {!notificationsQuery.isLoading &&
+                  notifications.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4}>
+                        <div className="py-8 text-center text-sm text-muted-foreground">
+                          No notifications matched these filters.
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex flex-col gap-4 rounded-xl border bg-card px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-muted-foreground">
+                Showing {notifications.length} of {formatNumber(data?.total)}{" "}
+                notification(s)
+                {notificationsQuery.isFetching && !notificationsQuery.isLoading
+                  ? " - refreshing"
+                  : ""}
+              </p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <Select
+                  value={`${pageSize}`}
+                  onValueChange={(value) => {
+                    setPageSize(Number(value))
+                    setPage(1)
+                  }}
+                >
+                  <SelectTrigger className="w-full sm:w-32">
+                    <SelectValue placeholder="Rows" />
+                  </SelectTrigger>
+                  <SelectContent side="top">
+                    {pageSizeOptions.map((size) => (
+                      <SelectItem key={size} value={`${size}`}>
+                        {size} / page
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="text-sm font-medium">
+                  Page {safePage} of {pageCount}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    disabled={safePage <= 1 || notificationsQuery.isFetching}
+                    onClick={() =>
+                      setPage((current) => Math.max(1, current - 1))
+                    }
+                  >
+                    <ChevronLeft className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    disabled={
+                      safePage >= pageCount || notificationsQuery.isFetching
+                    }
+                    onClick={() =>
+                      setPage((current) => Math.min(pageCount, current + 1))
+                    }
+                  >
+                    <ChevronRight className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      <Sheet
+        open={Boolean(selectedItem)}
+        onOpenChange={(open) => !open && setSelectedItem(null)}
+      >
+        <SheetContent className="w-full overflow-y-auto p-4 sm:max-w-4xl! lg:max-w-5xl!">
+          {selectedItem ? (
+            <>
+              <SheetHeader>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <SheetTitle className="flex items-center gap-2">
+                      {React.createElement(notificationIcon(selectedItem), {
+                        className: "size-5",
+                      })}
+                      Notification details
+                    </SheetTitle>
+                    <SheetDescription>
+                      Delivery receipt, audience, and engagement information.
+                    </SheetDescription>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {!selectedItem.isRead &&
+                    (selectedItem.source === "customer" ||
+                      selectedItem.source === "owner" ||
+                      selectedItem.source === "rider" ||
+                      selectedItem.source === "ops") ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={markReadMutation.isPending}
+                        onClick={() =>
+                          markReadMutation.mutate({
+                            source: selectedItem.source as "customer" | "owner" | "rider" | "ops",
+                            id: selectedItem.id,
+                          })
+                        }
+                      >
+                        {markReadMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="size-4" />
+                        )}
+                        Mark read
+                      </Button>
+                    ) : null}
+                    {selectedItem.source === "scheduled" &&
+                    selectedItem.deliveryStatus === "scheduled" ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={cancelScheduleMutation.isPending}
+                        onClick={() =>
+                          cancelScheduleMutation.mutate(selectedItem.id)
+                        }
+                      >
+                        {cancelScheduleMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <XCircle className="size-4" />
+                        )}
+                        Cancel
+                      </Button>
+                    ) : null}
+                    {selectedItem.source === "scheduled" &&
+                    selectedItem.deliveryStatus === "failed" ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={retryScheduleMutation.isPending}
+                        onClick={() =>
+                          retryScheduleMutation.mutate(selectedItem.id)
+                        }
+                      >
+                        {retryScheduleMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCcw className="size-4" />
+                        )}
+                        Retry
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </SheetHeader>
+              <div className="mt-6 space-y-5">
+                {selectedItem.source === "ops" &&
+                getLateDetailRows(selectedItem).length > 0 ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-4">
+                    <div className="mb-3 flex items-center gap-2">
+                      <Clock3 className="size-4 text-amber-700" />
+                      <p className="font-medium">Late timing details</p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {getLateDetailRows(selectedItem).map((row) => (
+                        <div key={row.label} className="rounded-md border bg-background p-3">
+                          <p className="text-xs text-muted-foreground">{row.label}</p>
+                          <p className="mt-1 text-lg font-semibold">
+                            {formatMetadataValue(row.value)}
+                          </p>
+                          {row.helper ? (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {row.helper}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="rounded-lg border p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={sourceBadgeClass(selectedItem.source)}
+                    >
+                      {sourceLabel(selectedItem.source)}
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className={deliveryBadgeClass(
+                        selectedItem.deliveryStatus
+                      )}
+                    >
+                      {deliveryStatusLabel(selectedItem.deliveryStatus)}
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className={readBadgeClass(selectedItem.isRead)}
+                    >
+                      {selectedItem.isRead ? "Read" : "Unread"}
+                    </Badge>
+                  </div>
+                  <h3 className="mt-4 text-lg font-semibold">
+                    {selectedItem.title}
+                  </h3>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {selectedItem.description}
+                  </p>
+                  {selectedItem.imageUrl ? (
+                    <img
+                      src={selectedItem.imageUrl}
+                      alt={selectedItem.title}
+                      className="mt-4 max-h-80 w-full rounded-xl border object-contain"
+                    />
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground">
+                      {recipientLabel(selectedItem.source)}
+                    </p>
+                    <p className="mt-1 font-medium">
+                      {selectedItem.recipientName || "Audience"}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {selectedItem.restaurantName ||
+                        selectedItem.recipientPhone ||
+                        selectedItem.recipientId ||
+                        "N/A"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground">Path</p>
+                    <p className="mt-1 font-medium break-all">
+                      {selectedItem.path || "N/A"}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Type: {selectedItem.type || "system"} · Content:{" "}
+                      {selectedItem.contentType || "text"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground">Created</p>
+                    <p className="mt-1 text-sm font-medium">
+                      {formatDateTime(selectedItem.createdAt)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground">Scheduled</p>
+                    <p className="mt-1 text-sm font-medium">
+                      {formatDateTime(selectedItem.scheduledAt)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <p className="text-xs text-muted-foreground">Read / sent</p>
+                    <p className="mt-1 text-sm font-medium">
+                      {formatDateTime(
+                        selectedItem.readAt || selectedItem.sentAt
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {isCampaignLike(selectedItem) ? (
+                  <div className="rounded-lg border p-4">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium">Campaign timeline</p>
+                        <p className="text-xs text-muted-foreground">
+                          Full notification lifecycle from creation to engagement.
+                        </p>
+                      </div>
+                      <Badge variant="outline" className={sourceBadgeClass(selectedItem.source)}>
+                        {selectedItem.sendMode === "instant"
+                          ? "Instant"
+                          : selectedItem.sendMode === "cms"
+                            ? "CMS"
+                            : "Scheduled"}
+                      </Badge>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      {campaignTimelineSteps(selectedItem).map((step, index) => {
+                        const isLast = index === campaignTimelineSteps(selectedItem).length - 1
+                        return (
+                          <div key={step.key} className="relative">
+                            {!isLast ? (
+                              <div className="absolute left-9 top-5 hidden h-px w-[calc(100%_-_1.5rem)] bg-border sm:block" />
+                            ) : null}
+                            <div className="relative flex gap-3 sm:block">
+                              <div
+                                className={cn(
+                                  "flex size-10 items-center justify-center rounded-full border",
+                                  campaignTimelineClass(step.tone)
+                                )}
+                              >
+                                {step.tone === "done" ? (
+                                  <CheckCircle2 className="size-4" />
+                                ) : step.tone === "danger" ? (
+                                  <XCircle className="size-4" />
+                                ) : (
+                                  <Clock3 className="size-4" />
+                                )}
+                              </div>
+                              <div className="min-w-0 sm:mt-3">
+                                <p className="text-sm font-medium">{step.label}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  {step.helper}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+
+                {isCampaignLike(selectedItem) &&
+                (selectedItem.recipientType === "customers" ||
+                  selectedItem.customerAudienceType) ? (
+                  <div className="rounded-lg border p-4">
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex items-center gap-2">
+                        <Megaphone className="size-4 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium">Campaign rules</p>
+                          <p className="text-xs text-muted-foreground">
+                            Smart targeting, A/B test, and conversion window migrated from CMS push.
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={refreshConversionsMutation.isPending}
+                        onClick={() =>
+                          refreshConversionsMutation.mutate(
+                            selectedItem.campaignId || selectedItem.id
+                          )
+                        }
+                      >
+                        {refreshConversionsMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCcw className="size-4" />
+                        )}
+                        Refresh conversions
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={checkReceiptsMutation.isPending}
+                        onClick={() =>
+                          checkReceiptsMutation.mutate(
+                            selectedItem.campaignId || selectedItem.id
+                          )
+                        }
+                      >
+                        {checkReceiptsMutation.isPending ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCcw className="size-4" />
+                        )}
+                        Check receipts
+                      </Button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded-lg border bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Audience</p>
+                        <p className="mt-1 font-semibold">
+                          {deliveryStatusLabel(selectedItem.customerAudienceType || "all_users")}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Smart segment</p>
+                        <p className="mt-1 font-semibold">
+                          {selectedItem.customerGroupKey
+                            ? deliveryStatusLabel(selectedItem.customerGroupKey)
+                            : "None"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">Restaurant filter</p>
+                        <p className="mt-1 font-semibold">
+                          {selectedItem.restaurantScope === "selected_restaurants"
+                            ? `${formatNumber(selectedItem.selectedRestaurantIds?.length)} selected`
+                            : "No filter"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border bg-muted/20 p-3">
+                        <p className="text-xs text-muted-foreground">A/B test</p>
+                        <p className="mt-1 font-semibold">
+                          {selectedItem.abTest?.enabled
+                            ? `Variant B ${selectedItem.abTest.splitPercent ?? 50}%`
+                            : "Off"}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">
+                          {selectedItem.conversionWindowDays ?? 7} day orders
+                        </p>
+                        <p className="text-lg font-semibold">
+                          {formatNumber(selectedItem.conversions?.orderCount)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">Delivered</p>
+                        <p className="text-lg font-semibold">
+                          {formatNumber(selectedItem.conversions?.deliveredOrderCount)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">Revenue</p>
+                        <p className="text-lg font-semibold">
+                          {formatCurrency(selectedItem.conversions?.deliveredRevenue)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">Conversion</p>
+                        <p className="text-lg font-semibold">
+                          {formatNumber(selectedItem.conversions?.conversionRate)}%
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {isCampaignLike(selectedItem) ? (
+                  <div className="rounded-lg border p-4">
+                    <div className="mb-4 flex items-center gap-2">
+                      <UsersRound className="size-4 text-muted-foreground" />
+                      <div>
+                        <p className="font-medium">Audience breakdown</p>
+                        <p className="text-xs text-muted-foreground">
+                          Delivery and engagement for this notification audience.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border bg-muted/20 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-sm font-medium">
+                            {audienceLabel(selectedItem)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {selectedItem.audience
+                              ? `${deliveryStatusLabel(selectedItem.audience)} audience`
+                              : "Selected notification audience"}
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 text-right sm:grid-cols-4">
+                          <div>
+                            <p className="text-xs text-muted-foreground">Targets</p>
+                            <p className="font-semibold">
+                              {formatNumber(selectedItem.totalTargets)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Reached</p>
+                            <p className="font-semibold">
+                              {formatNumber(notificationDeliveredCount(selectedItem))}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Opened</p>
+                            <p className="font-semibold">
+                              {formatNumber(selectedItem.openCount)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Issues</p>
+                            <p className="font-semibold">
+                              {formatNumber(
+                                numericValue(selectedItem.disabledCount) +
+                                  numericValue(selectedItem.skippedCount)
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {isCampaignLike(selectedItem) ? (
+                  <div className="rounded-lg border p-4">
+                    <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="flex items-center gap-2">
+                        <ReceiptText className="size-4 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium">Recipient report</p>
+                          <p className="text-xs text-muted-foreground">
+                            See who received, opened, or did not receive this notification.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {recipientReportFilters.map((filter) => (
+                          <Button
+                            key={filter.value}
+                            type="button"
+                            size="sm"
+                            variant={
+                              recipientReportStatus === filter.value
+                                ? "default"
+                                : "outline"
+                            }
+                            onClick={() => setRecipientReportStatus(filter.value)}
+                          >
+                            {filter.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {recipientsQuery.isLoading ? (
+                      <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed p-8 text-sm text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" />
+                        Loading recipient report...
+                      </div>
+                    ) : recipientsQuery.data?.unavailableReason ? (
+                      <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">
+                        {recipientsQuery.data.unavailableReason}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="grid gap-3 sm:grid-cols-4">
+                          <div className="rounded-lg border bg-muted/20 p-3">
+                            <p className="text-xs text-muted-foreground">Total</p>
+                            <p className="text-lg font-semibold">
+                              {formatNumber(recipientsQuery.data?.summary.total)}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border bg-muted/20 p-3">
+                            <p className="text-xs text-muted-foreground">Received</p>
+                            <p className="text-lg font-semibold">
+                              {formatNumber(recipientsQuery.data?.summary.received)}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border bg-muted/20 p-3">
+                            <p className="text-xs text-muted-foreground">Opened</p>
+                            <p className="text-lg font-semibold">
+                              {formatNumber(recipientsQuery.data?.summary.opened)}
+                            </p>
+                          </div>
+                          <div className="rounded-lg border bg-muted/20 p-3">
+                            <p className="text-xs text-muted-foreground">Not reached</p>
+                            <p className="text-lg font-semibold">
+                              {formatNumber(recipientsQuery.data?.summary.notReached)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="max-h-96 overflow-y-auto rounded-lg border">
+                          {(recipientsQuery.data?.items ?? []).map((recipient) => (
+                            <div
+                              key={`${recipient.userType}-${recipient.id}`}
+                              className="flex flex-col gap-3 border-b p-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-medium">{recipient.name}</p>
+                                  <Badge
+                                    variant="outline"
+                                    className={recipientReportStatusClass(recipient.status)}
+                                  >
+                                    {recipient.statusLabel}
+                                  </Badge>
+                                </div>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                  {recipient.phone || "No phone"}
+                                  {recipient.restaurantName
+                                    ? ` - ${recipient.restaurantName}`
+                                    : ""}
+                                </p>
+                                {recipient.reason ? (
+                                  <p className="mt-1 text-xs text-amber-700">
+                                    {recipient.reason}
+                                  </p>
+                                ) : null}
+                              </div>
+                              <div className="text-left text-xs text-muted-foreground sm:text-right">
+                                <p>Received: {formatDateTime(recipient.receivedAt)}</p>
+                                <p>Opened: {formatDateTime(recipient.openedAt)}</p>
+                              </div>
+                            </div>
+                          ))}
+                          {!recipientsQuery.data?.items.length ? (
+                            <div className="p-6 text-center text-sm text-muted-foreground">
+                              No recipients matched this filter.
+                            </div>
+                          ) : null}
+                        </div>
+                        {(recipientsQuery.data?.total ?? 0) > 50 ? (
+                          <p className="text-xs text-muted-foreground">
+                            Showing first 50 of {formatNumber(recipientsQuery.data?.total)} recipients for this filter.
+                          </p>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {selectedItem.source === "scheduled" ||
+                selectedItem.source === "campaign" ||
+                selectedItem.totalTargets ||
+                selectedItem.sentCount ||
+                selectedItem.disabledCount ||
+                selectedItem.inAppCount ||
+                selectedItem.skippedCount ||
+                selectedItem.openCount ||
+                selectedItem.failureReason ? (
+                  <div className="rounded-lg border p-4">
+                    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex items-center gap-2">
+                        <Clock3 className="size-4 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium">
+                            {selectedItem.source === "scheduled"
+                              ? "Scheduled notification details"
+                              : "Delivery analytics"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Campaign ID:{" "}
+                            {selectedItem.campaignId || selectedItem.id || "N/A"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-200 bg-emerald-50 text-emerald-700"
+                        >
+                          {formatNumber(notificationDeliveryRate(selectedItem))}%
+                          delivered
+                        </Badge>
+                        <Badge
+                          variant="outline"
+                          className="border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+                        >
+                          {formatNumber(notificationOpenRate(selectedItem))}%
+                          open rate
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                      {[
+                        {
+                          label: "Targets",
+                          value: selectedItem.totalTargets,
+                          icon: UserRound,
+                        },
+                        {
+                          label: "Sent push",
+                          value: selectedItem.sentCount,
+                          icon: Send,
+                        },
+                        {
+                          label: "In-app",
+                          value: selectedItem.inAppCount,
+                          icon: Smartphone,
+                        },
+                        {
+                          label: "Disabled",
+                          value: selectedItem.disabledCount,
+                          icon: XCircle,
+                        },
+                        {
+                          label: "Skipped",
+                          value: selectedItem.skippedCount,
+                          icon: RefreshCcw,
+                        },
+                        {
+                          label: "Opened",
+                          value: selectedItem.openCount,
+                          icon: Eye,
+                        },
+                      ].map((metric) => (
+                        <div
+                          key={metric.label}
+                          className="rounded-lg border bg-muted/20 p-3"
+                        >
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            {React.createElement(metric.icon, {
+                              className: "size-3.5",
+                            })}
+                            {metric.label}
+                          </div>
+                          <p className="mt-2 text-lg font-semibold">
+                            {formatNumber(metric.value)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    {selectedItem.source === "scheduled" ? (
+                      <div className="mt-3 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+                        Open count means the recipient opened or marked this
+                        scheduled notification as read inside their app. Push
+                        provider delivery receipt is separate; this view focuses
+                        on real app engagement.
+                      </div>
+                    ) : null}
+                    {selectedItem.failureReason ? (
+                      <p className="mt-4 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+                        {selectedItem.failureReason}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
+    </>
+  )
+}

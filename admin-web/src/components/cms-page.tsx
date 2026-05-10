@@ -1,0 +1,156 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Image } from "lucide-react"
+import { toast } from "sonner"
+
+import {
+  checkCustomerHomePushReceipts,
+  cancelCustomerHomePushSchedule,
+  getPlatformContent,
+  listAdminCustomers,
+  listAdminRestaurants,
+  refreshCustomerHomePushConversions,
+  scheduleCustomerHomePushCampaign,
+  sendCustomerHomePushCampaign,
+  sendCustomerHomeTestPush,
+  updatePlatformContent,
+  type PlatformContent,
+} from "@/lib/admin-api"
+
+import { CustomerHomeCmsSection } from "./coupons-page"
+
+function formatCurrency(value?: number | null) {
+  return `Tk ${Math.round(Number.isFinite(value ?? 0) ? value ?? 0 : 0).toLocaleString()}`
+}
+
+export function CmsPage() {
+  const queryClient = useQueryClient()
+
+  const platformContentQuery = useQuery({
+    queryKey: ["admin-platform-content"],
+    queryFn: getPlatformContent,
+  })
+
+  const customersQuery = useQuery({
+    queryKey: ["admin-customers", "home-cms"],
+    queryFn: () => listAdminCustomers({ page: 1, pageSize: 100, sortBy: "highestSpend" }),
+  })
+
+  const restaurantsQuery = useQuery({
+    queryKey: ["admin-restaurants", "home-cms"],
+    queryFn: () => listAdminRestaurants({ page: 1, pageSize: 100, sortBy: "newestUpdated" }),
+  })
+
+  const updateContentMutation = useMutation({
+    mutationFn: updatePlatformContent,
+    onSuccess: () => {
+      toast.success("Customer home CMS updated")
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to update customer home CMS"),
+  })
+
+  const sendHomePushMutation = useMutation({
+    mutationFn: async (content: PlatformContent) => {
+      await updatePlatformContent(content)
+      return sendCustomerHomePushCampaign()
+    },
+    onSuccess: (result) => {
+      toast.success(`Push sent to ${result.totalTargets} customers`)
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to send push"),
+  })
+
+  const checkHomePushReceiptsMutation = useMutation({
+    mutationFn: checkCustomerHomePushReceipts,
+    onSuccess: (result) => {
+      toast.success(
+        `Delivery checked: ${result.deliveredToProvider} accepted, ${result.deviceNotRegistered} uninstalled`
+      )
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to check push delivery"),
+  })
+
+  const refreshHomePushConversionsMutation = useMutation({
+    mutationFn: refreshCustomerHomePushConversions,
+    onSuccess: (result) => {
+      toast.success(`Conversions refreshed: ${result.orderCount} orders, ${formatCurrency(result.deliveredRevenue)} revenue`)
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to refresh conversions"),
+  })
+
+  const scheduleHomePushMutation = useMutation({
+    mutationFn: async ({ content, scheduledAt }: { content: PlatformContent; scheduledAt: string }) => {
+      await updatePlatformContent(content)
+      return scheduleCustomerHomePushCampaign(scheduledAt)
+    },
+    onSuccess: (result) => {
+      toast.success(`Push scheduled for ${new Date(result.scheduledAt).toLocaleString()}`)
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to schedule push"),
+  })
+
+  const sendHomeTestPushMutation = useMutation({
+    mutationFn: async ({ content, customerId }: { content: PlatformContent; customerId: string }) => {
+      await updatePlatformContent(content)
+      return sendCustomerHomeTestPush(customerId)
+    },
+    onSuccess: (result) => {
+      toast.success(`Test push sent: ${result.sentCount} push, ${result.disabledCount} disabled`)
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to send test push"),
+  })
+
+  const cancelHomePushScheduleMutation = useMutation({
+    mutationFn: cancelCustomerHomePushSchedule,
+    onSuccess: () => {
+      toast.success("Scheduled push cancelled")
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to cancel schedule"),
+  })
+
+  return (
+    <>
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Image className="size-5" />
+            </span>
+            Content / CMS
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Manage customer-app home content, education blocks, and modals.
+            Push campaigns are managed from Notifications.
+          </p>
+        </div>
+      </div>
+
+      <CustomerHomeCmsSection
+        content={platformContentQuery.data?.content ?? null}
+        customers={customersQuery.data?.items ?? []}
+        restaurants={restaurantsQuery.data?.items ?? []}
+        isLoading={platformContentQuery.isLoading}
+        isSaving={updateContentMutation.isPending}
+        isSending={sendHomePushMutation.isPending}
+        isCheckingReceipts={checkHomePushReceiptsMutation.isPending}
+        isRefreshingConversions={refreshHomePushConversionsMutation.isPending}
+        isScheduling={scheduleHomePushMutation.isPending}
+        isCancellingSchedule={cancelHomePushScheduleMutation.isPending}
+        isTestingPush={sendHomeTestPushMutation.isPending}
+        onSave={(content) => updateContentMutation.mutate(content)}
+        onSendPush={(content) => sendHomePushMutation.mutate(content)}
+        onCheckReceipts={() => checkHomePushReceiptsMutation.mutate()}
+        onRefreshConversions={() => refreshHomePushConversionsMutation.mutate()}
+        onSchedulePush={(content, scheduledAt) => scheduleHomePushMutation.mutate({ content, scheduledAt })}
+        onCancelSchedule={() => cancelHomePushScheduleMutation.mutate()}
+        onSendTestPush={(content, customerId) => sendHomeTestPushMutation.mutate({ content, customerId })}
+        hidePushCampaign
+      />
+    </>
+  )
+}

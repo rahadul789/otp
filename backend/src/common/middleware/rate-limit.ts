@@ -136,3 +136,13 @@ export function createRefreshLimiter() {
     event: "auth.refresh.rate_limited",
   });
 }
+
+export function createAnalyticsEventLimiter() {
+  return buildLimiter({
+    windowMs: 15 * 60 * 1000,
+    limit: 240,
+    fieldNames: ["anonymousId", "sessionId"],
+    message: "Too many analytics events. Please slow down and try again shortly.",
+    event: "analytics.event.rate_limited",
+  });
+}

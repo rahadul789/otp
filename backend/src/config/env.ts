@@ -30,6 +30,12 @@ const envSchema = z.object({
   BKASH_PASSWORD: z.string().optional(),
   BKASH_APP_KEY: z.string().optional(),
   BKASH_APP_SECRET: z.string().optional(),
+  METRICS_ENABLED: z
+    .string()
+    .default("true")
+    .transform((value) => value === "true"),
+  METRICS_PATH: z.string().default("/metrics"),
+  METRICS_AUTH_TOKEN: z.string().optional(),
   MOCK_OTP_ENABLED: z
     .string()
     .default("true")

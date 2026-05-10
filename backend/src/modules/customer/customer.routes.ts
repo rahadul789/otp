@@ -6,10 +6,12 @@ import {
   createPaymentLimiter,
   createRefreshLimiter,
   createSigninLimiter,
-  createSupportWriteLimiter
+  createSupportWriteLimiter,
+  createAnalyticsEventLimiter
 } from "../../common/middleware/rate-limit"
 
 import { requireAuth, requireRole } from "../../common/middleware/auth"
+import { postCustomerAnalyticsEvent } from "./customer-analytics.controller"
 import {
   getCustomerOrder,
   getCustomerOrders,
@@ -66,7 +68,9 @@ const customerRefreshLimiter = createRefreshLimiter()
 const customerSupportWriteLimiter = createSupportWriteLimiter()
 const customerPaymentLimiter = createPaymentLimiter()
 const customerOrderActionLimiter = createOrderActionLimiter()
+const customerAnalyticsEventLimiter = createAnalyticsEventLimiter()
 
+customerRouter.post("/analytics/events", customerAnalyticsEventLimiter, postCustomerAnalyticsEvent)
 customerRouter.post("/auth/phone/start", customerAuthStartLimiter, startCustomerPhoneAuth)
 customerRouter.post("/auth/phone/password", customerPasswordSigninLimiter, signinCustomerWithPasswordController)
 customerRouter.post("/auth/phone/otp/verify", customerOtpVerifyLimiter, verifyCustomerPhoneOtpCode)
