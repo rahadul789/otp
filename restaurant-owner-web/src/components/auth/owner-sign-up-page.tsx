@@ -24,6 +24,7 @@ import {
   normalizeBangladeshPhone,
   sanitizeBangladeshPhoneInput,
 } from "@/lib/phone"
+import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import type { RestaurantLifecycleStatus } from "@/store/app-store"
 import { useAppStore } from "@/store/app-store"
 
@@ -129,6 +130,7 @@ export function OwnerSignUpPage() {
         phone: normalizedPhone,
         referenceId: result.ownerId,
         pendingPassword: password.trim(),
+        resendAvailableInSeconds: resolveOtpResendSeconds(result.resendAvailableInSeconds),
       })
       setVerificationModalOpen(true)
       setOnboardingState((current) => ({

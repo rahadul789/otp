@@ -1,0 +1,654 @@
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { useEffect, useRef } from "react";
+import {
+  Animated,
+  Image,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
+
+import { apiPost } from "@/src/lib/api";
+import { resolveCustomerRoute } from "@/src/lib/customer-routes";
+import type {
+  CustomerCampaignPlacement,
+  CustomerHomeCms,
+} from "@/src/types/restaurant";
+
+function isTrustedGuideVideoUrl(value?: string | null) {
+  const url = value?.trim();
+  if (!url) return false;
+
+  const match = url.match(/^https:\/\/([^/?#\s]+)(?:[/?#]|$)/i);
+  const host = match?.[1]?.toLowerCase();
+  if (!host) return false;
+
+  return (
+    host === "youtu.be" ||
+    host === "youtube.com" ||
+    host.endsWith(".youtube.com") ||
+    host === "youtube-nocookie.com" ||
+    host.endsWith(".youtube-nocookie.com")
+  );
+}
+
+export function recordCampaignEvent(
+  voucherId: string | undefined,
+  eventType: "impression" | "click" | "modal_open" | "strip_click",
+) {
+  if (!voucherId) return;
+  void apiPost("/customer/vouchers/display-event", {
+    voucherId,
+    eventType,
+  }).catch(() => undefined);
+}
+
+export function recordHomeCmsEvent(
+  eventType:
+    | "strip_impression"
+    | "strip_click"
+    | "block_impression"
+    | "block_click"
+    | "modal_impression"
+    | "modal_click"
+    | "guide_impression"
+    | "guide_video_click"
+    | "guide_image_click",
+) {
+  void apiPost("/public/content/customer-home-event", { eventType }).catch(
+    () => undefined,
+  );
+}
+
+export function getBannerToneStyle(
+  tone?: "sky" | "mint" | "amber" | "rose" | null,
+) {
+  switch (tone) {
+    case "mint":
+      return {
+        shell: "#EAF9F4",
+        chip: "#D7F2E8",
+        title: "#156C53",
+        subtitle: "#3A6A5E",
+        button: "#1E7F62",
+      };
+    case "amber":
+      return {
+        shell: "#FFEAF3",
+        chip: "#FFD9E8",
+        title: "#A73D69",
+        subtitle: "#8A5E72",
+        button: "#D45487",
+      };
+    case "rose":
+      return {
+        shell: "#FFEAF1",
+        chip: "#FFD7E4",
+        title: "#A73D69",
+        subtitle: "#8A5E72",
+        button: "#D45487",
+      };
+    case "sky":
+    default:
+      return {
+        shell: "#EDF4FF",
+        chip: "#DDEAFF",
+        title: "#355EAD",
+        subtitle: "#607394",
+        button: "#5D8BFF",
+      };
+  }
+}
+
+export function CampaignPlacementCard({
+  campaign,
+  onOpenModal,
+}: {
+  campaign: CustomerCampaignPlacement;
+  onOpenModal: (campaign: CustomerCampaignPlacement) => void;
+}) {
+  const display = campaign.display ?? {};
+  const title = display.title || campaign.name;
+  const subtitle =
+    display.subtitle ||
+    (campaign.code ? `Use code ${campaign.code}` : "Limited time offer");
+  const ctaPath = resolveCustomerRoute(display.ctaPath, null);
+  const canOpenModal = Boolean(display.openInModal);
+  const hasAction = canOpenModal || Boolean(ctaPath);
+  const backgroundColor = display.backgroundColor || "#FFF0F6";
+  const textColor = display.textColor || "#3F2432";
+  const accentColor = display.accentColor || "#FF5C93";
+  const router = useRouter();
+
+  const handlePress = () => {
+    void recordCampaignEvent(
+      campaign.voucherId,
+      canOpenModal ? "modal_open" : "click",
+    );
+    if (canOpenModal) {
+      onOpenModal(campaign);
+      return;
+    }
+    if (ctaPath) router.push(ctaPath as never);
+  };
+
+  return (
+    <Pressable
+      style={[styles.campaignCard, { backgroundColor }]}
+      disabled={!hasAction}
+      onPress={hasAction ? handlePress : undefined}
+    >
+      {display.variant === "image" && display.imageUrl ? (
+        <Image source={{ uri: display.imageUrl }} style={styles.campaignImage} />
+      ) : null}
+      {display.variant === "carousel" && display.carouselImageUrls?.length ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.campaignCarousel}
+        >
+          {display.carouselImageUrls.slice(0, 4).map((imageUrl) => (
+            <Image
+              key={imageUrl}
+              source={{ uri: imageUrl }}
+              style={styles.campaignCarouselImage}
+            />
+          ))}
+        </ScrollView>
+      ) : null}
+      <View style={styles.campaignCopy}>
+        <View
+          style={[styles.campaignBadge, { backgroundColor: accentColor }]}
+        >
+          <Ionicons name="sparkles-outline" size={13} color="#FFFFFF" />
+          <Text style={[styles.campaignBadgeText, { color: "#FFFFFF" }]}>
+            Campaign
+          </Text>
+        </View>
+        <Text
+          style={[styles.campaignTitle, { color: textColor }]}
+          numberOfLines={2}
+        >
+          {title}
+        </Text>
+        <Text
+          style={[styles.campaignSubtitle, { color: textColor }]}
+          numberOfLines={2}
+        >
+          {subtitle}
+        </Text>
+      </View>
+      {hasAction ? (
+        <View style={[styles.campaignAction, { backgroundColor: accentColor }]}>
+          <Text style={styles.campaignActionText}>
+            {display.ctaLabel || (canOpenModal ? "View" : "Order now")}
+          </Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+export function HomeCmsPromoBlock({ cms }: { cms: CustomerHomeCms }) {
+  const block = cms.offerStrip;
+  const { width: windowWidth } = useWindowDimensions();
+  const scrollX = useRef(new Animated.Value(0)).current;
+  const carouselImages: { url: string; ctaPath?: string }[] =
+    block.carouselImages?.filter((item) => item.url) ??
+    block.carouselImageUrls.map((url) => ({ url })) ??
+    [];
+  const visibleCarouselImages = carouselImages.slice(0, 5);
+  const slideWidth = Math.max(320, windowWidth);
+
+  if (block.variant === "carousel") {
+    return (
+      <View style={styles.cmsCarouselOnly}>
+        <Animated.ScrollView
+          horizontal
+          pagingEnabled
+          snapToInterval={slideWidth}
+          snapToAlignment="start"
+          decelerationRate="fast"
+          disableIntervalMomentum
+          showsHorizontalScrollIndicator={false}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+            { useNativeDriver: false },
+          )}
+          scrollEventThrottle={16}
+        >
+          {visibleCarouselImages.map((imageUrl) => (
+            <View
+              key={imageUrl.url}
+              style={[styles.cmsCarouselOnlySlide, { width: slideWidth }]}
+            >
+              <Image
+                source={{ uri: imageUrl.url }}
+                style={styles.cmsCarouselOnlyImage}
+              />
+            </View>
+          ))}
+        </Animated.ScrollView>
+        <View style={styles.cmsCarouselDots}>
+          {visibleCarouselImages.map((imageUrl, index) => {
+            const inputRange = [
+              (index - 1) * slideWidth,
+              index * slideWidth,
+              (index + 1) * slideWidth,
+            ];
+            const dotWidth = scrollX.interpolate({
+              inputRange,
+              outputRange: [6, 24, 6],
+              extrapolate: "clamp",
+            });
+            const dotOpacity = scrollX.interpolate({
+              inputRange,
+              outputRange: [0.36, 1, 0.36],
+              extrapolate: "clamp",
+            });
+
+            return (
+              <Animated.View
+                key={`${imageUrl.url}-dot`}
+                style={[
+                  styles.cmsCarouselDot,
+                  { width: dotWidth, opacity: dotOpacity },
+                ]}
+              />
+            );
+          })}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.cmsBlock,
+        block.variant === "image" ? styles.cmsBlockImageOnlyShell : null,
+        { backgroundColor: block.backgroundColor || "#FFF0F6" },
+      ]}
+    >
+      {block.variant === "image" && block.imageUrl ? (
+        <Image source={{ uri: block.imageUrl }} style={styles.cmsImageOnly} />
+      ) : null}
+      {block.variant === "image_text" && block.imageUrl ? (
+        <Image source={{ uri: block.imageUrl }} style={styles.cmsBlockImage} />
+      ) : null}
+      {block.variant !== "image" ? (
+        <View style={styles.cmsBlockCopy}>
+          <View
+            style={[
+              styles.cmsBlockBadge,
+            { backgroundColor: block.accentColor || "#FF5C93" },
+            ]}
+          >
+            <Ionicons
+              name="sparkles-outline"
+              size={13}
+              color="#FFFFFF"
+            />
+            <Text
+              style={[
+                styles.cmsBlockBadgeText,
+                { color: "#FFFFFF" },
+              ]}
+            >
+              Promo
+            </Text>
+          </View>
+          <Text
+            style={[
+              styles.cmsBlockTitle,
+              { color: block.textColor || "#3F2432" },
+            ]}
+            numberOfLines={2}
+          >
+            {block.title || "Fresh offers near you"}
+          </Text>
+          <Text
+            style={[
+              styles.cmsBlockSubtitle,
+              { color: block.textColor || "#3F2432" },
+            ]}
+            numberOfLines={2}
+          >
+            {block.subtitle ||
+              "Limited-time savings from restaurants around you."}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+export function HowToOrderGuideBlock({ cms }: { cms: CustomerHomeCms }) {
+  const guide = cms.howToOrderGuide;
+  const canOpenVideo = isTrustedGuideVideoUrl(guide?.youtubeUrl);
+
+  const openGuide = () => {
+    if (canOpenVideo && guide?.youtubeUrl) {
+      recordHomeCmsEvent("guide_video_click");
+      void Linking.openURL(guide.youtubeUrl).catch(() => undefined);
+    }
+  };
+
+  useEffect(() => {
+    if (guide?.isActive) recordHomeCmsEvent("guide_impression");
+  }, [guide?.isActive]);
+
+  if (!guide?.isActive) return null;
+
+  return (
+    <View style={styles.guideSection}>
+      <Pressable
+        style={[
+          styles.guideCard,
+          { backgroundColor: guide.backgroundColor || "#EDF4FF" },
+        ]}
+        onPress={openGuide}
+      >
+        <View style={styles.guideIcon}>
+          <Ionicons
+            name="play-circle"
+            size={24}
+            color={guide.accentColor || "#5D8BFF"}
+          />
+        </View>
+        <View style={styles.guideCopy}>
+          <Text
+            style={[
+              styles.guideTitle,
+              { color: guide.textColor || "#24406F" },
+            ]}
+            numberOfLines={2}
+          >
+            {guide.title || "How to order on Foodbela"}
+          </Text>
+        </View>
+        {canOpenVideo ? (
+          <View
+            style={[
+              styles.guideButton,
+              { backgroundColor: guide.accentColor || "#5D8BFF" },
+            ]}
+          >
+            <Text style={styles.guideButtonText}>
+              {guide.ctaLabel || "Watch"}
+            </Text>
+          </View>
+        ) : null}
+      </Pressable>
+      {guide.guideImages.length ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.guideImageRow}
+        >
+          {guide.guideImages.slice(0, 6).map((image, index) => (
+            <View key={`${image.url}-${index}`} style={styles.guideImageCard}>
+              <Pressable onPress={() => recordHomeCmsEvent("guide_image_click")}>
+                <Image source={{ uri: image.url }} style={styles.guideImage} />
+              </Pressable>
+              <Text style={styles.guideImageTitle} numberOfLines={1}>
+                {image.title || `Step ${index + 1}`}
+              </Text>
+            </View>
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  campaignCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 22,
+    overflow: "hidden",
+  },
+  campaignImage: {
+    width: 84,
+    height: 84,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF80",
+  },
+  campaignCarousel: {
+    maxWidth: 118,
+  },
+  campaignCarouselImage: {
+    width: 76,
+    height: 76,
+    marginRight: 8,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF80",
+  },
+  campaignCopy: {
+    flex: 1,
+    gap: 6,
+  },
+  campaignBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  campaignBadgeText: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "800",
+  },
+  campaignTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: "900",
+  },
+  campaignSubtitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+    opacity: 0.78,
+  },
+  campaignAction: {
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    borderRadius: 999,
+  },
+  campaignActionText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  cmsBlock: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 22,
+    overflow: "hidden",
+  },
+  cmsBlockImageOnlyShell: {
+    padding: 0,
+    gap: 0,
+  },
+  cmsBlockImage: {
+    width: 82,
+    height: 82,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF80",
+  },
+  cmsImageOnly: {
+    width: "100%",
+    height: 112,
+    borderRadius: 0,
+    backgroundColor: "#FFFFFF80",
+  },
+  cmsCarouselOnly: {
+    position: "relative",
+    marginHorizontal: -20,
+    overflow: "hidden",
+  },
+  cmsCarouselOnlySlide: {
+    paddingHorizontal: 20,
+    borderRadius: 0,
+    overflow: "hidden",
+  },
+  cmsCarouselOnlyImage: {
+    width: "100%",
+    height: 142,
+    borderRadius: 22,
+    backgroundColor: "#FFF1F6",
+  },
+  cmsCarouselDots: {
+    position: "absolute",
+    bottom: 12,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 5,
+  },
+  cmsCarouselDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "#FF5C93",
+  },
+  cmsCarouselDotActive: {
+    width: 14,
+    backgroundColor: "#FF5C93",
+  },
+  cmsBlockCopy: {
+    flex: 1,
+    gap: 6,
+  },
+  cmsBlockBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  cmsBlockBadgeText: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "900",
+  },
+  cmsBlockTitle: {
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: "900",
+  },
+  cmsBlockSubtitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    opacity: 0.78,
+  },
+  cmsInlineButton: {
+    alignSelf: "flex-start",
+    marginTop: 2,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  cmsInlineButtonSoft: {
+    backgroundColor: "rgba(255,255,255,0.62)",
+  },
+  cmsInlineButtonOutline: {
+    backgroundColor: "transparent",
+  },
+  cmsInlineButtonDark: {
+    backgroundColor: "#2B1D24",
+    borderColor: "#2B1D24",
+  },
+  cmsInlineButtonText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  guideSection: {
+    paddingTop: 18,
+    gap: 10,
+  },
+  guideCard: {
+    marginHorizontal: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 22,
+  },
+  guideIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.7)",
+  },
+  guideCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  guideTitle: {
+    fontSize: 19,
+    lineHeight: 24,
+    fontWeight: "900",
+  },
+  guideSubtitle: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    opacity: 0.72,
+  },
+  guideButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
+  },
+  guideButtonText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "900",
+    color: "#fff",
+  },
+  guideImageRow: {
+    paddingLeft: 20,
+    paddingRight: 10,
+    gap: 10,
+  },
+  guideImageCard: {
+    width: 116,
+    gap: 6,
+  },
+  guideImage: {
+    width: 116,
+    height: 86,
+    borderRadius: 16,
+    backgroundColor: "#EDF4FF",
+  },
+  guideImageTitle: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "800",
+    color: "#181620",
+  },
+});

@@ -237,6 +237,16 @@ function normalizeFundingSplit(params: {
   }
 }
 
+function assertAdminCreatedVoucherFunding(params: { fundedBy?: string }) {
+  if (params.fundedBy === "owner") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "ADMIN_VOUCHER_OWNER_FUNDED_NOT_ALLOWED",
+      "Admin-created vouchers must be platform-funded or shared-funded"
+    )
+  }
+}
+
 function buildVoucherAuditSnapshot(voucher: Record<string, any> | null) {
   if (!voucher) return null
   return {
@@ -407,6 +417,7 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
           voucherId: 1,
           voucherSnapshot: 1,
           discountBreakdown: 1,
+          releasedAt: 1,
           appliedAt: 1,
           createdAt: 1,
           "order.status": 1,
@@ -480,8 +491,17 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
     let totalOrdersUsingVoucher = 0
     let revenueGenerated = 0
     let totalDeliveryCostCovered = 0
+    let totalUses = 0
 
     voucherRedemptions.forEach((redemption) => {
+      if (
+        redemption.releasedAt ||
+        ["Cancelled", "Rejected"].includes(redemption.order?.status)
+      ) {
+        return
+      }
+
+      totalUses += 1
       const customerId =
         objectIdString(redemption.voucherSnapshot?.customerId) ||
         objectIdString(redemption.order?.customerId)
@@ -510,7 +530,6 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
     })
 
     const maxTotalUses = numberValue(voucher.maxTotalUses)
-    const totalUses = voucherRedemptions.length
     const remainingUsage = maxTotalUses > 0 ? Math.max(0, maxTotalUses - totalUses) : null
     const analytics: VoucherAnalytics = {
       totalUses,
@@ -630,12 +649,18 @@ async function applyVoucherPatch(
 
   const scopeType = params.scopeType ?? voucher.scopeType ?? "restaurant"
   const applicability = params.applicability ?? voucher.applicability
+  const categoryIds =
+    params.categoryIds ??
+    (Array.isArray(voucher.categoryIds) ? voucher.categoryIds.map(objectIdString) : [])
+  const itemIds =
+    params.itemIds ??
+    (Array.isArray(voucher.itemIds) ? voucher.itemIds.map(objectIdString) : [])
   if (scopeType === "restaurant") {
     await validateVoucherTargets({
       restaurantId,
       applicability,
-      categoryIds: params.categoryIds,
-      itemIds: params.itemIds
+      categoryIds,
+      itemIds
     })
   }
 
@@ -678,11 +703,11 @@ async function applyVoucherPatch(
   voucher.applicability = scopeType === "restaurant" ? applicability : "all"
   voucher.categoryIds =
     scopeType === "restaurant" && applicability === "categories"
-      ? (params.categoryIds ?? []) as never[]
+      ? categoryIds as never[]
       : []
   voucher.itemIds =
     scopeType === "restaurant" && applicability === "items"
-      ? (params.itemIds ?? []) as never[]
+      ? itemIds as never[]
       : []
   if (params.startsAt !== undefined) voucher.startsAt = new Date(params.startsAt)
   if (params.endsAt !== undefined) voucher.endsAt = new Date(params.endsAt)
@@ -710,6 +735,8 @@ export async function listOwnerVouchersWithFilters(params: {
     ...params,
     restaurantId: restaurant.id
   })
+  query.createdByType = "owner"
+  query.createdById = params.ownerId
   const page = clampPage(params.page)
   const pageSize = clampPageSize(params.pageSize)
   const [items, total] = await Promise.all([
@@ -740,6 +767,11 @@ export async function createOwnerVoucher(params: VoucherMutationParams & { owner
     buildVoucherCreatePayload({
       ...params,
       restaurantId: restaurant.id,
+      scopeType: "restaurant",
+      selectedRestaurantIds: [],
+      fundedBy: "owner",
+      ownerSharePercent: 100,
+      platformSharePercent: 0,
       createdByType: "owner",
       createdById: params.ownerId
     })
@@ -760,11 +792,24 @@ export async function updateOwnerVoucher(params: VoucherPatchParams & {
   const restaurant = await getOwnerRestaurant(params.ownerId)
   const voucher = await VoucherModel.findOne({
     _id: params.voucherId,
-    restaurantId: restaurant.id
+    restaurantId: restaurant.id,
+    createdByType: "owner",
+    createdById: params.ownerId
   })
 
   const before = voucher?.toObject()
-  const updated = await applyVoucherPatch(voucher, params, restaurant.id)
+  const updated = await applyVoucherPatch(
+    voucher,
+    {
+      ...params,
+      scopeType: "restaurant",
+      selectedRestaurantIds: [],
+      fundedBy: "owner",
+      ownerSharePercent: 100,
+      platformSharePercent: 0
+    },
+    restaurant.id
+  )
   await recordVoucherAudit({
     voucher: updated.toObject(),
     actorType: "owner",
@@ -779,6 +824,7 @@ export async function updateOwnerVoucher(params: VoucherPatchParams & {
 export async function createAdminVoucher(params: VoucherMutationParams & {
   adminId: string
 }) {
+  assertAdminCreatedVoucherFunding({ fundedBy: params.fundedBy })
   const scopeType = params.scopeType ?? "restaurant"
   const restaurant =
     scopeType === "restaurant" && params.restaurantId
@@ -840,6 +886,9 @@ export async function updateAdminVoucher(params: VoucherPatchParams & {
   }
 
   const before = voucher.toObject()
+  if (voucher.createdByType === "admin") {
+    assertAdminCreatedVoucherFunding({ fundedBy: params.fundedBy })
+  }
   const updated = await applyVoucherPatch(voucher, params, objectIdString(voucher.restaurantId))
   await recordVoucherAudit({
     voucher: updated.toObject(),
@@ -1051,13 +1100,20 @@ export async function deleteOwnerVoucher(params: { ownerId: string; voucherId: s
   const restaurant = await getOwnerRestaurant(params.ownerId)
   const voucher = await VoucherModel.findOne({
     _id: params.voucherId,
-    restaurantId: restaurant.id
+    restaurantId: restaurant.id,
+    createdByType: "owner",
+    createdById: params.ownerId
   })
 
   if (!voucher) {
     throw new AppError(StatusCodes.NOT_FOUND, "VOUCHER_NOT_FOUND", "Voucher not found")
   }
 
-  await VoucherModel.deleteOne({ _id: params.voucherId, restaurantId: restaurant.id })
+  await VoucherModel.deleteOne({
+    _id: params.voucherId,
+    restaurantId: restaurant.id,
+    createdByType: "owner",
+    createdById: params.ownerId
+  })
   return { deleted: true }
 }

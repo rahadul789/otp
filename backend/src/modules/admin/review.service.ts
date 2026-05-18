@@ -157,7 +157,7 @@ function mapReview(params: {
     stringValue(params.customer?.fullName) ||
     stringValue(params.order?.customerSnapshot?.fullName) ||
     stringValue(params.order?.customerSnapshot?.name) ||
-    "Foodex customer";
+    "Foodbela customer";
   return {
     id: objectIdString(review._id),
     restaurantId: objectIdString(review.restaurantId),
@@ -743,7 +743,7 @@ export async function approveReviewCase(reviewCaseId: string, adminId: string) {
     logo: draft.basicInfo?.logo ?? { url: "", publicId: "" },
     coverImage: draft.basicInfo?.coverImage ?? { url: "", publicId: "" },
     contact: {
-      phone: owner.phone,
+      phone: draft.basicInfo?.phone ?? owner.phone,
       email: draft.basicInfo?.email ?? owner.email ?? "",
     },
     address: {

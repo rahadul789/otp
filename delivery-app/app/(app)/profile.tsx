@@ -1,6 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect } from "expo-router";
-import * as Location from "expo-location";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,6 +14,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { RiderLocationAccessCard } from "@/src/components/rider-location-access-card";
 import {
   useLogoutRiderMutation,
   useRiderOrdersQuery,
@@ -27,6 +27,12 @@ import { useRiderAuthStore, type RiderProfile } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 import { RiderScreenHeader } from "@/src/components/rider-screen-header";
 import { useNetworkStatus } from "@/src/hooks/use-network-status";
+import {
+  getBestAvailableRiderLocationPayload,
+  openRiderLocationSettings,
+  requestRiderBackgroundPermission,
+  requestRiderForegroundPermission,
+} from "@/src/lib/rider-location-permissions";
 
 export default function ProfileScreen() {
   const rider = useRiderAuthStore((state: { rider: RiderProfile | null }) => state.rider);
@@ -57,34 +63,30 @@ export default function ProfileScreen() {
 
     try {
       if (nextOnlineState) {
-        const permission = await Location.requestForegroundPermissionsAsync();
+        const permission = await requestRiderForegroundPermission();
         if (permission.status !== "granted") {
-          Alert.alert(copy.profile.locationPermissionTitle, copy.profile.locationPermissionText);
+          Alert.alert(
+            copy.profile.locationPermissionTitle,
+            copy.profile.locationPermissionText,
+            [
+              { text: "Not now", style: "cancel" },
+              {
+                text: "Settings",
+                onPress: () => {
+                  void openRiderLocationSettings();
+                },
+              },
+            ],
+          );
           return;
         }
 
-        const currentPosition = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
+        const locationPayload = await getBestAvailableRiderLocationPayload();
+        void requestRiderBackgroundPermission().catch(() => undefined);
+
+        await locationMutation.mutateAsync(locationPayload);
 
         const updatedProfile = await availabilityMutation.mutateAsync(true);
-
-        await locationMutation.mutateAsync({
-          latitude: currentPosition.coords.latitude,
-          longitude: currentPosition.coords.longitude,
-          heading:
-            typeof currentPosition.coords.heading === "number"
-              ? currentPosition.coords.heading
-              : undefined,
-          accuracyMeters:
-            typeof currentPosition.coords.accuracy === "number"
-              ? currentPosition.coords.accuracy
-              : undefined,
-          speedKmph:
-            typeof currentPosition.coords.speed === "number" && currentPosition.coords.speed > 0
-              ? currentPosition.coords.speed * 3.6
-              : undefined,
-        });
 
         if (updatedProfile) {
           void profileQuery.refetch();
@@ -153,7 +155,7 @@ export default function ProfileScreen() {
             onRefresh={() => {
               void handleRefresh();
             }}
-            tintColor={palette.primaryStrong}
+            tintColor={palette.primary}
           />
         }
       >
@@ -165,12 +167,11 @@ export default function ProfileScreen() {
           statusLabel={statusLabel}
           rightSlot={<Text style={styles.profileMiniLabel}>{copy.profile.title}</Text>}
         />
+        <RiderLocationAccessCard />
 
         <View style={styles.toggleCard}>
           <View style={styles.toggleContent}>
-            <Text style={styles.toggleKicker}>Dispatch</Text>
             <Text style={styles.toggleTitle}>{copy.profile.toggleTitle}</Text>
-            <Text style={styles.toggleDescription}>{copy.profile.toggleDescription}</Text>
             {!isNetworkOnline && !availabilityMutation.isPending ? (
               <Text style={styles.toggleHint}>Reconnect before changing your rider status.</Text>
             ) : !isOnline && !availabilityMutation.isPending ? (
@@ -201,14 +202,14 @@ export default function ProfileScreen() {
               </Text>
             </View>
             {availabilityMutation.isPending || locationMutation.isPending ? (
-              <ActivityIndicator size="small" color={palette.primaryStrong} />
+              <ActivityIndicator size="small" color={palette.primary} />
             ) : (
               <Switch
                 value={isOnline}
                 onValueChange={handleAvailabilityToggle}
                 disabled={!isNetworkOnline || availabilityMutation.isPending || locationMutation.isPending}
-                trackColor={{ false: "#E2D5C8", true: "#FFC3D6" }}
-                thumbColor={isOnline ? palette.secondary : palette.primaryStrong}
+                trackColor={{ false: "#E2D5C8", true: "#F7B8A7" }}
+                thumbColor={isOnline ? palette.primary : palette.foreground}
               />
             )}
           </View>
@@ -284,10 +285,10 @@ export default function ProfileScreen() {
           disabled={logoutMutation.isPending}
         >
           {logoutMutation.isPending ? (
-            <ActivityIndicator size="small" color={palette.primaryStrong} />
+              <ActivityIndicator size="small" color={palette.primary} />
           ) : (
             <>
-              <Ionicons name="log-out-outline" size={18} color={palette.primaryStrong} />
+              <Ionicons name="log-out-outline" size={18} color={palette.foreground} />
               <Text style={styles.logoutButtonText}>{copy.common.signOut}</Text>
             </>
           )}
@@ -299,7 +300,7 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: palette.background },
-  container: { padding: 20, gap: 16, paddingBottom: 32 },
+  container: { padding: 20, gap: 16, paddingBottom: 120 },
   profileMiniLabel: {
     fontSize: 11,
     fontWeight: "800",
@@ -308,15 +309,23 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   summaryRow: { flexDirection: "row", gap: 12 },
-  summaryCard: { flex: 1, borderRadius: 22, padding: 16, gap: 6 },
-  summaryPink: { backgroundColor: "#FFE8F0" },
-  summarySky: { backgroundColor: "#EAF1FF" },
+  summaryCard: {
+    flex: 1,
+    borderRadius: 18,
+    padding: 16,
+    gap: 6,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  summaryPink: {},
+  summarySky: {},
   summaryLabel: { fontSize: 12, fontWeight: "800", color: palette.mutedForeground, textTransform: "uppercase" },
   summaryValue: { fontSize: 18, fontWeight: "800", color: palette.foreground },
   summaryMeta: { fontSize: 12, color: palette.mutedForeground },
   card: {
     backgroundColor: palette.surface,
-    borderRadius: 24,
+    borderRadius: 18,
     padding: 18,
     gap: 12,
     borderWidth: 1,
@@ -331,34 +340,26 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderWidth: 1,
   },
-  statusBadgeOnline: { backgroundColor: palette.successSurface, borderColor: "#B7E8D1" },
+  statusBadgeOnline: { backgroundColor: palette.successSoft, borderColor: "#BFE6D1" },
   statusBadgeOffline: { backgroundColor: "#F4EDE6", borderColor: palette.border },
   statusBadgeText: { fontSize: 12, fontWeight: "800" },
-  statusBadgeTextOnline: { color: palette.successText },
+  statusBadgeTextOnline: { color: palette.success },
   statusBadgeTextOffline: { color: palette.mutedForeground },
   toggleCard: {
-    backgroundColor: "#FFF1F6",
-    borderRadius: 24,
+    backgroundColor: palette.surface,
+    borderRadius: 18,
     padding: 18,
     gap: 14,
     borderWidth: 1,
-    borderColor: "#FFD2E1",
+    borderColor: palette.border,
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
   },
   toggleContent: { flex: 1, gap: 6, paddingRight: 12 },
-  toggleKicker: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: palette.secondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
   toggleTitle: { fontSize: 16, fontWeight: "800", color: palette.foreground },
-  toggleDescription: { fontSize: 13, color: palette.mutedForeground, lineHeight: 19 },
-  toggleHint: { fontSize: 13, color: palette.secondary, fontWeight: "700" },
-  toggleWarning: { fontSize: 13, color: palette.warningText, fontWeight: "700" },
+  toggleHint: { fontSize: 13, color: palette.primary, fontWeight: "700" },
+  toggleWarning: { fontSize: 13, color: palette.warning, fontWeight: "700" },
   toggleControlWrap: {
     alignItems: "center",
     justifyContent: "center",
@@ -377,11 +378,11 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
   },
   languageChipActive: {
-    backgroundColor: "#FFEAF2",
-    borderColor: "#FFB8CE",
+    backgroundColor: palette.primarySoft,
+    borderColor: "#FFD0C3",
   },
   languageChipText: { fontSize: 14, fontWeight: "700", color: palette.mutedForeground },
-  languageChipTextActive: { color: palette.secondary },
+  languageChipTextActive: { color: palette.primary },
   logoutButton: {
     minHeight: 56,
     borderRadius: 18,
@@ -394,5 +395,5 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
   },
   buttonDisabled: { opacity: 0.72 },
-  logoutButtonText: { fontSize: 16, fontWeight: "800", color: palette.primaryStrong },
+  logoutButtonText: { fontSize: 16, fontWeight: "800", color: palette.foreground },
 });

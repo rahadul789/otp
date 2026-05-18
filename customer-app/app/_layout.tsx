@@ -18,18 +18,20 @@ export default function RootLayout() {
           <Stack.Screen name="checkout" />
           <Stack.Screen name="bkash-payment" />
           <Stack.Screen name="profile-edit" />
-          <Stack.Screen name="profile-phone" />
-          <Stack.Screen name="profile-phone-verify" />
+          <Stack.Screen name="profile-password" />
+          <Stack.Screen name="referrals" />
           <Stack.Screen name="privacy-policy" />
           <Stack.Screen name="notifications" />
           <Stack.Screen name="support" />
           <Stack.Screen name="support-chat" />
           <Stack.Screen name="favorite-restaurants" />
           <Stack.Screen name="order-help" />
+          <Stack.Screen name="promo-details" />
           <Stack.Screen name="voucher-help" />
           <Stack.Screen name="payment-refunds" />
           <Stack.Screen name="account-request" />
           <Stack.Screen name="orders/[orderId]" />
+          <Stack.Screen name="orders/[orderId]/tracking" />
           <Stack.Screen name="restaurants/[restaurantId]" />
           <Stack.Screen
             name="location-picker"

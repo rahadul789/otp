@@ -46,7 +46,7 @@ export function PayoutMethodDrawer({
   open: boolean
   onOpenChange: (open: boolean) => void
   method: PayoutMethod
-  onSave: (method: PayoutMethod) => void
+  onSave: (method: PayoutMethod) => boolean | void | Promise<boolean | void>
   showVerificationHint?: string
   isSaving?: boolean
 }) {
@@ -67,7 +67,7 @@ export function PayoutMethodDrawer({
     setDraft((current) => ({ ...current, [key]: value }))
   }
 
-  function handleSave(event: React.FormEvent) {
+  async function handleSave(event: React.FormEvent) {
     event.preventDefault()
     const nextErrors: Record<string, string> = {}
     const normalizedAccountNumber =
@@ -95,14 +95,16 @@ export function PayoutMethodDrawer({
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) return
 
-    onSave({
+    const shouldClose = await onSave({
       ...draft,
       accountName: draft.accountName.trim(),
       accountNumber: normalizedAccountNumber,
       bankName: draft.type === "bank" ? (draft.bankName?.trim() ?? "") : "",
       branchName: draft.type === "bank" ? (draft.branchName?.trim() ?? "") : "",
     })
-    onOpenChange(false)
+    if (shouldClose !== false) {
+      onOpenChange(false)
+    }
   }
 
   const MethodIcon = draft.type === "bank" ? Landmark : Smartphone
@@ -122,7 +124,7 @@ export function PayoutMethodDrawer({
                 Update Payout Method
               </SheetTitle>
               <SheetDescription>
-                Add or update where Foodex will send your settlements.
+                Add or update where Foodbela will send your settlements.
               </SheetDescription>
             </div>
             <Button

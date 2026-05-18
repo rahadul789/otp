@@ -18,6 +18,19 @@ export default defineConfig({
           if (!id.includes("node_modules")) return
 
           if (
+            id.includes("@tanstack/react-query") ||
+            id.includes("socket.io-client") ||
+            id.includes("zustand") ||
+            id.includes("sonner")
+          ) {
+            return "app-vendor"
+          }
+
+          if (id.includes("date-fns")) {
+            return "date"
+          }
+
+          if (
             id.includes("recharts") ||
             id.includes("d3-") ||
             id.includes("victory-vendor")

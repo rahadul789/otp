@@ -43,8 +43,8 @@ const copy = {
     },
     verify: {
       title: "Verify your rider OTP",
-      subtitle: (phone: string) => `Enter the 6-digit code sent to ${phone}.`,
-      placeholder: "123456",
+      subtitle: (phone: string) => `Enter the 4-digit code sent to ${phone}.`,
+      placeholder: "1234",
       action: "Verify and continue",
       error: "Unable to verify OTP.",
     },
@@ -231,8 +231,8 @@ const copy = {
     },
     verify: {
       title: "রাইডার ওটিপি যাচাই করুন",
-      subtitle: (phone: string) => `${phone} নম্বরে পাঠানো ৬ ডিজিটের কোড লিখুন।`,
-      placeholder: "123456",
+      subtitle: (phone: string) => `${phone} নম্বরে পাঠানো ৪ ডিজিটের কোড লিখুন।`,
+      placeholder: "1234",
       action: "যাচাই করে এগিয়ে যান",
       error: "ওটিপি যাচাই করা যায়নি।",
     },

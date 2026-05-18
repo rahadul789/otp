@@ -27,12 +27,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import { useIsFetching, useQueryClient } from "@tanstack/react-query"
+import { useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 
 import {
+  buildOrderDateFilterQuery,
   defaultOrderDateFilter,
   OrderDateFilter,
   type OrderDateFilterValue,
@@ -43,7 +44,8 @@ import { TransactionDetailsDrawer } from "@/components/payouts/transaction-detai
 import { usePayouts } from "@/components/payouts/payouts-context"
 import {
   formatPayoutMoney,
-  settlementDelayDays,
+  getPayoutStatusLabel,
+  settlementDelayDays as fallbackSettlementDelayDays,
   type EarningTransaction,
   type Payout,
   type PayoutStatus,
@@ -58,6 +60,7 @@ import {
   type OwnerPayoutHistoryResponse,
   type OwnerPayoutTransactionResponse,
 } from "@/lib/backend-mappers"
+import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import {
   useOwnerPayoutHistoryQuery,
   useOwnerPayoutRequestMutation,
@@ -147,11 +150,11 @@ const payoutColumnLabels: Record<PayoutColumnKey, string> = {
 
 const transactionColumnLabels: Record<TransactionColumnKey, string> = {
   type: "Type",
-  gross: "Gross",
+  gross: "Food Sales",
   commission: "Commission",
-  discount: "Discount Cost",
+  discount: "Owner Discount",
   delivery: "Delivery Cost",
-  net: "Net",
+  net: "Owner Earning",
   settlement: "Settlement",
   created: "Created",
   available: "Available",
@@ -193,8 +196,8 @@ function getSettlementBadge(status: EarningTransaction["status"]) {
 function PayoutsSkeleton() {
   return (
     <div className="space-y-4 px-4 lg:px-6">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-        {Array.from({ length: 6 }).map((_, index) => (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, index) => (
           <Skeleton key={index} className="h-32 rounded-2xl" />
         ))}
       </div>
@@ -229,6 +232,10 @@ export function PayoutsPage() {
     setPayoutMethod,
   } = usePayouts()
   const ownerAccount = useAppStore((state) => state.ownerAccount)
+  const storeSettings = useAppStore((state) => state.storeSettings)
+  const verificationModalOpen = useAppStore(
+    (state) => state.verificationModalOpen
+  )
   const setVerificationModalOpen = useAppStore(
     (state) => state.setVerificationModalOpen
   )
@@ -258,6 +265,8 @@ export function PayoutsPage() {
   const [requestSuccess, setRequestSuccess] = React.useState("")
   const [viewingPayout, setViewingPayout] = React.useState<Payout | null>(null)
   const [viewingTransaction, setViewingTransaction] = React.useState<EarningTransaction | null>(null)
+  const [awaitingPayoutVerification, setAwaitingPayoutVerification] =
+    React.useState(false)
   const debouncedSearch = useDebouncedValue(search)
   const [isMethodOpen, setIsMethodOpen] = React.useState(false)
   const [payoutColumnVisibility, setPayoutColumnVisibility] = React.useState<Record<PayoutColumnKey, boolean>>({
@@ -285,27 +294,36 @@ export function PayoutsPage() {
     search: debouncedSearch.trim() || undefined,
     status: statusFilter !== "all" ? statusFilter : undefined,
     sortBy,
-    preset: dateFilter.preset,
-    from: dateFilter.preset === "custom" ? dateFilter.range?.from?.toISOString() : undefined,
-    to: dateFilter.preset === "custom" ? dateFilter.range?.to?.toISOString() : undefined,
-    page: 1,
-    pageSize: 500,
+    ...buildOrderDateFilterQuery(dateFilter),
+    page: payoutPageIndex + 1,
+    pageSize: payoutPageSize,
   })
   const payoutTransactionsQuery = useOwnerPayoutTransactionsQuery(ownerAccount.isAuthenticated, {
     search: debouncedSearch.trim() || undefined,
     type: typeFilter !== "all" ? typeFilter : undefined,
     sortBy,
-    preset: dateFilter.preset,
-    from: dateFilter.preset === "custom" ? dateFilter.range?.from?.toISOString() : undefined,
-    to: dateFilter.preset === "custom" ? dateFilter.range?.to?.toISOString() : undefined,
-    page: 1,
-    pageSize: 500,
+    ...buildOrderDateFilterQuery(dateFilter),
+    page: transactionPageIndex + 1,
+    pageSize: transactionPageSize,
   })
   const payoutRequestMutation = useOwnerPayoutRequestMutation()
   const updatePayoutMethodMutation = useUpdateOwnerPayoutMethodMutation()
-  const isFetchingPayouts = useIsFetching({ queryKey: ["owner", "payouts"] })
-
-  const isLoading = isFetchingPayouts > 0
+  const hasPayoutData =
+    Boolean(payoutSummaryQuery.data) ||
+    Boolean(payoutHistoryQuery.data) ||
+    Boolean(payoutTransactionsQuery.data) ||
+    payouts.length > 0 ||
+    payoutTransactions.length > 0
+  const initialLoading =
+    !hasPayoutData &&
+    (payoutSummaryQuery.isPending ||
+      payoutHistoryQuery.isPending ||
+      payoutTransactionsQuery.isPending)
+  const isRefreshing =
+    !initialLoading &&
+    (payoutSummaryQuery.isFetching ||
+      payoutHistoryQuery.isFetching ||
+      payoutTransactionsQuery.isFetching)
 
   const earningsSummary = React.useMemo(
     () => calculateEarningsSummary(payoutTransactions, payouts),
@@ -316,11 +334,20 @@ export function PayoutsPage() {
         available: payoutSummaryQuery.data.availableBalance,
         pending: payoutSummaryQuery.data.pendingBalance,
         paidOut: payoutSummaryQuery.data.paidOutBalance,
+        requested: payoutSummaryQuery.data.requestedPayoutBalance,
         gross: payoutSummaryQuery.data.lifetimeGrossAmount,
         net: payoutSummaryQuery.data.lifetimeNetEarnings,
         commission: payoutSummaryQuery.data.lifetimeCommission,
         discountCost: payoutSummaryQuery.data.lifetimeDiscountCost,
         deliveryCost: payoutSummaryQuery.data.lifetimeDeliveryCost,
+        settlementDelayDays:
+          payoutSummaryQuery.data.settlementDelayDays ?? fallbackSettlementDelayDays,
+        minimumPayoutAmount:
+          payoutSummaryQuery.data.minimumPayoutAmountTaka ?? 500,
+        oneActivePayoutRequest:
+          payoutSummaryQuery.data.oneActivePayoutRequest ?? true,
+        hasActivePayoutRequest:
+          payoutSummaryQuery.data.hasActivePayoutRequest ?? false,
       }
     : null
   const summaryLastPayout = payoutSummaryQuery.data?.lastPayout
@@ -338,7 +365,11 @@ export function PayoutsPage() {
   const lifetimeEarnings = summaryBalances?.net ?? earningsSummary.lifetimeEarnings
   const availableBalance = summaryBalances?.available ?? earningsSummary.available
   const pendingBalance = summaryBalances?.pending ?? earningsSummary.pending
-  const availableSoonBalance = earningsSummary.availableSoon
+  const paidOutBalance = summaryBalances?.paidOut ?? earningsSummary.totalPayouts
+  const requestedPayoutBalance = summaryBalances?.requested ?? 0
+  const settlementDelayDays =
+    summaryBalances?.settlementDelayDays ?? fallbackSettlementDelayDays
+  const minimumPayoutAmount = summaryBalances?.minimumPayoutAmount ?? 500
 
   const lastCompletedPayout = React.useMemo(
     () =>
@@ -353,18 +384,15 @@ export function PayoutsPage() {
     [payouts, summaryLastPayout]
   )
 
-  const nextPayoutDate = React.useMemo(
-    () =>
-      payoutSummaryQuery.data?.nextSettlementAvailableAt
-        ? format(new Date(payoutSummaryQuery.data.nextSettlementAvailableAt), "dd MMM yyyy")
-        : lastCompletedPayout
-        ? format(
-            endOfDay(subDays(new Date(lastCompletedPayout.createdAt), -settlementDelayDays)),
-            "dd MMM yyyy"
-          )
-        : "--",
-    [lastCompletedPayout, payoutSummaryQuery.data?.nextSettlementAvailableAt]
-  )
+  const nextSettlementAvailableAt = payoutSummaryQuery.data?.nextSettlementAvailableAt
+  const nextPayoutDate = nextSettlementAvailableAt
+    ? format(new Date(nextSettlementAvailableAt), "dd MMM yyyy")
+    : lastCompletedPayout
+      ? format(
+          endOfDay(subDays(new Date(lastCompletedPayout.createdAt), -settlementDelayDays)),
+          "dd MMM yyyy"
+        )
+      : "--"
 
   const filteredPayouts = React.useMemo(() => {
     if (!payoutHistoryQuery.data) return payouts
@@ -372,6 +400,13 @@ export function PayoutsPage() {
       payoutHistoryQuery.data as OwnerListResponse<OwnerPayoutHistoryResponse>
     ).items.map((entry) => mapOwnerPayout(entry, payoutMethod.type))
   }, [payoutHistoryQuery.data, payoutMethod.type, payouts])
+
+  const hasActivePayoutRequest =
+    (summaryBalances?.oneActivePayoutRequest ?? true) &&
+    (summaryBalances?.hasActivePayoutRequest ??
+      filteredPayouts.some((payout) =>
+        payout.status === "pending" || payout.status === "processing"
+      ))
 
   const filteredTransactions = React.useMemo(() => {
     if (!payoutTransactionsQuery.data) return payoutTransactions
@@ -424,28 +459,53 @@ export function PayoutsPage() {
     setTransactionPageIndex(0)
   }, [transactionPageSize])
 
-  const payoutPageCount = Math.max(
-    1,
-    Math.ceil(filteredPayouts.length / payoutPageSize)
-  )
+  React.useEffect(() => {
+    if (!awaitingPayoutVerification) return
+    if (verificationModalOpen) return
+    if (payoutMethod.pendingAccountNumber) return
+    if (!payoutMethod.isVerified) return
+
+    setIsMethodOpen(false)
+    setAwaitingPayoutVerification(false)
+  }, [
+    awaitingPayoutVerification,
+    payoutMethod.isVerified,
+    payoutMethod.pendingAccountNumber,
+    verificationModalOpen,
+  ])
+
+  React.useEffect(() => {
+    if (!isMethodOpen) {
+      setAwaitingPayoutVerification(false)
+    }
+  }, [isMethodOpen])
+
+  const payoutTotal =
+    (payoutHistoryQuery.data as OwnerListResponse<OwnerPayoutHistoryResponse> | undefined)
+      ?.total ?? filteredPayouts.length
+  const payoutPageCount = Math.max(1, Math.ceil(payoutTotal / payoutPageSize))
   const safePayoutPageIndex = Math.min(payoutPageIndex, payoutPageCount - 1)
   const paginatedPayouts = React.useMemo(() => {
-    const start = safePayoutPageIndex * payoutPageSize
-    return filteredPayouts.slice(start, start + payoutPageSize)
-  }, [filteredPayouts, payoutPageSize, safePayoutPageIndex])
+    return filteredPayouts
+  }, [filteredPayouts])
 
+  const transactionTotal =
+    (
+      payoutTransactionsQuery.data as
+        | OwnerListResponse<OwnerPayoutTransactionResponse>
+        | undefined
+    )?.total ?? filteredTransactions.length
   const transactionPageCount = Math.max(
     1,
-    Math.ceil(filteredTransactions.length / transactionPageSize)
+    Math.ceil(transactionTotal / transactionPageSize)
   )
   const safeTransactionPageIndex = Math.min(
     transactionPageIndex,
     transactionPageCount - 1
   )
   const paginatedTransactions = React.useMemo(() => {
-    const start = safeTransactionPageIndex * transactionPageSize
-    return filteredTransactions.slice(start, start + transactionPageSize)
-  }, [filteredTransactions, transactionPageSize, safeTransactionPageIndex])
+    return filteredTransactions
+  }, [filteredTransactions])
 
   const payoutChartData = React.useMemo(
     () =>
@@ -509,12 +569,16 @@ export function PayoutsPage() {
 
   function handleRequestPayout() {
     const amount = Number(requestAmount)
-    if (!requestAmount.trim() || Number.isNaN(amount)) {
-      setRequestError("Enter a valid payout amount.")
+    if (!requestAmount.trim() || Number.isNaN(amount) || !Number.isInteger(amount)) {
+      setRequestError("Enter a valid whole-number payout amount.")
       return
     }
-    if (amount < 500) {
-      setRequestError("Minimum payout request is 500tk.")
+    if (amount < minimumPayoutAmount) {
+      setRequestError(`Minimum payout request is ${minimumPayoutAmount}tk.`)
+      return
+    }
+    if (hasActivePayoutRequest) {
+      setRequestError("You already have a payout request pending or processing.")
       return
     }
     if (amount > availableBalance) {
@@ -622,7 +686,116 @@ export function PayoutsPage() {
     URL.revokeObjectURL(url)
   }
 
-  if (isLoading) {
+  function escapeHtml(value: unknown) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;")
+  }
+
+  function openPrintableStatement(title: string, body: string) {
+    const popup = window.open("", "_blank", "noopener,noreferrer")
+    if (!popup) {
+      toast.error("Popup blocked. Allow popups to print the statement.")
+      return
+    }
+
+    popup.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>${escapeHtml(title)}</title>
+          <style>
+            body { font-family: Inter, Arial, sans-serif; margin: 32px; color: #111827; }
+            .shell { max-width: 820px; margin: 0 auto; }
+            .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 1px solid #e5e7eb; padding-bottom: 20px; }
+            h1 { margin: 0; font-size: 26px; }
+            h2 { margin: 28px 0 12px; font-size: 16px; }
+            .muted { color: #6b7280; font-size: 13px; }
+            .amount { font-size: 32px; font-weight: 700; margin-top: 8px; }
+            .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+            .box { border: 1px solid #e5e7eb; border-radius: 14px; padding: 14px; }
+            table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+            th, td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; text-align: left; font-size: 13px; }
+            th { color: #6b7280; font-weight: 600; }
+            .right { text-align: right; }
+            @media print { body { margin: 18mm; } button { display: none; } }
+          </style>
+        </head>
+        <body>
+          <div class="shell">${body}</div>
+          <script>window.onload = () => { window.print(); }</script>
+        </body>
+      </html>
+    `)
+    popup.document.close()
+  }
+
+  function handlePrintPayoutStatement(payout: Payout) {
+    const linkedTransactions = filteredTransactions.filter(
+      (transaction) => transaction.payoutId === payout.id
+    )
+    const transactionRows = linkedTransactions.length
+      ? linkedTransactions
+          .map(
+            (transaction) => `
+              <tr>
+                <td>${escapeHtml(transaction.orderNumber)}</td>
+                <td>${escapeHtml(transaction.type)}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.grossAmount))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.commission))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.discountCost))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.netAmount))}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : `<tr><td colspan="6" class="muted">Linked transaction rows are not loaded in the current filter.</td></tr>`
+    const body = `
+      <div class="header">
+        <div>
+          <div class="muted">Foodbela Restaurant Payout</div>
+          <h1>${escapeHtml(storeSettings.name || "Restaurant payout statement")}</h1>
+          <div class="muted">Owner: ${escapeHtml(ownerAccount.ownerName || "Restaurant owner")}</div>
+        </div>
+        <div>
+          <div class="muted">Payout ID</div>
+          <strong>${escapeHtml(payout.id)}</strong>
+          <div class="amount">${escapeHtml(formatPayoutMoney(payout.amount))}</div>
+        </div>
+      </div>
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="box"><div class="muted">Status</div><strong>${escapeHtml(getPayoutStatusLabel(payout.status))}</strong></div>
+        <div class="box"><div class="muted">Method</div><strong>${escapeHtml(payout.method === "bank" ? "Bank" : "bKash")}</strong></div>
+        <div class="box"><div class="muted">Requested at</div><strong>${escapeHtml(format(new Date(payout.createdAt), "dd MMM yyyy, hh:mm a"))}</strong></div>
+        <div class="box"><div class="muted">Processed at</div><strong>${escapeHtml(payout.processedAt ? format(new Date(payout.processedAt), "dd MMM yyyy, hh:mm a") : "Not processed yet")}</strong></div>
+        <div class="box"><div class="muted">Reference</div><strong>${escapeHtml(payout.providerReference || payout.providerPayoutId || payout.transactionId || "--")}</strong></div>
+        <div class="box"><div class="muted">Batch</div><strong>${escapeHtml(payout.batchReference || "--")}</strong></div>
+      </div>
+      <h2>Included earning rows</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Type</th>
+            <th class="right">Food sales</th>
+            <th class="right">Commission</th>
+            <th class="right">Owner discount</th>
+            <th class="right">Owner earning</th>
+          </tr>
+        </thead>
+        <tbody>${transactionRows}</tbody>
+      </table>
+      <p class="muted">Generated ${escapeHtml(format(new Date(), "dd MMM yyyy, hh:mm a"))}. Settlement rule: T+${settlementDelayDays} days. Minimum payout: ${escapeHtml(formatPayoutMoney(minimumPayoutAmount))}.</p>
+    `
+
+    openPrintableStatement(`Payout ${payout.id}`, body)
+  }
+
+  if (initialLoading) {
     return <PayoutsSkeleton />
   }
 
@@ -631,6 +804,7 @@ export function PayoutsPage() {
       <PayoutDetailsDrawer
         payout={viewingPayout}
         open={!!viewingPayout}
+        onPrintStatement={handlePrintPayoutStatement}
         onOpenChange={(open) => {
           if (!open) {
             setViewingPayout(null)
@@ -649,54 +823,55 @@ export function PayoutsPage() {
         onOpenChange={setIsMethodOpen}
         method={payoutMethod}
         showVerificationHint="If the bKash number is different from your owner account number, we will ask for OTP verification before activating it."
-        onSave={(method) => {
-          updatePayoutMethodMutation.mutate(
-            method.type === "bkash"
-              ? {
-                  type: "bkash",
-                  accountName: method.accountName.trim(),
-                  accountNumber: method.accountNumber.trim(),
-                }
-              : {
-                  type: "bank",
-                  accountName: method.accountName.trim(),
-                  accountNumber: method.accountNumber.trim(),
-                  bankName: method.bankName?.trim() ?? "",
-                  branchName: method.branchName?.trim() ?? "",
-                },
-            {
-              onSuccess: (response) => {
-                const nextMethod = mapOwnerPayoutMethod(response.payoutMethod, method)
-                setPayoutMethod(nextMethod)
-                void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
-                void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
+        onSave={async (method) => {
+          try {
+            const response = await updatePayoutMethodMutation.mutateAsync(
+              method.type === "bkash"
+                ? {
+                    type: "bkash",
+                    accountName: method.accountName.trim(),
+                    accountNumber: method.accountNumber.trim(),
+                  }
+                : {
+                    type: "bank",
+                    accountName: method.accountName.trim(),
+                    accountNumber: method.accountNumber.trim(),
+                    bankName: method.bankName?.trim() ?? "",
+                    branchName: method.branchName?.trim() ?? "",
+                  }
+            )
+            const nextMethod = mapOwnerPayoutMethod(response.payoutMethod, method)
+            setPayoutMethod(nextMethod)
+            void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
+            void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
 
-                if (response.verificationSessionId) {
-                  setVerificationRequest({
-                    verificationSessionId: response.verificationSessionId,
-                    purpose: "owner_payout_verify",
-                    phone: nextMethod.pendingAccountNumber || nextMethod.accountNumber,
-                    referenceId: response.payoutMethod._id,
-                    pendingPassword: "",
-                  })
-                  setVerificationModalOpen(true)
-                  toast.info("Verify your bKash number to activate this payout method.", {
-                    description:
-                      "The new wallet number will stay pending until OTP verification is complete.",
-                  })
-                  return
-                }
-
-                toast.success("Payout method updated successfully.")
-              },
-              onError: (error) => {
-                toast.error("Unable to update payout method.", {
-                  description:
-                    error instanceof Error ? error.message : "Please try again.",
-                })
-              },
+            if (response.verificationSessionId) {
+              setAwaitingPayoutVerification(true)
+              setVerificationRequest({
+                verificationSessionId: response.verificationSessionId,
+                purpose: "owner_payout_verify",
+                phone: nextMethod.pendingAccountNumber || nextMethod.accountNumber,
+                referenceId: response.payoutMethod._id,
+                pendingPassword: "",
+                resendAvailableInSeconds: resolveOtpResendSeconds(response.resendAvailableInSeconds),
+              })
+              setVerificationModalOpen(true)
+              toast.info("Verify your bKash number to activate this payout method.", {
+                description:
+                  "The drawer is closed. Complete OTP verification to activate the new number.",
+              })
+              return true
             }
-          )
+
+            toast.success("Payout method updated successfully.")
+            return true
+          } catch (error) {
+            toast.error("Unable to update payout method.", {
+              description:
+                error instanceof Error ? error.message : "Please try again.",
+            })
+            return false
+          }
         }}
         isSaving={updatePayoutMethodMutation.isPending}
       />
@@ -723,7 +898,7 @@ export function PayoutsPage() {
             <DialogTitle>Request Payout</DialogTitle>
             <DialogDescription>
               Available balance is {formatPayoutMoney(availableBalance)}. Manual
-              requests are processed on approval.
+              requests start from {formatPayoutMoney(minimumPayoutAmount)} and are processed on approval.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -734,7 +909,7 @@ export function PayoutsPage() {
                 setRequestError("")
               }}
               placeholder="Enter payout amount"
-              inputMode="decimal"
+              inputMode="numeric"
             />
             {requestError ? (
               <p className="text-sm text-destructive">{requestError}</p>
@@ -777,19 +952,17 @@ export function PayoutsPage() {
         </div>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      {isRefreshing ? (
+        <div className="inline-flex w-fit items-center gap-2 rounded-full border bg-background/90 px-3 py-1.5 text-sm text-muted-foreground shadow-sm">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+          Updating payouts
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Lifetime Earnings</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-semibold">{formatPayoutMoney(lifetimeEarnings)}</div>
-            <div className="mt-2 text-sm text-muted-foreground">Total net earnings to date</div>
-          </CardContent>
-        </Card>
-        <Card className="rounded-2xl shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Available Balance</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Available to Withdraw</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-semibold text-emerald-700">{formatPayoutMoney(availableBalance)}</div>
@@ -798,40 +971,38 @@ export function PayoutsPage() {
         </Card>
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Pending Balance</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Pending Settlement</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-semibold text-amber-700">{formatPayoutMoney(pendingBalance)}</div>
-            <div className="mt-2 text-sm text-muted-foreground">Settles after T+{settlementDelayDays} days</div>
+            <div className="mt-2 text-sm text-muted-foreground">Recent earnings inside T+{settlementDelayDays} hold</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Available Soon</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Requested Payout</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-semibold text-sky-700">{formatPayoutMoney(availableSoonBalance)}</div>
-            <div className="mt-2 text-sm text-muted-foreground">Recent orders settling into wallet</div>
+            <div className="text-3xl font-semibold text-slate-700">{formatPayoutMoney(requestedPayoutBalance)}</div>
+            <div className="mt-2 text-sm text-muted-foreground">Reserved for manual/admin processing</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Last Payout</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Paid Out</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-semibold">{formatPayoutMoney(lastCompletedPayout?.amount ?? 0)}</div>
-            <div className="mt-2 text-sm text-muted-foreground">
-              {lastCompletedPayout ? format(new Date(lastCompletedPayout.createdAt), "dd MMM yyyy") : "No completed payout yet"}
-            </div>
+            <div className="text-3xl font-semibold">{formatPayoutMoney(paidOutBalance)}</div>
+            <div className="mt-2 text-sm text-muted-foreground">Completed payouts sent to owner</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Next Payout Date</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Lifetime Net Earnings</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-semibold">{nextPayoutDate}</div>
-            <div className="mt-2 text-sm text-muted-foreground">Weekly auto settlement cycle</div>
+            <div className="text-3xl font-semibold">{formatPayoutMoney(lifetimeEarnings)}</div>
+            <div className="mt-2 text-sm text-muted-foreground">After commission and owner discounts</div>
           </CardContent>
         </Card>
       </div>
@@ -940,13 +1111,46 @@ export function PayoutsPage() {
                 Settlement Rules
               </div>
               <p className="mt-2 text-muted-foreground">
-                Available balance includes only orders settled after T+{settlementDelayDays} days.
-                Pending balance contains recent orders, owner-funded discount share, and settlement holds.
+                Available balance includes delivered order earnings after T+{settlementDelayDays} days.
+                Commission and owner-funded discounts are already deducted before money reaches your wallet.
               </p>
+              <div className="mt-3 grid gap-2 text-muted-foreground sm:grid-cols-2">
+                <div>Last payout: {lastCompletedPayout ? formatPayoutMoney(lastCompletedPayout.amount) : "--"}</div>
+                <div>Next settlement: {nextPayoutDate}</div>
+                <div>Minimum request: {formatPayoutMoney(minimumPayoutAmount)}</div>
+                <div>Active request lock: {summaryBalances?.oneActivePayoutRequest === false ? "Off" : "On"}</div>
+              </div>
             </div>
 
+            {summaryBalances ? (
+              <div className="rounded-2xl border bg-muted/20 p-4 text-sm">
+                <div className="font-medium">Lifetime pricing breakdown</div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Food sales</div>
+                    <div className="font-semibold">{formatPayoutMoney(summaryBalances.gross)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Foodbela commission</div>
+                    <div className="font-semibold text-rose-700">-{formatPayoutMoney(summaryBalances.commission)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Owner discounts</div>
+                    <div className="font-semibold text-rose-700">-{formatPayoutMoney(summaryBalances.discountCost)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Delivery fees tracked</div>
+                    <div className="font-semibold">{formatPayoutMoney(summaryBalances.deliveryCost)}</div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => setIsRequestOpen(true)} disabled={availableBalance < 500}>
+              <Button
+                onClick={() => setIsRequestOpen(true)}
+                disabled={availableBalance < minimumPayoutAmount || hasActivePayoutRequest}
+              >
                 <Banknote className="size-4" />
                 Request Payout
               </Button>
@@ -962,6 +1166,15 @@ export function PayoutsPage() {
                 {activeTab === "history" ? "Export History" : "Download Report"}
               </Button>
             </div>
+            {hasActivePayoutRequest ? (
+              <p className="text-xs text-muted-foreground">
+                A payout is already pending or processing. Create a new request after admin completes or fails it.
+              </p>
+            ) : availableBalance < minimumPayoutAmount ? (
+              <p className="text-xs text-muted-foreground">
+                You can request payout once available balance reaches {formatPayoutMoney(minimumPayoutAmount)}.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       </div>
@@ -1200,7 +1413,7 @@ export function PayoutsPage() {
 
           <div className="flex flex-col gap-4 rounded-2xl border bg-card px-4 py-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
             <div className="text-sm text-muted-foreground">
-              Showing {paginatedPayouts.length} of {filteredPayouts.length} payout(s)
+              Showing {paginatedPayouts.length} of {payoutTotal} payout(s)
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <Button
@@ -1263,11 +1476,11 @@ export function PayoutsPage() {
                   <TableRow className="hover:bg-transparent">
                     <TableHead>Order</TableHead>
                     {transactionColumnVisibility.type ? <TableHead>Type</TableHead> : null}
-                    {transactionColumnVisibility.gross ? <TableHead>Gross</TableHead> : null}
+                    {transactionColumnVisibility.gross ? <TableHead>Food Sales</TableHead> : null}
                     {transactionColumnVisibility.commission ? <TableHead>Commission</TableHead> : null}
-                    {transactionColumnVisibility.discount ? <TableHead>Discount Cost</TableHead> : null}
+                    {transactionColumnVisibility.discount ? <TableHead>Owner Discount</TableHead> : null}
                     {transactionColumnVisibility.delivery ? <TableHead>Delivery Cost</TableHead> : null}
-                    {transactionColumnVisibility.net ? <TableHead>Net</TableHead> : null}
+                    {transactionColumnVisibility.net ? <TableHead>Owner Earning</TableHead> : null}
                     {transactionColumnVisibility.settlement ? <TableHead>Settlement</TableHead> : null}
                     {transactionColumnVisibility.created ? <TableHead>Created</TableHead> : null}
                     {transactionColumnVisibility.available ? <TableHead>Available</TableHead> : null}
@@ -1364,7 +1577,7 @@ export function PayoutsPage() {
 
           <div className="flex flex-col gap-4 rounded-2xl border bg-card px-4 py-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
             <div className="text-sm text-muted-foreground">
-              Showing {paginatedTransactions.length} of {filteredTransactions.length} transaction(s)
+              Showing {paginatedTransactions.length} of {transactionTotal} transaction(s)
             </div>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <Button

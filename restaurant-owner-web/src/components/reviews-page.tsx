@@ -2,13 +2,9 @@ import * as React from "react"
 
 import {
   eachDayOfInterval,
-  endOfDay,
   format,
-  startOfDay,
-  subDays,
 } from "date-fns"
 import {
-  CalendarRange,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -34,10 +30,14 @@ import {
 } from "recharts"
 
 import { ReviewDetailsDrawer } from "@/components/reviews/review-details-drawer"
+import { type Review } from "@/components/reviews/types"
 import {
-  type Review,
-  type ReviewDatePreset,
-} from "@/components/reviews/types"
+  buildOrderDateFilterQuery,
+  defaultOrderDateFilter,
+  getOrderDateFilterInterval,
+  OrderDateFilter,
+  type OrderDateFilterValue,
+} from "@/components/orders/order-date-filter"
 import { useReviews } from "@/components/reviews/reviews-context"
 import {
   mapOwnerReview,
@@ -132,21 +132,6 @@ function getStatusBadge(status: Review["status"]) {
   )
 }
 
-function getDateRange(preset: ReviewDatePreset, customFrom: string, customTo: string) {
-  const now = new Date()
-  if (preset === "today") {
-    return { start: startOfDay(now), end: endOfDay(now) }
-  }
-  if (preset === "last7Days") {
-    return { start: startOfDay(subDays(now, 6)), end: endOfDay(now) }
-  }
-  if (!customFrom || !customTo) return null
-  return {
-    start: startOfDay(new Date(customFrom)),
-    end: endOfDay(new Date(customTo)),
-  }
-}
-
 export function ReviewsPage() {
   const { reviews, setReviews } = useReviews()
   const ownerAccount = useAppStore((state) => state.ownerAccount)
@@ -155,9 +140,10 @@ export function ReviewsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = React.useState("")
   const [selectedRating, setSelectedRating] = React.useState<"all" | `${1 | 2 | 3 | 4 | 5}`>("all")
-  const [datePreset, setDatePreset] = React.useState<ReviewDatePreset>("last7Days")
-  const [customFrom, setCustomFrom] = React.useState("")
-  const [customTo, setCustomTo] = React.useState("")
+  const [dateFilter, setDateFilter] = React.useState<OrderDateFilterValue>({
+    ...defaultOrderDateFilter,
+    preset: "last7Days",
+  })
   const [commentFilter, setCommentFilter] = React.useState<CommentFilter>("all")
   const [replyFilter, setReplyFilter] = React.useState<ReplyFilter>("all")
   const [sortBy, setSortBy] = React.useState<SortKey>("latest")
@@ -174,26 +160,29 @@ export function ReviewsPage() {
   const resetDisabled =
     !search &&
     selectedRating === "all" &&
-    datePreset === "last7Days" &&
-    !customFrom &&
-    !customTo &&
+    dateFilter.preset === "last7Days" &&
+    !dateFilter.range &&
     commentFilter === "all" &&
     replyFilter === "all" &&
     sortBy === "latest" &&
     !showNewOnly
+  const reviewDateQuery = React.useMemo(
+    () => buildOrderDateFilterQuery(dateFilter),
+    [dateFilter]
+  )
 
   const reviewsQuery = useOwnerReviewsQuery(ownerAccount.isAuthenticated, {
     search: debouncedSearch.trim() || undefined,
     rating: selectedRating !== "all" ? selectedRating : undefined,
-    datePreset,
-    from: datePreset === "custom" ? customFrom || undefined : undefined,
-    to: datePreset === "custom" ? customTo || undefined : undefined,
+    datePreset: reviewDateQuery.preset,
+    from: reviewDateQuery.from,
+    to: reviewDateQuery.to,
     commentFilter: commentFilter !== "all" ? commentFilter : undefined,
     replyFilter: replyFilter !== "all" ? replyFilter : undefined,
     sortBy,
     showNewOnly: showNewOnly || undefined,
-    page: 1,
-    pageSize: 500,
+    page: pageIndex + 1,
+    pageSize,
   })
 
   const reviewsSource = React.useMemo(() => {
@@ -205,7 +194,7 @@ export function ReviewsPage() {
 
   React.useEffect(() => {
     setPageIndex(0)
-  }, [debouncedSearch, selectedRating, datePreset, customFrom, customTo, commentFilter, replyFilter, sortBy, pageSize, showNewOnly])
+  }, [debouncedSearch, selectedRating, dateFilter, commentFilter, replyFilter, sortBy, pageSize, showNewOnly])
 
   React.useEffect(() => {
     setReplyDraft(viewingReview?.reply?.message ?? "")
@@ -226,17 +215,14 @@ export function ReviewsPage() {
   }, [reviewsSource])
 
   const activeRange = React.useMemo(
-    () => getDateRange(datePreset, customFrom, customTo),
-    [datePreset, customFrom, customTo]
+    () => getOrderDateFilterInterval(dateFilter),
+    [dateFilter]
   )
 
   const filteredReviews = reviewsSource
 
   const reviewAggregates = React.useMemo(() => {
-    const interval = activeRange ?? {
-      start: startOfDay(subDays(new Date(), 6)),
-      end: endOfDay(new Date()),
-    }
+    const interval = activeRange
     const ratingBuckets = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } as Record<1 | 2 | 3 | 4 | 5, number>
     const dayMap = new Map<string, { label: string; ratingSum: number; reviewCount: number }>()
     let positive = 0
@@ -303,19 +289,19 @@ export function ReviewsPage() {
     return totalMs / repliedReviews.length / 1000 / 60 / 60
   }, [filteredReviews])
 
-  const pageCount = Math.max(1, Math.ceil(filteredReviews.length / pageSize))
+  const reviewsTotal =
+    (reviewsQuery.data as OwnerListResponse<OwnerReviewResponse> | undefined)
+      ?.total ?? filteredReviews.length
+  const pageCount = Math.max(1, Math.ceil(reviewsTotal / pageSize))
   const safePageIndex = Math.min(pageIndex, pageCount - 1)
   const paginatedReviews = React.useMemo(() => {
-    const start = safePageIndex * pageSize
-    return filteredReviews.slice(start, start + pageSize)
-  }, [filteredReviews, pageSize, safePageIndex])
+    return filteredReviews
+  }, [filteredReviews])
 
   function resetFilters() {
     setSearch("")
     setSelectedRating("all")
-    setDatePreset("last7Days")
-    setCustomFrom("")
-    setCustomTo("")
+    setDateFilter({ ...defaultOrderDateFilter, preset: "last7Days" })
     setCommentFilter("all")
     setReplyFilter("all")
     setSortBy("latest")
@@ -617,34 +603,7 @@ export function ReviewsPage() {
               </SelectContent>
             </Select>
 
-            <Select value={datePreset} onValueChange={(value) => setDatePreset(value as ReviewDatePreset)}>
-              <SelectTrigger className="w-full lg:w-40">
-                <CalendarRange className="size-4" />
-                <SelectValue placeholder="Date range" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="last7Days">Last 7 Days</SelectItem>
-                <SelectItem value="custom">Custom</SelectItem>
-              </SelectContent>
-            </Select>
-
-            {datePreset === "custom" ? (
-              <>
-                <Input
-                  type="date"
-                  value={customFrom}
-                  onChange={(event) => setCustomFrom(event.target.value)}
-                  className="w-full lg:w-44"
-                />
-                <Input
-                  type="date"
-                  value={customTo}
-                  onChange={(event) => setCustomTo(event.target.value)}
-                  className="w-full lg:w-44"
-                />
-              </>
-            ) : null}
+            <OrderDateFilter value={dateFilter} onChange={setDateFilter} />
 
             <Select value={commentFilter} onValueChange={(value) => setCommentFilter(value as CommentFilter)}>
               <SelectTrigger className="w-full lg:w-44">
@@ -699,7 +658,7 @@ export function ReviewsPage() {
 
           <div className="flex flex-col gap-3 border-t pt-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              {filteredReviews.length} reviews
+              {reviewsTotal} reviews
             </div>
             <Button
               variant="outline"
@@ -882,7 +841,7 @@ export function ReviewsPage() {
 
       <div className="flex flex-col gap-4 rounded-2xl border bg-card px-4 py-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
         <div className="text-sm text-muted-foreground">
-          Showing {paginatedReviews.length} of {filteredReviews.length} review(s)
+          Showing {paginatedReviews.length} of {reviewsTotal} review(s)
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <Select value={`${pageSize}`} onValueChange={(value) => setPageSize(Number(value))}>

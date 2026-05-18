@@ -8,6 +8,8 @@ type CustomerProfile = {
   fullName: string;
   phone: string;
   email: string;
+  referralCode?: string;
+  hasPassword?: boolean;
   notificationSettings?: {
     orderUpdates?: boolean;
     restaurantStatus?: boolean;
@@ -46,8 +48,10 @@ type PendingPhoneAuth = {
   redirectTo?: string;
   fullName?: string;
   email?: string;
+  referralCode?: string;
   otpVerified?: boolean;
   expiresInSeconds?: number;
+  resendAvailableInSeconds?: number;
 };
 
 type AuthStore = {

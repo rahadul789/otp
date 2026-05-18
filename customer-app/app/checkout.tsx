@@ -1,38 +1,68 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useIsFocused } from "@react-navigation/native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
-import { LocationSelectorSheet } from "@/src/components/location-selector-sheet";
+import { styles } from "@/src/components/checkout/checkout.styles";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import {
   useBkashInitiateMutation,
+  type CartQuoteResponse,
+  useCustomerApplyReferralCodeMutation,
   useCustomerCartQuoteQuery,
+  useCustomerPaymentSettingsQuery,
   useCustomerPlaceOrderMutation,
+  useCustomerReferralSummaryQuery,
 } from "@/src/hooks/use-customer-api";
 import { trackCustomerEvent } from "@/src/lib/analytics";
-import { formatDateTimeAmPm } from "@/src/lib/date-time";
+import { apiProtectedPost } from "@/src/lib/api";
+import { saveBkashPaymentDraft } from "@/src/lib/bkash-payment-draft";
+import { formatCurrency } from "@/src/lib/currency";
+import { formatDurationMinutes } from "@/src/lib/date-time";
+import { applyCurrentLocation } from "@/src/lib/current-location";
+import { getStableCustomerInstallId } from "@/src/lib/customer-install-id";
+import { formatCustomerAddressLine, formatDeliveryAddress } from "@/src/lib/location-address";
+import { formatShortOrderIdLabel } from "@/src/lib/order-id";
+import {
+  getRestaurantOutOfDeliveryAreaCopy,
+  isRestaurantOutOfDeliveryAreaError,
+} from "@/src/lib/serviceability";
 import { useIsOnline } from "@/src/hooks/use-network-status";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
-import { buildCartItemKey, getCartSubtotal, useCartStore } from "@/src/store/cart-store";
+import {
+  buildCartItemKey,
+  getCartSubtotal,
+  useCartStore,
+} from "@/src/store/cart-store";
 import { useLocationStore } from "@/src/store/location-store";
 import { palette } from "@/src/theme/palette";
 
-function formatCurrency(amount: number) {
-  return `Tk ${amount.toFixed(0)}`;
+type PaymentMethod = "Cash" | "Bkash";
+
+const VOUCHER_ATTEMPT_LIMIT = 5;
+const VOUCHER_ATTEMPT_WINDOW_MS = 2 * 60 * 1000;
+
+function formatVoucherRetryDelay(milliseconds: number) {
+  const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return formatDurationMinutes(Math.ceil(seconds / 60));
 }
 
-type PaymentMethod = "Cash" | "Bkash";
+function sanitizeCheckoutCode(value: string) {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+}
 
 const paymentOptions: {
   id: PaymentMethod;
@@ -57,16 +87,34 @@ const paymentOptions: {
   },
 ];
 
+function createClientOrderId() {
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `co_${Date.now()}_${randomPart}`;
+}
+
 export default function CheckoutScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    ref?: string;
+    referralCode?: string;
+  }>();
   const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
-  const [isLocationSheetOpen, setIsLocationSheetOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash");
   const [voucherCodeInput, setVoucherCodeInput] = useState("");
   const [appliedVoucherCode, setAppliedVoucherCode] = useState("");
+  const [appliedReferralCode, setAppliedReferralCode] = useState("");
+  const [appliedReferralName, setAppliedReferralName] = useState("");
+  const [voucherFeedback, setVoucherFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [isApplyingVoucher, setIsApplyingVoucher] = useState(false);
   const [paymentError, setPaymentError] = useState("");
   const hasCompletedCheckoutRef = useRef(false);
+  const checkoutTrackedKeyRef = useRef("");
+  const clientOrderIdRef = useRef(createClientOrderId());
+  const voucherAttemptTimestampsRef = useRef<number[]>([]);
   const [bkashPayment, setBkashPayment] = useState<{
     sessionId: string;
     paymentID: string;
@@ -84,11 +132,78 @@ export default function CheckoutScreen() {
   const setReorderContext = useCartStore((state) => state.setReorderContext);
   const syncPricing = useCartStore((state) => state.syncPricing);
   const selectedLocation = useLocationStore((state) => state.selectedLocation);
+  const selectedDeliveryAddress = useMemo(
+    () => formatDeliveryAddress(selectedLocation),
+    [selectedLocation],
+  );
+  const selectedDeliveryAddressLine = useMemo(
+    () => formatCustomerAddressLine(selectedLocation?.address, "Selected location"),
+    [selectedLocation?.address],
+  );
+  const selectedDeliveryAddressDetails = selectedLocation?.addressDetails?.trim() || undefined;
+  const selectedDeliveryAddressPrimaryText =
+    selectedDeliveryAddressDetails ||
+    selectedLocation?.label ||
+    selectedDeliveryAddress ||
+    "Choose delivery point";
+  const shouldShowMapAddressUnderManual =
+    Boolean(selectedDeliveryAddressDetails) &&
+    Boolean(selectedDeliveryAddressLine) &&
+    selectedDeliveryAddressLine.trim().toLowerCase() !==
+      selectedDeliveryAddressDetails?.trim().toLowerCase();
   const customer = useCustomerAuthStore((state) => state.customer);
   const isOnline = useIsOnline();
   const bkashWalletNumber = customer?.phone?.trim() ?? "";
   const placeOrderMutation = useCustomerPlaceOrderMutation();
+  const applyReferralMutation = useCustomerApplyReferralCodeMutation();
   const bkashInitiateMutation = useBkashInitiateMutation();
+  const paymentSettingsQuery = useCustomerPaymentSettingsQuery();
+  const referralSummaryQuery = useCustomerReferralSummaryQuery(Boolean(customer));
+  const referralSummary = referralSummaryQuery.data;
+  const canApplyReferralCode = Boolean(referralSummary?.canApplyReferralCode);
+  const shouldAttemptReferralCode =
+    canApplyReferralCode || referralSummaryQuery.isLoading;
+  const codeInputTitle = canApplyReferralCode
+    ? "Voucher or referral code"
+    : "Voucher";
+  const codeInputPlaceholder = canApplyReferralCode
+    ? "Enter voucher or referral code"
+    : "Enter voucher code";
+  const codeInputHint = canApplyReferralCode
+    ? "New to Foodbela? You can also use a referral code here."
+    : "";
+  const incomingReferralCode = useMemo(
+    () =>
+      sanitizeCheckoutCode(String(params.ref ?? params.referralCode ?? "")),
+    [params.ref, params.referralCode],
+  );
+  const paymentSettings = paymentSettingsQuery.data ?? {
+    cashOnDeliveryEnabled: true,
+    bkashEnabled: false,
+    bkashLabel: "bKash",
+    bkashSubtitle: "Continue to the official hosted payment page.",
+  };
+  const visiblePaymentOptions = useMemo(
+    () =>
+      paymentOptions
+        .filter(
+          (option) => option.id === "Cash" || paymentSettings.bkashEnabled,
+        )
+        .map((option) =>
+          option.id === "Bkash"
+            ? {
+                ...option,
+                title: paymentSettings.bkashLabel,
+                subtitle: paymentSettings.bkashSubtitle,
+              }
+            : option,
+        ),
+    [
+      paymentSettings.bkashEnabled,
+      paymentSettings.bkashLabel,
+      paymentSettings.bkashSubtitle,
+    ],
+  );
 
   const quoteQuery = useCustomerCartQuoteQuery({
     restaurantId: restaurant?.restaurantId,
@@ -102,6 +217,28 @@ export default function CheckoutScreen() {
     latitude: selectedLocation?.latitude,
     longitude: selectedLocation?.longitude,
   });
+
+  useEffect(() => {
+    if (
+      !incomingReferralCode ||
+      voucherCodeInput ||
+      appliedVoucherCode ||
+      appliedReferralCode
+    ) {
+      return;
+    }
+
+    setVoucherCodeInput(incomingReferralCode);
+    setVoucherFeedback({
+      type: "success",
+      message: "Referral code added. Tap Apply before placing your order.",
+    });
+  }, [
+    appliedReferralCode,
+    appliedVoucherCode,
+    incomingReferralCode,
+    voucherCodeInput,
+  ]);
 
   const localSubtotal = getCartSubtotal(items);
   const pricing = quoteQuery.data?.pricing;
@@ -118,23 +255,39 @@ export default function CheckoutScreen() {
             selectedAddOnOptions: item.selectedAddOnOptions,
           }),
           item,
-        ])
+        ]),
       ),
-    [quoteQuery.data?.items]
+    [quoteQuery.data?.items],
   );
   const priceChangedCount = useMemo(
     () =>
       items.reduce((count, item) => {
         const quotedItem = quotedItemsByKey.get(item.key);
-        return quotedItem && quotedItem.unitPrice !== item.unitPrice ? count + 1 : count;
+        return quotedItem && quotedItem.unitPrice !== item.unitPrice
+          ? count + 1
+          : count;
       }, 0),
-    [items, quotedItemsByKey]
+    [items, quotedItemsByKey],
   );
   const hasQuoteIssues = quoteQuery.isError;
   const quoteErrorMessage =
     quoteQuery.error instanceof Error
       ? quoteQuery.error.message
       : "We could not verify this cart with the latest restaurant pricing.";
+  const isServiceabilityBlocked =
+    hasQuoteIssues && isRestaurantOutOfDeliveryAreaError(quoteErrorMessage);
+  const shouldUsePrimaryActionForLocation =
+    !selectedLocation || isServiceabilityBlocked;
+  const isPrimaryActionDisabled =
+    !shouldUsePrimaryActionForLocation &&
+    (placeOrderMutation.isPending ||
+      bkashInitiateMutation.isPending ||
+      quoteQuery.isLoading ||
+      (hasQuoteIssues && !isServiceabilityBlocked) ||
+      !isOnline ||
+      paymentSettingsQuery.isLoading);
+  const isApplyingCode =
+    isApplyingVoucher || applyReferralMutation.isPending;
 
   const itemPayload = useMemo(
     () =>
@@ -144,7 +297,7 @@ export default function CheckoutScreen() {
         selectedVariantOptions: item.selectedVariantOptions,
         selectedAddOnOptions: item.selectedAddOnOptions,
       })),
-    [items]
+    [items],
   );
 
   const itemSummary = useMemo(
@@ -153,14 +306,67 @@ export default function CheckoutScreen() {
         key: item.key,
         name: item.name,
         quantity: item.quantity,
-        total: quotedItemsByKey.get(item.key)?.lineTotal ?? item.unitPrice * item.quantity,
+        total:
+          quotedItemsByKey.get(item.key)?.lineTotal ??
+          item.unitPrice * item.quantity,
         unitPrice: quotedItemsByKey.get(item.key)?.unitPrice ?? item.unitPrice,
         isPriceChanged:
           typeof quotedItemsByKey.get(item.key)?.unitPrice === "number" &&
           quotedItemsByKey.get(item.key)?.unitPrice !== item.unitPrice,
       })),
-    [items, quotedItemsByKey]
+    [items, quotedItemsByKey],
   );
+
+  useEffect(() => {
+    if (!isFocused || !restaurant || !customer || items.length === 0) {
+      return;
+    }
+
+    const trackingKey = `${restaurant.restaurantId}|${items
+      .map((item) => `${item.itemId}:${item.quantity}`)
+      .join("|")}`;
+    if (checkoutTrackedKeyRef.current === trackingKey) {
+      return;
+    }
+    checkoutTrackedKeyRef.current = trackingKey;
+
+    void trackCustomerEvent({
+      eventType: "checkout_start",
+      path: "/checkout",
+      screenName: "checkout",
+      entityType: "restaurant",
+      entityId: restaurant.restaurantId,
+      metadata: {
+        restaurantId: restaurant.restaurantId,
+        restaurantName: restaurant.restaurantName,
+        itemCount: items.length,
+        subtotal: pricing?.subtotal ?? localSubtotal,
+        total: pricing?.total ?? localSubtotal,
+        deliveryFee: pricing?.deliveryFee ?? 0,
+        discountAmount: pricing?.discountAmount ?? 0,
+        voucherApplied: Boolean(appliedVoucherCode),
+        items: itemSummary.map((item) => ({
+          itemId: item.key,
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          total: item.total,
+        })),
+      },
+    });
+  }, [
+    appliedVoucherCode,
+    customer,
+    isFocused,
+    itemSummary,
+    items,
+    localSubtotal,
+    pricing?.deliveryFee,
+    pricing?.discountAmount,
+    pricing?.subtotal,
+    pricing?.total,
+    restaurant,
+  ]);
 
   useEffect(() => {
     if (!isFocused) {
@@ -177,12 +383,23 @@ export default function CheckoutScreen() {
     }
 
     if (!customer) {
+      const redirectTo = incomingReferralCode
+        ? `/checkout?ref=${encodeURIComponent(incomingReferralCode)}`
+        : "/checkout";
       router.replace({
         pathname: "/sign-in",
-        params: { redirectTo: "/checkout" },
+        params: { redirectTo },
       });
     }
-  }, [customer, isFocused, items.length, restaurant, router]);
+  }, [customer, incomingReferralCode, isFocused, items.length, restaurant, router]);
+
+  useEffect(() => {
+    if (paymentMethod === "Bkash" && !paymentSettings.bkashEnabled) {
+      setPaymentMethod("Cash");
+      setPaymentError("");
+      setBkashPayment(null);
+    }
+  }, [paymentMethod, paymentSettings.bkashEnabled]);
 
   useEffect(() => {
     setBkashPayment((current) => {
@@ -192,7 +409,13 @@ export default function CheckoutScreen() {
       return current;
     });
     setPaymentError("");
-  }, [appliedVoucherCode, bkashWalletNumber, localSubtotal, pricing?.total]);
+  }, [
+    appliedReferralCode,
+    appliedVoucherCode,
+    bkashWalletNumber,
+    localSubtotal,
+    pricing?.total,
+  ]);
 
   useEffect(() => {
     if (!quoteQuery.data?.items?.length) {
@@ -210,7 +433,7 @@ export default function CheckoutScreen() {
           selectedAddOnOptions: item.selectedAddOnOptions,
         }),
         unitPrice: item.unitPrice,
-      }))
+      })),
     );
   }, [quoteQuery.data?.items, syncPricing]);
 
@@ -219,75 +442,262 @@ export default function CheckoutScreen() {
   }
 
   async function handleApplyVoucher() {
-    const code = voucherCodeInput.trim().toUpperCase();
-    setAppliedVoucherCode(code);
+    if (isApplyingVoucher || applyReferralMutation.isPending) return;
+    if (!restaurant) return;
+
+    const activeRestaurant = restaurant;
+    const code = sanitizeCheckoutCode(voucherCodeInput);
     setPaymentError("");
     setBkashPayment(null);
-    await quoteQuery.refetch();
+
+    if (!code) {
+      setAppliedVoucherCode("");
+      setVoucherFeedback(null);
+      return;
+    }
+
+    const now = Date.now();
+    voucherAttemptTimestampsRef.current =
+      voucherAttemptTimestampsRef.current.filter(
+        (timestamp) => now - timestamp < VOUCHER_ATTEMPT_WINDOW_MS,
+      );
+
+    if (voucherAttemptTimestampsRef.current.length >= VOUCHER_ATTEMPT_LIMIT) {
+      const oldestAttempt = voucherAttemptTimestampsRef.current[0] ?? now;
+      const retryInMs = VOUCHER_ATTEMPT_WINDOW_MS - (now - oldestAttempt);
+      setVoucherFeedback({
+        type: "error",
+        message: `Too many voucher tries. Please wait ${formatVoucherRetryDelay(
+          retryInMs,
+        )} before applying again.`,
+      });
+      return;
+    }
+
+    voucherAttemptTimestampsRef.current.push(now);
+    setIsApplyingVoucher(true);
+    setVoucherFeedback(null);
+
+    try {
+      const response = await apiProtectedPost<CartQuoteResponse>(
+        "/customer/cart/quote",
+        {
+          restaurantId: activeRestaurant.restaurantId,
+          items: itemPayload,
+          voucherCode: code,
+          latitude: selectedLocation?.latitude,
+          longitude: selectedLocation?.longitude,
+        },
+      );
+      const appliedCoupon = response.data.appliedVouchers.find(
+        (voucher) =>
+          voucher.mode === "coupon" && voucher.code?.toUpperCase() === code,
+      );
+
+      if (!appliedCoupon) {
+        throw new Error("This voucher could not be applied to this cart.");
+      }
+
+      setAppliedVoucherCode(code);
+      setVoucherCodeInput(code);
+      setVoucherFeedback({
+        type: "success",
+        message:
+          (appliedCoupon.discountAmount ?? 0) > 0
+            ? `Voucher applied. You saved ${formatCurrency(appliedCoupon.discountAmount ?? 0)}.`
+            : "Voucher applied successfully.",
+      });
+
+      void trackCustomerEvent({
+        eventType: "voucher_applied",
+        path: "/checkout",
+        screenName: "checkout",
+        entityType: "voucher",
+        entityId: code,
+        metadata: {
+          code,
+          restaurantId: activeRestaurant.restaurantId,
+          itemCount: items.length,
+          subtotal: pricing?.subtotal ?? localSubtotal,
+        },
+      });
+      return;
+    } catch (voucherError) {
+      setAppliedVoucherCode("");
+      if (!shouldAttemptReferralCode) {
+        setVoucherFeedback({
+          type: "error",
+          message:
+            voucherError instanceof Error
+              ? voucherError.message
+              : "This voucher could not be applied.",
+        });
+        return;
+      }
+
+      try {
+        const referral = await applyReferralMutation.mutateAsync({
+          referralCode: code,
+          installId: await getStableCustomerInstallId(),
+        });
+        setAppliedReferralCode(referral.referralCode);
+        setAppliedReferralName(referral.referrerName);
+        setVoucherCodeInput(referral.referralCode);
+        setVoucherFeedback({
+          type: "success",
+          message: referral.message,
+        });
+      } catch (referralError) {
+        setVoucherFeedback({
+          type: "error",
+          message:
+            referralError instanceof Error
+              ? referralError.message
+              : voucherError instanceof Error
+                ? voucherError.message
+                : "This code could not be applied.",
+        });
+      }
+    } finally {
+      setIsApplyingVoucher(false);
+    }
   }
 
   function handleRemoveVoucher() {
     setVoucherCodeInput("");
     setAppliedVoucherCode("");
+    setVoucherFeedback(null);
     setBkashPayment(null);
     setPaymentError("");
   }
 
+  async function handleUseCurrentLocation() {
+    try {
+      await applyCurrentLocation();
+      setPaymentError("");
+    } catch {
+      router.push("/location-picker");
+    }
+  }
+
   async function handlePayWithBkash() {
     if (!restaurant) return;
+    if (!paymentSettings.bkashEnabled) {
+      setPaymentMethod("Cash");
+      setPaymentError("bKash payment is not available right now.");
+      return;
+    }
+
     if (!isOnline) {
       setPaymentError("Reconnect to continue with bKash payment.");
       return;
     }
 
     if (hasQuoteIssues || quoteQuery.isLoading) {
-      setPaymentError("Please wait while we verify your cart with the latest restaurant pricing.");
+      setPaymentError(
+        isServiceabilityBlocked
+          ? getRestaurantOutOfDeliveryAreaCopy(restaurant.restaurantName)
+          : "Please wait while we verify your cart with the latest restaurant pricing.",
+      );
       return;
     }
 
     if (!/^01\d{9}$/.test(bkashWalletNumber)) {
-      setPaymentError("We need a valid account phone number before starting bKash.");
+      setPaymentError(
+        "We need a valid account phone number before starting bKash.",
+      );
+      return;
+    }
+
+    if (
+      !selectedLocation ||
+      typeof selectedLocation.latitude !== "number" ||
+      typeof selectedLocation.longitude !== "number"
+    ) {
+      setPaymentError(
+        "Select a pinned delivery location before starting bKash.",
+      );
       return;
     }
 
     setPaymentError("");
 
     try {
-        const response = await bkashInitiateMutation.mutateAsync({
+      void trackCustomerEvent({
+        eventType: "payment_initiated",
+        path: "/checkout",
+        screenName: "checkout",
+        entityType: "restaurant",
+        entityId: restaurant.restaurantId,
+        metadata: {
+          provider: "Bkash",
+          paymentMethod: "Bkash",
           restaurantId: restaurant.restaurantId,
-          items: itemPayload,
-          voucherCode: appliedVoucherCode || undefined,
-          walletNumber: bkashWalletNumber,
-          latitude: selectedLocation?.latitude,
-          longitude: selectedLocation?.longitude,
-        });
+          amount: pricing?.total ?? localSubtotal,
+          voucherApplied: Boolean(appliedVoucherCode),
+        },
+      });
+      const response = await bkashInitiateMutation.mutateAsync({
+        restaurantId: restaurant.restaurantId,
+        clientOrderId: clientOrderIdRef.current,
+        items: itemPayload,
+        voucherCode: appliedVoucherCode || undefined,
+        walletNumber: bkashWalletNumber,
+        deliveryAddress: {
+          label: selectedLocation.label,
+          addressLine: selectedDeliveryAddressLine,
+          addressDetails: selectedDeliveryAddressDetails,
+          latitude: selectedLocation.latitude,
+          longitude: selectedLocation.longitude,
+        },
+      });
+      await saveBkashPaymentDraft({
+        sessionId: response.sessionId,
+        paymentUrl: response.bkashURL,
+        paymentID: response.paymentID,
+        clientOrderId: clientOrderIdRef.current,
+        restaurantId: restaurant.restaurantId,
+        voucherCode: appliedVoucherCode || undefined,
+        walletNumber: response.walletNumber,
+        amount: response.amount,
+        expiresAt: response.expiresAt,
+        items: itemPayload,
+        deliveryAddress: {
+          label: selectedLocation.label,
+          addressLine: selectedDeliveryAddressLine,
+          addressDetails: selectedDeliveryAddressDetails,
+          latitude: selectedLocation.latitude,
+          longitude: selectedLocation.longitude,
+        },
+      });
+
       router.push({
         pathname: "/bkash-payment",
         params: {
-          url: response.bkashURL,
           sessionId: response.sessionId,
-          paymentID: response.paymentID,
-          amount: String(response.amount),
-          walletNumber: response.walletNumber,
-          expiresAt: response.expiresAt,
-          restaurantId: restaurant.restaurantId,
-          voucherCode: appliedVoucherCode || "",
-          deliveryLabel: selectedLocation?.label ?? "",
-          deliveryAddressLine: selectedLocation?.address ?? "",
-          deliveryLatitude:
-            typeof selectedLocation?.latitude === "number"
-              ? String(selectedLocation.latitude)
-              : "",
-          deliveryLongitude:
-            typeof selectedLocation?.longitude === "number"
-              ? String(selectedLocation.longitude)
-              : "",
-          cartPayload: encodeURIComponent(JSON.stringify(itemPayload)),
         },
       });
     } catch (error) {
+      void trackCustomerEvent({
+        eventType: "payment_failed",
+        path: "/checkout",
+        screenName: "checkout",
+        entityType: "restaurant",
+        entityId: restaurant.restaurantId,
+        metadata: {
+          provider: "Bkash",
+          stage: "initiate",
+          restaurantId: restaurant.restaurantId,
+          message:
+            error instanceof Error
+              ? error.message.slice(0, 120)
+              : "Could not start bKash payment.",
+        },
+      });
       setPaymentError(
-        error instanceof Error ? error.message : "Could not start bKash payment."
+        error instanceof Error
+          ? error.message
+          : "Could not start bKash payment.",
       );
     }
   }
@@ -302,18 +712,62 @@ export default function CheckoutScreen() {
     }
 
     if (hasQuoteIssues || quoteQuery.isLoading) {
-      setPaymentError("Fix your cart pricing before placing the order.");
+      setPaymentError(
+        isServiceabilityBlocked
+          ? getRestaurantOutOfDeliveryAreaCopy(restaurant.restaurantName)
+          : "Fix your cart pricing before placing the order.",
+      );
       return;
     }
 
     if (paymentMethod === "Bkash" && !bkashPayment?.sessionId) {
       setPaymentError("Complete the bKash payment before placing the order.");
+      void trackCustomerEvent({
+        eventType: "payment_failed",
+        path: "/checkout",
+        screenName: "checkout",
+        entityType: "restaurant",
+        entityId: restaurant.restaurantId,
+        metadata: {
+          provider: "Bkash",
+          stage: "order_submit_without_confirmed_payment",
+          restaurantId: restaurant.restaurantId,
+        },
+      });
+      return;
+    }
+
+    if (
+      typeof selectedLocation.latitude !== "number" ||
+      typeof selectedLocation.longitude !== "number"
+    ) {
+      setPaymentError(
+        "Select a pinned delivery location before placing the order.",
+      );
       return;
     }
 
     try {
+      if (paymentMethod === "Cash") {
+        void trackCustomerEvent({
+          eventType: "payment_initiated",
+          path: "/checkout",
+          screenName: "checkout",
+          entityType: "restaurant",
+          entityId: restaurant.restaurantId,
+          metadata: {
+            provider: "Cash",
+            paymentMethod: "Cash",
+            restaurantId: restaurant.restaurantId,
+            amount: pricing?.total ?? localSubtotal,
+            voucherApplied: Boolean(appliedVoucherCode),
+          },
+        });
+      }
+
       const response = await placeOrderMutation.mutateAsync({
         restaurantId: restaurant.restaurantId,
+        clientOrderId: clientOrderIdRef.current,
         paymentMethod,
         voucherCode: appliedVoucherCode || undefined,
         paymentReference:
@@ -327,7 +781,8 @@ export default function CheckoutScreen() {
         items: itemPayload,
         deliveryAddress: {
           label: selectedLocation.label,
-          addressLine: selectedLocation.address,
+          addressLine: selectedDeliveryAddressLine,
+          addressDetails: selectedDeliveryAddressDetails,
           latitude: selectedLocation.latitude,
           longitude: selectedLocation.longitude,
         },
@@ -356,9 +811,39 @@ export default function CheckoutScreen() {
           justPlaced: "1",
         },
       });
-    } catch {
+    } catch (error) {
+      void trackCustomerEvent({
+        eventType: "payment_failed",
+        path: "/checkout",
+        screenName: "checkout",
+        entityType: "restaurant",
+        entityId: restaurant.restaurantId,
+        metadata: {
+          provider: paymentMethod,
+          stage: "order_submit",
+          restaurantId: restaurant.restaurantId,
+          message:
+            error instanceof Error
+              ? error.message.slice(0, 120)
+              : "Could not place order.",
+        },
+      });
       // handled in mutation state
     }
+  }
+
+  function handlePrimaryAction() {
+    if (shouldUsePrimaryActionForLocation) {
+      router.push("/location-picker");
+      return;
+    }
+
+    if (paymentMethod === "Bkash") {
+      void handlePayWithBkash();
+      return;
+    }
+
+    void handlePlaceOrder();
   }
 
   return (
@@ -372,7 +857,11 @@ export default function CheckoutScreen() {
       >
         <View style={styles.header}>
           <Pressable style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={20} color={palette.foreground} />
+            <Ionicons
+              name="chevron-back"
+              size={20}
+              color={palette.foreground}
+            />
           </Pressable>
           <View style={styles.headerCopy}>
             <Text style={styles.title}>Checkout</Text>
@@ -390,25 +879,72 @@ export default function CheckoutScreen() {
 
         {hasQuoteIssues ? (
           <View style={[styles.networkCard, styles.networkCardWarning]}>
-            <Ionicons name="alert-circle-outline" size={18} color={palette.primary} />
+            <Ionicons
+              name="alert-circle-outline"
+              size={18}
+              color={palette.primary}
+            />
             <View style={styles.networkCopy}>
-              <Text style={styles.networkTitle}>Cart needs attention</Text>
-              <Text style={styles.networkSubtitle}>
-                {quoteErrorMessage.includes("not available")
-                  ? "One or more items are no longer available. Update your cart before placing this order."
-                  : quoteErrorMessage}
+              <Text style={styles.networkTitle}>
+                {isServiceabilityBlocked
+                  ? "Outside delivery area"
+                  : "Cart needs attention"}
               </Text>
+              <Text style={styles.networkSubtitle}>
+                {isServiceabilityBlocked
+                  ? getRestaurantOutOfDeliveryAreaCopy(
+                      restaurant.restaurantName,
+                    )
+                  : quoteErrorMessage.includes("not available")
+                    ? "One or more items are no longer available. Update your cart before placing this order."
+                    : quoteErrorMessage}
+              </Text>
+              {isServiceabilityBlocked ? (
+                <View style={styles.networkActions}>
+                  <Pressable
+                    style={[styles.networkAction, styles.networkActionPrimary]}
+                    onPress={() => router.push("/location-picker")}
+                  >
+                    <Ionicons
+                      name="location-outline"
+                      size={14}
+                      color={palette.surface}
+                    />
+                    <Text style={styles.networkActionPrimaryText}>
+                      Change location
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.networkAction}
+                    onPress={() => {
+                      void handleUseCurrentLocation();
+                    }}
+                  >
+                    <Ionicons
+                      name="navigate-circle-outline"
+                      size={14}
+                      color={palette.foreground}
+                    />
+                    <Text style={styles.networkActionText}>My location</Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
           </View>
         ) : null}
 
         {!hasQuoteIssues && priceChangedCount > 0 ? (
           <View style={[styles.networkCard, styles.networkCardInfo]}>
-            <Ionicons name="refresh-outline" size={18} color={palette.secondary} />
+            <Ionicons
+              name="refresh-outline"
+              size={18}
+              color={palette.secondary}
+            />
             <View style={styles.networkCopy}>
               <Text style={styles.networkTitle}>Latest prices applied</Text>
               <Text style={styles.networkSubtitle}>
-                {priceChangedCount} item{priceChangedCount === 1 ? "" : "s"} updated before checkout so your total stays accurate.
+                {priceChangedCount} item{priceChangedCount === 1 ? "" : "s"}{" "}
+                updated before checkout so your total stays accurate.
               </Text>
             </View>
           </View>
@@ -417,21 +953,30 @@ export default function CheckoutScreen() {
         {reorderContext ? (
           <View style={styles.reorderContextCard}>
             <View style={styles.reorderContextIconWrap}>
-              <Ionicons name="refresh-outline" size={16} color={palette.secondary} />
+              <Ionicons
+                name="refresh-outline"
+                size={16}
+                color={palette.secondary}
+              />
             </View>
             <View style={styles.reorderContextCopy}>
               <Text style={styles.reorderContextTitle}>
-                Reordering {reorderContext.orderNumber}
+                Reordering {formatShortOrderIdLabel(reorderContext.orderNumber)}
               </Text>
               <Text style={styles.reorderContextSubtitle}>
-                These items were refreshed with the latest menu prices before checkout.
+                These items were refreshed with the latest menu prices before
+                checkout.
               </Text>
             </View>
             <Pressable
               style={styles.reorderContextDismiss}
               onPress={() => setReorderContext(null)}
             >
-              <Ionicons name="close" size={15} color={palette.mutedForeground} />
+              <Ionicons
+                name="close"
+                size={15}
+                color={palette.mutedForeground}
+              />
             </Pressable>
           </View>
         ) : null}
@@ -440,36 +985,34 @@ export default function CheckoutScreen() {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Deliver to</Text>
           </View>
-          <Pressable style={styles.addressCard} onPress={() => setIsLocationSheetOpen(true)}>
+          <Pressable
+            style={styles.addressCard}
+            onPress={() => router.push("/location-picker")}
+          >
             <View style={styles.addressIconWrap}>
               <Ionicons
-                name={selectedLocation?.isDefault ? "home-outline" : "locate-outline"}
-                size={18}
-                color={palette.foreground}
+                name="location-outline"
+                size={17}
+                color={palette.secondary}
               />
             </View>
             <View style={styles.addressCopy}>
               <View style={styles.addressTitleRow}>
-                <Text style={styles.addressTitle}>
-                  {selectedLocation?.label ?? "Choose location"}
+                <Text numberOfLines={2} style={styles.addressTitle}>
+                  {selectedDeliveryAddressPrimaryText}
                 </Text>
-                <View style={styles.addressActions}>
-                  {selectedLocation?.isDefault ? (
-                    <View style={styles.defaultBadge}>
-                      <Text style={styles.defaultBadgeText}>Default</Text>
-                    </View>
-                  ) : null}
-                  <View style={styles.changePill}>
-                    <Text style={styles.changePillText}>Change</Text>
-                  </View>
+                <View style={styles.changePill}>
+                  <Text style={styles.changePillText}>Change</Text>
                 </View>
               </View>
-              <Text style={styles.addressLine}>
-                {selectedLocation?.address ?? "Choose a delivery point before placing the order."}
-              </Text>
-              {selectedLocation?.lastUsedAt ? (
-                <Text style={styles.addressMeta}>
-                  Last used {formatDateTimeAmPm(selectedLocation.lastUsedAt)}
+              {selectedDeliveryAddressDetails && shouldShowMapAddressUnderManual ? (
+                <Text numberOfLines={2} style={styles.addressLine}>
+                  {selectedDeliveryAddressLine}
+                </Text>
+              ) : !selectedDeliveryAddressDetails ? (
+                <Text style={styles.addressLine}>
+                  {selectedDeliveryAddress ||
+                    "Choose a delivery point before placing the order."}
                 </Text>
               ) : null}
             </View>
@@ -478,29 +1021,73 @@ export default function CheckoutScreen() {
 
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Voucher</Text>
-            <Text style={styles.sectionHint}>Optional</Text>
+            <Text style={styles.sectionTitle}>{codeInputTitle}</Text>
           </View>
           <View style={styles.surfaceCard}>
+            {codeInputHint ? (
+              <Text style={styles.voucherHintText}>{codeInputHint}</Text>
+            ) : null}
             <View style={styles.voucherRow}>
               <TextInput
                 value={voucherCodeInput}
-                onChangeText={setVoucherCodeInput}
-                placeholder="Enter voucher code"
+                onChangeText={(value) => {
+                  const nextCode = sanitizeCheckoutCode(value);
+                  setVoucherCodeInput(nextCode);
+                  setVoucherFeedback(null);
+                  if (appliedVoucherCode && nextCode !== appliedVoucherCode) {
+                    setAppliedVoucherCode("");
+                  }
+                }}
+                placeholder={codeInputPlaceholder}
                 placeholderTextColor={palette.mutedForeground}
                 autoCapitalize="characters"
+                autoCorrect={false}
                 style={styles.voucherInput}
               />
-              <Pressable style={styles.voucherButton} onPress={handleApplyVoucher}>
-                <Text style={styles.voucherButtonText}>Apply</Text>
+              <Pressable
+                style={[
+                  styles.voucherButton,
+                  isApplyingCode ? styles.voucherButtonDisabled : null,
+                ]}
+                onPress={handleApplyVoucher}
+                disabled={isApplyingCode}
+              >
+                {isApplyingCode ? (
+                  <ActivityIndicator size="small" color={palette.surface} />
+                ) : (
+                  <Text style={styles.voucherButtonText}>Apply</Text>
+                )}
               </Pressable>
             </View>
+            {voucherFeedback ? (
+              <Text
+                style={[
+                  styles.voucherFeedbackText,
+                  voucherFeedback.type === "error"
+                    ? styles.voucherFeedbackTextError
+                    : styles.voucherFeedbackTextSuccess,
+                ]}
+              >
+                {voucherFeedback.message}
+              </Text>
+            ) : null}
             {appliedVoucherCode ? (
               <View style={styles.voucherAppliedRow}>
-                <Text style={styles.voucherAppliedText}>Applied voucher: {appliedVoucherCode}</Text>
+                <Text style={styles.voucherAppliedText}>
+                  Applied voucher: {appliedVoucherCode}
+                </Text>
                 <Pressable onPress={handleRemoveVoucher}>
                   <Text style={styles.voucherRemoveText}>Remove</Text>
                 </Pressable>
+              </View>
+            ) : null}
+            {appliedReferralCode ? (
+              <View style={styles.voucherAppliedRow}>
+                <Text style={styles.voucherAppliedText}>
+                  Referral saved: {appliedReferralCode}
+                  {appliedReferralName ? ` from ${appliedReferralName}` : ""}
+                </Text>
+                <Text style={styles.voucherSavedText}>Saved</Text>
               </View>
             ) : null}
           </View>
@@ -509,38 +1096,60 @@ export default function CheckoutScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Payment</Text>
-            <Text style={styles.sectionHint}>Choose one</Text>
+            {visiblePaymentOptions.length > 1 ? (
+              <Text style={styles.sectionHint}>Choose one</Text>
+            ) : null}
           </View>
           <View style={styles.paymentList}>
-            {paymentOptions.map((option) => {
+            {visiblePaymentOptions.map((option) => {
               const isActive = paymentMethod === option.id;
               return (
                 <Pressable
                   key={option.id}
-                  style={[styles.paymentCard, isActive ? styles.paymentCardActive : null]}
+                  style={[
+                    styles.paymentCard,
+                    isActive ? styles.paymentCardActive : null,
+                  ]}
                   onPress={() => {
                     setPaymentMethod(option.id);
                     setPaymentError("");
                   }}
                 >
-                  <View style={[styles.paymentIconWrap, { backgroundColor: option.accentColor }]}>
-                    <Ionicons name={option.icon} size={18} color={palette.foreground} />
+                  <View
+                    style={[
+                      styles.paymentIconWrap,
+                      { backgroundColor: option.accentColor },
+                    ]}
+                  >
+                    <Ionicons
+                      name={option.icon}
+                      size={18}
+                      color={palette.foreground}
+                    />
                   </View>
                   <View style={styles.paymentCopy}>
                     <Text style={styles.paymentTitle}>{option.title}</Text>
-                    <Text style={styles.paymentSubtitle}>{option.subtitle}</Text>
+                    <Text style={styles.paymentSubtitle}>
+                      {option.subtitle}
+                    </Text>
                   </View>
                   <Ionicons
-                    name={isActive ? "radio-button-on" : "radio-button-off-outline"}
+                    name={
+                      isActive ? "radio-button-on" : "radio-button-off-outline"
+                    }
                     size={18}
-                    color={isActive ? palette.secondary : palette.mutedForeground}
+                    color={
+                      isActive ? palette.secondary : palette.mutedForeground
+                    }
                   />
                 </Pressable>
               );
             })}
           </View>
 
-          {paymentError ? <Text style={styles.errorText}>{paymentError}</Text> : null}
+          {paymentError ? (
+            <Text style={styles.errorText}>{paymentError}</Text>
+          ) : null}
         </View>
 
         <View style={styles.section}>
@@ -550,12 +1159,18 @@ export default function CheckoutScreen() {
           <View style={styles.summaryCard}>
             <View style={styles.summaryHeader}>
               <View>
-                <Text style={styles.summaryTitle}>{restaurant.restaurantName}</Text>
+                <Text style={styles.summaryTitle}>
+                  {restaurant.restaurantName}
+                </Text>
                 <Text style={styles.summaryMeta}>
-                  {items.length} item{items.length === 1 ? "" : "s"} ready for delivery
+                  {items.length} item{items.length === 1 ? "" : "s"} ready for
+                  delivery
                 </Text>
               </View>
-              <Pressable style={styles.changeButton} onPress={() => router.push("/(tabs)/cart")}>
+              <Pressable
+                style={styles.changeButton}
+                onPress={() => router.push("/(tabs)/cart")}
+              >
                 <Text style={styles.changeButtonText}>Edit cart</Text>
               </Pressable>
             </View>
@@ -568,13 +1183,17 @@ export default function CheckoutScreen() {
                       {item.quantity}x {item.name}
                     </Text>
                     <View style={styles.summaryItemMetaRow}>
-                      <Text style={styles.summaryItemMeta}>{formatCurrency(item.unitPrice)} each</Text>
+                      <Text style={styles.summaryItemMeta}>
+                        {formatCurrency(item.unitPrice)} each
+                      </Text>
                       {item.isPriceChanged ? (
                         <Text style={styles.itemUpdatedBadge}>Updated</Text>
                       ) : null}
                     </View>
                   </View>
-                  <Text style={styles.summaryItemPrice}>{formatCurrency(item.total)}</Text>
+                  <Text style={styles.summaryItemPrice}>
+                    {formatCurrency(item.total)}
+                  </Text>
                 </View>
               ))}
             </View>
@@ -602,7 +1221,9 @@ export default function CheckoutScreen() {
             </View>
 
             {quoteQuery.isLoading ? (
-              <Text style={styles.summaryHint}>Checking the latest restaurant pricing...</Text>
+              <Text style={styles.summaryHint}>
+                Checking the latest restaurant pricing...
+              </Text>
             ) : null}
           </View>
         </View>
@@ -627,40 +1248,40 @@ export default function CheckoutScreen() {
           </View>
           <Pressable
             style={[
-              styles.placeOrderButton,
-              (!selectedLocation ||
-                placeOrderMutation.isPending ||
-                bkashInitiateMutation.isPending ||
-                quoteQuery.isLoading ||
-                hasQuoteIssues ||
-                !isOnline) &&
-                styles.placeOrderButtonDisabled,
+              styles.placeOrderButtonLift,
+              isPrimaryActionDisabled && styles.placeOrderButtonLiftDisabled,
             ]}
-            disabled={
-              !selectedLocation ||
-              placeOrderMutation.isPending ||
-              bkashInitiateMutation.isPending ||
-              quoteQuery.isLoading ||
-              hasQuoteIssues ||
-              !isOnline
-            }
-            onPress={paymentMethod === "Bkash" ? handlePayWithBkash : handlePlaceOrder}
+            disabled={isPrimaryActionDisabled}
+            onPress={handlePrimaryAction}
           >
-            {placeOrderMutation.isPending || bkashInitiateMutation.isPending ? (
-              <ActivityIndicator size="small" color={palette.secondary} />
-            ) : (
-              <Text style={styles.placeOrderButtonText}>
-                {hasQuoteIssues
-                  ? "Fix cart"
-                  : !isOnline
-                    ? "Reconnect"
-                  : quoteQuery.isLoading
-                    ? "Checking..."
-                    : paymentMethod === "Bkash"
-                      ? "Pay with bKash"
-                      : "Place order"}
-              </Text>
-            )}
+            <View
+              style={[
+                styles.placeOrderButton,
+                isPrimaryActionDisabled && styles.placeOrderButtonDisabled,
+              ]}
+            >
+              <View style={styles.placeOrderButtonSheen} />
+              {placeOrderMutation.isPending ||
+              bkashInitiateMutation.isPending ? (
+                <ActivityIndicator size="small" color={palette.secondary} />
+              ) : (
+                <Text style={styles.placeOrderButtonText}>
+                  {shouldUsePrimaryActionForLocation
+                    ? "Change location"
+                    : hasQuoteIssues
+                      ? "Fix cart"
+                      : !isOnline
+                        ? "Reconnect"
+                        : paymentSettingsQuery.isLoading
+                          ? "Loading..."
+                          : quoteQuery.isLoading
+                            ? "Checking..."
+                            : paymentMethod === "Bkash"
+                              ? "Pay with bKash"
+                              : "Place order"}
+                </Text>
+              )}
+            </View>
           </Pressable>
         </View>
         {placeOrderMutation.isError ? (
@@ -672,22 +1293,19 @@ export default function CheckoutScreen() {
         ) : (
           <Text style={styles.footerNote}>
             {hasQuoteIssues
-              ? "Update your cart before you continue."
+              ? isServiceabilityBlocked
+                ? "Choose a delivery point inside this restaurant's delivery area."
+                : "Update your cart before you continue."
               : !isOnline
                 ? "Reconnect to verify prices and place this order."
-              : paymentMethod === "Bkash"
-                ? "You will continue to the bKash sandbox to confirm payment."
-                : quoteQuery.isLoading
-                  ? "We are verifying the latest restaurant prices for this order."
-                  : "Your selected saved location will be used for this delivery."}
+                : paymentMethod === "Bkash"
+                  ? "You will continue to the bKash sandbox to confirm payment."
+                  : quoteQuery.isLoading
+                    ? "We are verifying the latest restaurant prices for this order."
+                    : "Your selected delivery point will be used for this delivery."}
           </Text>
         )}
       </View>
-
-      <LocationSelectorSheet
-        visible={isLocationSheetOpen}
-        onClose={() => setIsLocationSheetOpen(false)}
-      />
     </SafeAreaView>
   );
 }
@@ -726,502 +1344,3 @@ function CheckoutSummaryRow({
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: palette.background,
-  },
-  content: {
-    gap: 16,
-    paddingBottom: 36,
-  },
-  header: {
-    paddingHorizontal: 18,
-    paddingTop: 8,
-    flexDirection: "row",
-    gap: 12,
-  },
-  backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surface,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  headerCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: 21,
-    color: palette.mutedForeground,
-  },
-  networkCard: {
-    marginHorizontal: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 22,
-    borderWidth: 1,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-  },
-  networkCardWarning: {
-    backgroundColor: "#FFF0F6",
-    borderColor: "#FFD7C7",
-  },
-  networkCardInfo: {
-    backgroundColor: "#FFF2F8",
-    borderColor: "#FFD6E7",
-  },
-  networkCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  networkTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  networkSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: palette.mutedForeground,
-  },
-  offlineWrap: {
-    marginHorizontal: 18,
-  },
-  reorderContextCard: {
-    marginHorizontal: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 22,
-    backgroundColor: "#FFEAF3",
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
-  },
-  reorderContextIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFFCC",
-  },
-  reorderContextCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  reorderContextTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  reorderContextSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  reorderContextDismiss: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFFA8",
-  },
-  section: {
-    gap: 8,
-  },
-  sectionHeader: {
-    paddingHorizontal: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  sectionTitle: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  sectionHint: {
-    fontSize: 12,
-    color: palette.mutedForeground,
-  },
-  addressCard: {
-    marginHorizontal: 18,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    padding: 16,
-    borderRadius: 26,
-    backgroundColor: palette.surface,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  addressIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surfaceMuted,
-  },
-  addressCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  addressTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  addressTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  changePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#EEF2FF",
-  },
-  changePillText: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: palette.sky,
-  },
-  addressActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  defaultBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#FDEEF5",
-  },
-  defaultBadgeText: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: palette.secondary,
-  },
-  addressLine: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: palette.foreground,
-  },
-  addressMeta: {
-    fontSize: 12,
-    color: palette.mutedForeground,
-  },
-  surfaceCard: {
-    marginHorizontal: 18,
-    padding: 16,
-    borderRadius: 26,
-    backgroundColor: palette.surface,
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  voucherRow: {
-    flexDirection: "row",
-    gap: 10,
-    alignItems: "center",
-  },
-  voucherInput: {
-    flex: 1,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.background,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    fontSize: 14,
-    color: palette.foreground,
-  },
-  voucherButton: {
-    minHeight: 46,
-    paddingHorizontal: 16,
-    borderRadius: 18,
-    backgroundColor: "#EEF2FF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  voucherButtonText: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: palette.sky,
-  },
-  voucherAppliedRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  voucherAppliedText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  voucherRemoveText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: palette.secondary,
-  },
-  paymentList: {
-    paddingHorizontal: 18,
-    gap: 10,
-  },
-  paymentCard: {
-    padding: 14,
-    borderRadius: 24,
-    backgroundColor: "#FFEAF3",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.1,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 7 },
-    elevation: 3,
-  },
-  paymentCardActive: {
-    backgroundColor: palette.surface,
-  },
-  paymentIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  paymentCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  paymentTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  paymentSubtitle: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: palette.mutedForeground,
-  },
-  errorText: {
-    marginHorizontal: 18,
-    fontSize: 12,
-    lineHeight: 18,
-    color: "#C62828",
-  },
-  summaryCard: {
-    marginHorizontal: 18,
-    padding: 18,
-    borderRadius: 28,
-    backgroundColor: palette.surface,
-    gap: 14,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.14,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 5,
-  },
-  summaryHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  summaryTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  summaryMeta: {
-    fontSize: 12,
-    marginTop: 2,
-    color: palette.mutedForeground,
-  },
-  changeButton: {
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-  },
-  changeButtonText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  summaryItemList: {
-    gap: 10,
-  },
-  summaryItemRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  summaryItemCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  summaryItemName: {
-    fontSize: 14,
-    color: palette.foreground,
-    fontWeight: "600",
-  },
-  summaryItemMetaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  summaryItemMeta: {
-    fontSize: 12,
-    color: palette.mutedForeground,
-  },
-  itemUpdatedBadge: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "700",
-    color: palette.secondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  summaryItemPrice: {
-    fontSize: 12,
-    color: palette.foreground,
-    fontWeight: "600",
-  },
-  summaryTotals: {
-    gap: 10,
-  },
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  summaryRowLabel: {
-    fontSize: 14,
-    color: palette.mutedForeground,
-  },
-  summaryRowValue: {
-    fontSize: 14,
-    color: palette.foreground,
-    fontWeight: "600",
-  },
-  summaryRowHighlight: {
-    color: palette.successText,
-  },
-  summaryRowStrong: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: palette.border,
-    marginVertical: 2,
-  },
-  summaryHint: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  footerWrap: {
-    position: "absolute",
-    left: 18,
-    right: 18,
-    bottom: 0,
-  },
-  footerCard: {
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: 28,
-    backgroundColor: palette.secondary,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.18,
-    shadowRadius: 22,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 8,
-  },
-  footerCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  footerLabel: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.82)",
-  },
-  footerAmount: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: palette.surface,
-  },
-  placeOrderButton: {
-    minWidth: 156,
-    height: 46,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surface,
-    paddingHorizontal: 16,
-  },
-  placeOrderButtonDisabled: {
-    opacity: 0.72,
-  },
-  placeOrderButtonText: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: palette.secondary,
-  },
-  footerNote: {
-    marginTop: 8,
-    paddingHorizontal: 6,
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  footerError: {
-    marginTop: 8,
-    paddingHorizontal: 6,
-    fontSize: 12,
-    lineHeight: 18,
-    color: "#D83A66",
-  },
-});

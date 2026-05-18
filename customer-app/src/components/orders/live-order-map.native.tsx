@@ -272,25 +272,6 @@ export const LiveOrderMap = memo(function LiveOrderMap({
       </View>
 
       <View style={styles.statusFooter}>
-        <View style={styles.statusFooterTopRow}>
-          <View style={styles.mapModeBadge}>
-            <Ionicons name="radio-outline" size={14} color={palette.primary} />
-            <Text style={styles.mapModeText}>Live location</Text>
-          </View>
-
-          {isArriving ? (
-            <View style={styles.arrivedBadge}>
-              <Ionicons name="flash" size={14} color={palette.primary} />
-              <Text style={styles.arrivedText}>Rider is at your spot</Text>
-            </View>
-          ) : isNearby ? (
-            <View style={styles.nearbyBadge}>
-              <Ionicons name="flash" size={14} color={palette.successText} />
-              <Text style={styles.nearbyText}>Rider is nearby</Text>
-            </View>
-          ) : null}
-        </View>
-
         <View style={styles.statusChip}>
           <View
             style={[
@@ -355,61 +336,6 @@ const styles = StyleSheet.create({
     gap: 10,
     backgroundColor: palette.surface,
   },
-  statusFooterTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  mapModeBadge: {
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  mapModeText: {
-    fontSize: 14,
-    lineHeight: 18,
-    color: palette.foreground,
-    fontWeight: "600",
-  },
-  nearbyBadge: {
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: "#EAF7EE",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderWidth: 1,
-    borderColor: "rgba(20,152,91,0.12)",
-  },
-  nearbyText: {
-    fontSize: 14,
-    lineHeight: 18,
-    color: palette.successText,
-    fontWeight: "600",
-  },
-  arrivedBadge: {
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,241,233,0.96)",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255,122,89,0.14)",
-  },
-  arrivedText: {
-    fontSize: 14,
-    lineHeight: 18,
-    color: palette.primary,
-    fontWeight: "600",
-  },
   statusChip: {
     minHeight: 56,
     paddingHorizontal: 12,
@@ -448,6 +374,9 @@ const styles = StyleSheet.create({
     color: palette.successText,
   },
   statusChipLabelArriving: {
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "900",
     color: palette.primary,
   },
   statusChipDetail: {

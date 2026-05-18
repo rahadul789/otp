@@ -24,6 +24,10 @@ export type Payout = {
   method: PayoutMethodType
   batchReference?: string
   transactionId: string
+  providerReference?: string
+  providerPayoutId?: string
+  paymentProofUrl?: string
+  processingNote?: string
   createdAt: string
   processedAt: string | null
   failureReason?: string | null
@@ -50,7 +54,7 @@ export type EarningTransaction = {
 export const settlementDelayDays = 3
 
 export function formatPayoutMoney(amount: number) {
-  return `${amount}tk`
+  return `${Math.round(amount).toLocaleString()}tk`
 }
 
 export function getPayoutStatusLabel(status: PayoutStatus) {

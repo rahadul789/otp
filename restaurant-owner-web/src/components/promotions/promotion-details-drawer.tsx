@@ -3,6 +3,7 @@ import {
   CalendarRange,
   CircleDollarSign,
   Coins,
+  Info,
   Percent,
   TicketPercent,
   Truck,
@@ -55,7 +56,7 @@ function getLifecycleBadgeClass(
 }
 
 function formatMoney(value: number) {
-  return `${Math.round(value)}tk`
+  return `${Math.round(value).toLocaleString()}tk`
 }
 
 function formatDateTime(value: string) {
@@ -88,7 +89,7 @@ export function PromotionDetailsDrawer({
       color: "hsl(var(--chart-1))",
     },
     discount: {
-      label: "Discount Cost",
+      label: "Owner Cost",
       color: "hsl(var(--chart-2))",
     },
   }
@@ -236,11 +237,19 @@ export function PromotionDetailsDrawer({
               </Card>
             </section>
 
-            {voucher.type === "free-delivery" ? (
-              <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-                Free Delivery removes the customer&apos;s delivery charge. The
-                waived delivery fee will be counted as discount cost for this
-                voucher.
+            {voucher.fundedBy === "owner" || voucher.fundedBy === "shared" ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                <div className="flex items-start gap-3">
+                  <Info className="mt-0.5 size-4 shrink-0" />
+                  <div>
+                    <p className="font-medium">This offer affects restaurant payout</p>
+                    <p className="mt-1 text-amber-900/80">
+                      {voucher.type === "free-delivery"
+                        ? "The waived delivery fee is counted as voucher cost. It will reduce owner earning for orders using this voucher."
+                        : "The used discount amount is deducted from owner earning before payout."}
+                    </p>
+                  </div>
+                </div>
               </div>
             ) : null}
 
@@ -274,7 +283,7 @@ export function PromotionDetailsDrawer({
               <Card className="rounded-2xl border-violet-200/70 bg-violet-50/60 shadow-none">
                 <CardContent className="flex items-start justify-between p-5">
                   <div>
-                    <p className="text-sm text-muted-foreground">Discount Given</p>
+                    <p className="text-sm text-muted-foreground">Owner Cost</p>
                     <p className="mt-3 text-3xl font-semibold">
                       {formatMoney(voucher.analytics.totalDiscountGiven)}
                     </p>
@@ -287,7 +296,7 @@ export function PromotionDetailsDrawer({
               <Card className="rounded-2xl border-amber-200/70 bg-amber-50/60 shadow-none">
                 <CardContent className="flex items-start justify-between p-5">
                   <div>
-                    <p className="text-sm text-muted-foreground">Revenue</p>
+                    <p className="text-sm text-muted-foreground">Sales from Voucher</p>
                     <p className="mt-3 text-3xl font-semibold">
                       {formatMoney(voucher.analytics.revenueGenerated)}
                     </p>

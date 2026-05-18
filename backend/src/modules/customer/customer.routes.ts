@@ -1,9 +1,11 @@
 import { Router } from "express"
 import {
   createOrderActionLimiter,
+  createOtpSendIpLimiter,
   createOtpSendLimiter,
   createOtpVerifyLimiter,
   createPaymentLimiter,
+  createPasswordRecoveryLimiter,
   createRefreshLimiter,
   createSigninLimiter,
   createSupportWriteLimiter,
@@ -16,8 +18,11 @@ import {
   getCustomerOrder,
   getCustomerOrders,
   getCustomerProfileSummary,
+  getCustomerReferralSummaryController,
+  postCustomerReferralApplyController,
   getCustomerLocations,
   getCustomerNotifications,
+  getCustomerNotificationCampaign,
   deleteCustomerAccountRequest,
   deleteCustomerPushToken,
   getCustomerDiscovery,
@@ -39,6 +44,7 @@ import {
   patchCustomerLocationDefault,
   patchCustomerLocationTouch,
   postCustomerFavoriteToggle,
+  patchCustomerPassword,
   patchCustomerProfile,
   patchCustomerNotificationRead,
   patchCustomerNotificationsReadAll,
@@ -52,18 +58,23 @@ import {
   postCustomerSupportCaseController,
   postCustomerSupportCaseMessageController,
   refreshCustomerAuth,
+  resetCustomerPasswordController,
   signinCustomerGoogle,
   signinCustomerWithPasswordController,
+  startCustomerPasswordReset,
   startCustomerPhoneAuth,
   verifyCustomerPhoneOtpCode,
   verifyCustomerPhoneChangeOtp,
-  verifyCustomerPhoneAuth
+  verifyCustomerPhoneAuth,
+  verifyCustomerPasswordResetOtpCode
 } from "./customer.controller"
 
 export const customerRouter = Router()
 const customerAuthStartLimiter = createOtpSendLimiter()
+const customerAuthStartIpLimiter = createOtpSendIpLimiter()
 const customerPasswordSigninLimiter = createSigninLimiter()
 const customerOtpVerifyLimiter = createOtpVerifyLimiter()
+const customerPasswordRecoveryLimiter = createPasswordRecoveryLimiter()
 const customerRefreshLimiter = createRefreshLimiter()
 const customerSupportWriteLimiter = createSupportWriteLimiter()
 const customerPaymentLimiter = createPaymentLimiter()
@@ -71,12 +82,21 @@ const customerOrderActionLimiter = createOrderActionLimiter()
 const customerAnalyticsEventLimiter = createAnalyticsEventLimiter()
 
 customerRouter.post("/analytics/events", customerAnalyticsEventLimiter, postCustomerAnalyticsEvent)
-customerRouter.post("/auth/phone/start", customerAuthStartLimiter, startCustomerPhoneAuth)
+customerRouter.post("/auth/phone/start", customerAuthStartIpLimiter, customerAuthStartLimiter, startCustomerPhoneAuth)
 customerRouter.post("/auth/phone/password", customerPasswordSigninLimiter, signinCustomerWithPasswordController)
+customerRouter.post(
+  "/auth/password/forgot",
+  customerAuthStartIpLimiter,
+  customerPasswordRecoveryLimiter,
+  startCustomerPasswordReset
+)
+customerRouter.post("/auth/password/otp/verify", customerOtpVerifyLimiter, verifyCustomerPasswordResetOtpCode)
+customerRouter.post("/auth/password/reset", customerPasswordRecoveryLimiter, resetCustomerPasswordController)
 customerRouter.post("/auth/phone/otp/verify", customerOtpVerifyLimiter, verifyCustomerPhoneOtpCode)
 customerRouter.post("/auth/phone/verify", customerOtpVerifyLimiter, verifyCustomerPhoneAuth)
 customerRouter.post(
   "/auth/phone-change/start",
+  customerAuthStartIpLimiter,
   customerAuthStartLimiter,
   requireAuth,
   requireRole("customer"),
@@ -91,7 +111,10 @@ customerRouter.post(
 )
 customerRouter.post("/auth/google", signinCustomerGoogle)
 customerRouter.get("/profile", requireAuth, requireRole("customer"), getCustomerProfileSummary)
+customerRouter.get("/referrals/summary", requireAuth, requireRole("customer"), getCustomerReferralSummaryController)
+customerRouter.post("/referrals/apply", requireAuth, requireRole("customer"), postCustomerReferralApplyController)
 customerRouter.patch("/profile", requireAuth, requireRole("customer"), patchCustomerProfile)
+customerRouter.patch("/profile/password", requireAuth, requireRole("customer"), patchCustomerPassword)
 customerRouter.post("/account-request", requireAuth, requireRole("customer"), postCustomerAccountRequest)
 customerRouter.delete(
   "/account-request",
@@ -182,6 +205,12 @@ customerRouter.post(
   postCustomerPushToken
 )
 customerRouter.get("/notifications", requireAuth, requireRole("customer"), getCustomerNotifications)
+customerRouter.get(
+  "/notifications/campaigns/:campaignId",
+  requireAuth,
+  requireRole("customer"),
+  getCustomerNotificationCampaign
+)
 customerRouter.patch(
   "/notifications/:notificationId/read",
   requireAuth,

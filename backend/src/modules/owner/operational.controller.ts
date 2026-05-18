@@ -9,6 +9,7 @@ import {
   deleteMenuItemPermanently,
   createCategory,
   createMenuItem,
+  extendOrderPreparation,
   getOrderById,
   assignOwnerRiderToOrder,
   listCategories,
@@ -42,6 +43,7 @@ const menuItemCreateSchema = z.object({
   categoryId: z.string().min(1),
   name: z.string().min(1),
   description: z.string().optional(),
+  images: z.array(z.object({ url: z.string().optional(), publicId: z.string().optional() })).optional(),
   status: z.enum(["active", "archived"]).default("active"),
   availability: z.enum(["available", "unavailable"]).default("available"),
   kind: z.enum(["simple", "variant"]).default("simple"),
@@ -55,6 +57,7 @@ const menuItemUpdateSchema = z.object({
   categoryId: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   description: z.string().optional(),
+  images: z.array(z.object({ url: z.string().optional(), publicId: z.string().optional() })).optional(),
   status: z.enum(["active", "archived"]).optional(),
   availability: z.enum(["available", "unavailable"]).optional(),
   kind: z.enum(["simple", "variant"]).optional(),
@@ -77,6 +80,7 @@ const categoryListQuerySchema = z.object({
 const menuItemsListQuerySchema = z.object({
   search: z.string().optional(),
   status: z.string().optional(),
+  availability: z.enum(["all", "available", "unavailable"]).optional(),
   categoryId: z.string().optional(),
   popularFilter: z.enum(["all", "popular", "regular"]).optional(),
   sortBy: z.enum(["newestUpdated", "nameAsc", "nameDesc", "priceHigh", "priceLow"]).optional(),
@@ -85,7 +89,7 @@ const menuItemsListQuerySchema = z.object({
 })
 
 const orderTransitionSchema = z.object({
-  nextStatus: z.enum(["Accepted", "Rejected", "Preparing", "ReadyForPickup"]),
+  nextStatus: z.enum(["Accepted", "Rejected", "Preparing", "ReadyForPickup", "Cancelled"]),
   actor: z.literal("owner"),
   note: z.string().optional()
 })
@@ -94,15 +98,20 @@ const assignOwnerRiderSchema = z.object({
   riderId: z.string().min(1)
 })
 
+const orderPreparationExtendSchema = z.object({
+  minutes: z.union([z.literal(5), z.literal(10)])
+})
+
 const listOrdersQuerySchema = z.object({
   tab: z.enum(["live", "history"]).optional(),
   status: z.string().optional(),
   search: z.string().optional(),
   paymentMethod: z.string().optional(),
   sortBy: z.enum(["latest", "oldest", "highestValue"]).optional(),
-  preset: z.enum(["today", "yesterday", "last7Days", "last30Days", "thisWeek", "thisMonth", "custom"]).optional(),
+  preset: z.enum(["today", "yesterday", "last7Days", "last30Days", "last90Days", "thisWeek", "thisMonth", "lastMonth", "lifetime", "custom"]).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  dateBasis: z.enum(["created", "history", "activity"]).optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(500).optional()
 })
@@ -176,6 +185,7 @@ export const getOwnerMenuItems = asyncHandler(async (req: AuthenticatedRequest, 
   const query = menuItemsListQuerySchema.parse({
     search: getStringParam(req.query.search) || undefined,
     status: getStringParam(req.query.status) || undefined,
+    availability: getStringParam(req.query.availability) || undefined,
     categoryId: getStringParam(req.query.categoryId) || undefined,
     popularFilter: getStringParam(req.query.popularFilter) || undefined,
     sortBy: getStringParam(req.query.sortBy) || undefined,
@@ -185,6 +195,7 @@ export const getOwnerMenuItems = asyncHandler(async (req: AuthenticatedRequest, 
   const data =
     query.search ||
     query.status ||
+    query.availability ||
     query.categoryId ||
     query.popularFilter ||
     query.sortBy ||
@@ -235,6 +246,7 @@ export const getOwnerOrders = asyncHandler(async (req: AuthenticatedRequest, res
     preset: getStringParam(req.query.preset) || undefined,
     from: getStringParam(req.query.from) || undefined,
     to: getStringParam(req.query.to) || undefined,
+    dateBasis: getStringParam(req.query.dateBasis) || undefined,
     page: getStringParam(req.query.page) || undefined,
     pageSize: getStringParam(req.query.pageSize) || undefined
   })
@@ -282,6 +294,18 @@ export const postOwnerOrderAssignRider = asyncHandler(
     })
 
     return sendSuccess(res, { message: "Rider assigned successfully", data })
+  }
+)
+
+export const postOwnerOrderPreparationExtension = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const payload = orderPreparationExtendSchema.parse(req.body)
+    const data = await extendOrderPreparation({
+      ownerId: getOwnerId(req),
+      orderId: getStringParam(req.params.orderId),
+      minutes: payload.minutes
+    })
+    return sendSuccess(res, { message: "Preparation time updated", data })
   }
 )
 

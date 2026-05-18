@@ -1,11 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
-import { LocationSelectorSheet } from "@/src/components/location-selector-sheet";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import { Screen } from "@/src/components/screen";
 import {
@@ -15,6 +14,7 @@ import {
   useCustomerProfileQuery,
 } from "@/src/hooks/use-customer-api";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
+import { formatDeliveryAddress } from "@/src/lib/location-address";
 import { useIsOnline } from "@/src/hooks/use-network-status";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { useLocationStore } from "@/src/store/location-store";
@@ -22,19 +22,24 @@ import { palette } from "@/src/theme/palette";
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const [isLocationSheetOpen, setIsLocationSheetOpen] = useState(false);
   const customer = useCustomerAuthStore((state) => state.customer);
   useCustomerProfileQuery();
-  const selectedLocation = useLocationStore((state) => state.selectedLocation);
-  const savedLocations = useLocationStore((state) => state.savedLocations);
   const logoutMutation = useCustomerLogoutMutation();
   const notificationsQuery = useCustomerNotificationsQuery();
   const favoriteRestaurantIdsQuery = useCustomerFavoriteRestaurantIdsQuery();
+  const selectedLocation = useLocationStore((state) => state.selectedLocation);
   const isOnline = useIsOnline();
   const unreadCount = notificationsQuery.data?.unreadCount ?? 0;
   const favoriteCount = favoriteRestaurantIdsQuery.data?.length ?? 0;
 
   const displayName = useMemo(() => customer?.fullName || "Customer", [customer?.fullName]);
+  const heroLocationText = useMemo(() => {
+    const typedAddress = selectedLocation?.addressDetails?.trim();
+    return (
+      typedAddress ||
+      formatDeliveryAddress(selectedLocation, "Set delivery point")
+    );
+  }, [selectedLocation]);
   const initials = useMemo(() => {
     const base = displayName
       .split(" ")
@@ -54,7 +59,7 @@ export default function ProfileScreen() {
           <View style={styles.emptyWrap}>
             <EmptyStateCard
               title="You are not signed in"
-              description="Sign in with your phone to unlock checkout, saved locations, and order history."
+              description="Sign in with your phone to unlock checkout, favorites, and order history."
               actionLabel="Sign in"
               onPress={() =>
                 router.push({
@@ -99,14 +104,32 @@ export default function ProfileScreen() {
                 </View>
 
                 <View style={styles.identityCopy}>
-                  <Text style={styles.name}>{displayName}</Text>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.name} numberOfLines={2}>
+                      {displayName}
+                    </Text>
+                    <Pressable
+                      style={styles.nameEditButton}
+                      onPress={() => router.push("/profile-edit")}
+                      hitSlop={8}
+                    >
+                      <Ionicons
+                        name="create-outline"
+                        size={17}
+                        color={palette.foreground}
+                      />
+                    </Pressable>
+                  </View>
                   <Text style={styles.subtitle}>
-                    Keep your account, delivery locations, notifications, and account requests in one place.
+                    Keep your account, notifications, rewards, and support details in one place.
                   </Text>
 
                   <View style={styles.heroPillRow}>
-                    <InfoPill icon="location-outline" text={selectedLocation?.label ?? "No delivery point"} />
-                    <InfoPill icon="notifications-outline" text={`${unreadCount} unread`} />
+                    <InfoPill
+                      icon="location-outline"
+                      text={heroLocationText}
+                      onPress={() => router.push("/location-picker")}
+                    />
                   </View>
                 </View>
               </View>
@@ -126,20 +149,11 @@ export default function ProfileScreen() {
 
               <View style={styles.overviewGrid}>
                 <OverviewCard
-                  icon="location-outline"
-                  label="Locations"
-                  value={`${savedLocations.length}`}
-                  caption="Saved spots"
-                  tint="#FFE4EE"
-                  onPress={() => setIsLocationSheetOpen(true)}
-                />
-                <OverviewCard
                   icon="call-outline"
                   label="Phone"
                   value={customer.phone}
                   caption="Verified"
                   tint="#E8F1FF"
-                  onPress={() => router.push("/profile-phone")}
                 />
                 <OverviewCard
                   icon="heart-outline"
@@ -148,6 +162,14 @@ export default function ProfileScreen() {
                   caption="Saved restaurants"
                   tint="#FFF1C9"
                   onPress={() => router.push("/favorite-restaurants")}
+                />
+                <OverviewCard
+                  icon="gift-outline"
+                  label="Refer"
+                  value="Tk 50"
+                  caption="Per reward"
+                  tint="#F0F7FF"
+                  onPress={() => router.push("/referrals")}
                 />
                 <OverviewCard
                   icon="help-circle-outline"
@@ -174,16 +196,22 @@ export default function ProfileScreen() {
                   onPress={() => router.push("/profile-edit")}
                 />
                 <ProfileNavCard
-                  icon="call-outline"
+                  icon="location-outline"
                   tint="#FFF0E8"
-                  title="Phone number"
-                  onPress={() => router.push("/profile-phone")}
+                  title="Delivery point"
+                  onPress={() => router.push("/location-picker")}
                 />
                 <ProfileNavCard
-                  icon="navigate-outline"
-                  tint="#FFF4E8"
-                  title="Delivery locations"
-                  onPress={() => setIsLocationSheetOpen(true)}
+                  icon="lock-closed-outline"
+                  tint="#EEF8F2"
+                  title={customer.hasPassword ? "Change password" : "Add password"}
+                  onPress={() => router.push("/profile-password")}
+                />
+                <ProfileNavCard
+                  icon="gift-outline"
+                  tint="#F0F7FF"
+                  title="Refer & earn"
+                  onPress={() => router.push("/referrals")}
                 />
                 <ProfileNavCard
                   icon="notifications-outline"
@@ -267,10 +295,6 @@ export default function ProfileScreen() {
         )}
       </ScrollView>
 
-      <LocationSelectorSheet
-        visible={isLocationSheetOpen}
-        onClose={() => setIsLocationSheetOpen(false)}
-      />
     </Screen>
   );
 }
@@ -293,16 +317,35 @@ function SectionHeader({
 function InfoPill({
   icon,
   text,
+  onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   text: string;
+  onPress?: () => void;
 }) {
-  return (
-    <View style={styles.infoPill}>
+  const content = (
+    <>
       <Ionicons name={icon} size={14} color={palette.foreground} />
       <Text style={styles.infoPillText} numberOfLines={1}>
         {text}
       </Text>
+      {onPress ? (
+        <Ionicons name="chevron-forward" size={13} color={palette.mutedForeground} />
+      ) : null}
+    </>
+  );
+
+  if (onPress) {
+    return (
+      <Pressable style={styles.infoPill} onPress={onPress}>
+        {content}
+      </Pressable>
+    );
+  }
+
+  return (
+    <View style={styles.infoPill}>
+      {content}
     </View>
   );
 }
@@ -342,7 +385,14 @@ function OverviewCard({
   }
 
   return (
-    <Pressable style={cardStyle} onPress={onPress}>
+    <Pressable
+      style={cardStyle}
+      onPress={onPress}
+      accessibilityRole="button"
+    >
+      <View style={styles.overviewActionCue}>
+        <Ionicons name="chevron-forward" size={14} color={palette.foreground} />
+      </View>
       <View style={styles.overviewIconWrap}>
         <Ionicons name={icon} size={18} color={palette.foreground} />
       </View>
@@ -499,11 +549,27 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
   name: {
+    flex: 1,
     fontSize: 31,
     lineHeight: 37,
     fontWeight: "800",
     color: palette.foreground,
+  },
+  nameEditButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(31, 36, 48, 0.08)",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
   },
   subtitle: {
     fontSize: 14,
@@ -531,7 +597,7 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontWeight: "700",
     color: palette.foreground,
-    maxWidth: 180,
+    maxWidth: 210,
   },
   section: { gap: 14 },
   sectionHeader: {
@@ -560,6 +626,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   overviewCard: {
+    position: "relative",
     width: "48%",
     minHeight: 132,
     padding: 16,
@@ -582,6 +649,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.82)",
+  },
+  overviewActionCue: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.68)",
   },
   overviewValue: {
     fontSize: 20,

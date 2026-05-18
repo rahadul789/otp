@@ -2,21 +2,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Image } from "lucide-react"
 import { toast } from "sonner"
 
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   checkCustomerHomePushReceipts,
   cancelCustomerHomePushSchedule,
   getPlatformContent,
-  listAdminCustomers,
-  listAdminRestaurants,
   refreshCustomerHomePushConversions,
   scheduleCustomerHomePushCampaign,
   sendCustomerHomePushCampaign,
   sendCustomerHomeTestPush,
   updatePlatformContent,
   type PlatformContent,
-} from "@/lib/admin-api"
+} from "@/lib/admin-cms-api"
 
-import { CustomerHomeCmsSection } from "./coupons-page"
+import { CustomerHomeCmsSection } from "./customer-home-cms-section"
 
 function formatCurrency(value?: number | null) {
   return `Tk ${Math.round(Number.isFinite(value ?? 0) ? value ?? 0 : 0).toLocaleString()}`
@@ -28,16 +28,7 @@ export function CmsPage() {
   const platformContentQuery = useQuery({
     queryKey: ["admin-platform-content"],
     queryFn: getPlatformContent,
-  })
-
-  const customersQuery = useQuery({
-    queryKey: ["admin-customers", "home-cms"],
-    queryFn: () => listAdminCustomers({ page: 1, pageSize: 100, sortBy: "highestSpend" }),
-  })
-
-  const restaurantsQuery = useQuery({
-    queryKey: ["admin-restaurants", "home-cms"],
-    queryFn: () => listAdminRestaurants({ page: 1, pageSize: 100, sortBy: "newestUpdated" }),
+    staleTime: 30_000,
   })
 
   const updateContentMutation = useMutation({
@@ -113,6 +104,45 @@ export function CmsPage() {
     onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to cancel schedule"),
   })
 
+  if (platformContentQuery.isError) {
+    const message =
+      platformContentQuery.error instanceof Error
+        ? platformContentQuery.error.message
+        : "Failed to load CMS content."
+
+    return (
+      <>
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+              <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Image className="size-5" />
+              </span>
+              Content / CMS
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Manage customer-app home content, education blocks, and modals.
+              Push campaigns are managed from Notifications.
+            </p>
+          </div>
+        </div>
+
+        <Card>
+          <CardContent className="flex min-h-48 flex-col items-center justify-center gap-3 text-center">
+            <div className="rounded-full bg-destructive/10 p-3 text-destructive">
+              <Image className="size-6" />
+            </div>
+            <div>
+              <p className="font-semibold">CMS content could not load</p>
+              <p className="mt-1 max-w-xl text-sm text-muted-foreground">{message}</p>
+            </div>
+            <Button onClick={() => platformContentQuery.refetch()}>Try again</Button>
+          </CardContent>
+        </Card>
+      </>
+    )
+  }
+
   return (
     <>
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -132,8 +162,8 @@ export function CmsPage() {
 
       <CustomerHomeCmsSection
         content={platformContentQuery.data?.content ?? null}
-        customers={customersQuery.data?.items ?? []}
-        restaurants={restaurantsQuery.data?.items ?? []}
+        customers={[]}
+        restaurants={[]}
         isLoading={platformContentQuery.isLoading}
         isSaving={updateContentMutation.isPending}
         isSending={sendHomePushMutation.isPending}

@@ -8,6 +8,7 @@ import { RestaurantModel } from "../auth/auth.model";
 import { ReviewModel } from "../owner/experience.model";
 import { OrderModel } from "../owner/operational.model";
 import { AdminAuditLogModel, AdminModel } from "./admin.model";
+import { AdminCustomerGroupModel } from "./customer-group.model";
 
 const LIVE_ORDER_STATUSES = [
   "New",
@@ -21,9 +22,29 @@ type CustomerListParams = {
   search?: string;
   status?: "all" | "active" | "suspended" | "locked";
   requestStatus?: "all" | "pending" | "cancelled" | "reviewed" | "completed" | "none";
+  customerGroupKey?: string;
   sortBy?: "newest" | "recentLogin" | "mostOrders" | "highestSpend";
   page?: number;
   pageSize?: number;
+};
+
+type CreateCustomerGroupParams = {
+  name: string;
+  description?: string;
+  sourceFilter?: CustomerListParams;
+  customerIds?: string[];
+  adminId?: string;
+};
+
+type UpdateCustomerGroupParams = {
+  groupId: string;
+  name?: string;
+  description?: string;
+};
+
+type UpdateCustomerGroupMembersParams = {
+  groupId: string;
+  customerIds: string[];
 };
 
 type CustomerOrdersParams = {
@@ -70,6 +91,18 @@ function objectIdString(value: unknown) {
   return "";
 }
 
+function objectIdValues(values: unknown[]) {
+  return values
+    .map((value) => {
+      if (value instanceof mongoose.Types.ObjectId) return value;
+      const stringId = objectIdString(value);
+      return mongoose.Types.ObjectId.isValid(stringId)
+        ? new mongoose.Types.ObjectId(stringId)
+        : null;
+    })
+    .filter((value): value is mongoose.Types.ObjectId => Boolean(value));
+}
+
 function toObjectIdOrThrow(value: string, label: string) {
   if (!mongoose.Types.ObjectId.isValid(value)) {
     throw new AppError(StatusCodes.BAD_REQUEST, "INVALID_ID", `${label} id is invalid`);
@@ -82,6 +115,10 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
   const now = new Date();
   let from: Date | null = null;
   let to: Date | null = null;
+
+  if (params?.preset === "lifetime") {
+    return null;
+  }
 
   if (params?.preset === "today") {
     from = new Date(now);
@@ -97,6 +134,9 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
   } else if (params?.preset === "last30Days") {
     from = new Date(now);
     from.setDate(from.getDate() - 30);
+  } else if (params?.preset === "last90Days") {
+    from = new Date(now);
+    from.setDate(from.getDate() - 90);
   } else if (params?.preset === "thisWeek") {
     from = new Date(now);
     const day = from.getDay();
@@ -109,6 +149,9 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
   } else if (params?.preset === "thisMonth") {
     from = new Date(now.getFullYear(), now.getMonth(), 1);
     to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else if (params?.preset === "lastMonth") {
+    from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
   } else if (params?.preset === "custom") {
     from = params.from ? new Date(params.from) : null;
     to = params.to ? new Date(params.to) : null;
@@ -163,6 +206,118 @@ function asRecordArray(value: unknown): Array<Record<string, any>> {
   return Array.isArray(value) ? (value as Array<Record<string, any>>) : [];
 }
 
+function addCustomerIdInFilter(query: Record<string, unknown>, ids: unknown[]) {
+  const objectIds = objectIdValues(ids);
+  const current = query._id as Record<string, unknown> | undefined;
+  if (current && typeof current === "object" && Array.isArray(current.$in)) {
+    const allowed = new Set(objectIds.map((id) => id.toString()));
+    current.$in = objectIdValues(current.$in).filter((id) =>
+      allowed.has(id.toString()),
+    );
+    query._id = current;
+    return;
+  }
+  query._id =
+    current && typeof current === "object"
+      ? { ...current, $in: objectIds }
+      : { $in: objectIds };
+}
+
+function addCustomerIdNinFilter(query: Record<string, unknown>, ids: unknown[]) {
+  const objectIds = objectIdValues(ids);
+  const current = query._id as Record<string, unknown> | undefined;
+  query._id =
+    current && typeof current === "object"
+      ? { ...current, $nin: objectIds }
+      : { $nin: objectIds };
+}
+
+async function applyCustomerGroupFilter(
+  query: Record<string, unknown>,
+  customerGroupKey?: string,
+) {
+  if (!customerGroupKey || customerGroupKey === "none") return;
+
+  if (customerGroupKey.startsWith("manual:")) {
+    const groupId = customerGroupKey.replace("manual:", "").trim();
+    const group = mongoose.Types.ObjectId.isValid(groupId)
+      ? await AdminCustomerGroupModel.findOne({
+          _id: groupId,
+          archivedAt: null,
+        }).lean()
+      : null;
+    addCustomerIdInFilter(query, group?.customerIds ?? []);
+    return;
+  }
+
+  if (customerGroupKey === "has_push_token") {
+    query.pushTokens = {
+      $elemMatch: {
+        token: { $exists: true, $ne: "" },
+        disabledAt: null,
+      },
+    };
+    return;
+  }
+
+  if (customerGroupKey === "new_users") {
+    addCustomerIdNinFilter(query, await OrderModel.distinct("customerId", {}));
+    return;
+  }
+
+  if (customerGroupKey === "returning_users") {
+    addCustomerIdInFilter(query, await OrderModel.distinct("customerId", {}));
+    return;
+  }
+
+  if (customerGroupKey === "ordered_last_30_days") {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    addCustomerIdInFilter(
+      query,
+      await OrderModel.distinct("customerId", { createdAt: { $gte: since } }),
+    );
+    return;
+  }
+
+  if (customerGroupKey === "inactive_30_days") {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    addCustomerIdNinFilter(
+      query,
+      await OrderModel.distinct("customerId", { createdAt: { $gte: since } }),
+    );
+    return;
+  }
+
+  if (customerGroupKey === "high_value_customers") {
+    const rows = await OrderModel.aggregate<{ _id: string; totalSpend: number }>([
+      { $match: { status: "Delivered" } },
+      {
+        $group: {
+          _id: "$customerId",
+          totalSpend: {
+            $sum: { $toDouble: { $ifNull: ["$pricing.total", 0] } },
+          },
+        },
+      },
+      { $match: { totalSpend: { $gte: 1000 } } },
+      { $limit: 5000 },
+    ]);
+    addCustomerIdInFilter(query, rows.map((row) => row._id));
+  }
+}
+
+function mapCustomerGroup(group: Record<string, any>) {
+  return {
+    id: objectIdString(group._id),
+    name: stringValue(group.name),
+    description: stringValue(group.description),
+    memberCount: Array.isArray(group.customerIds) ? group.customerIds.length : 0,
+    sourceFilter: group.sourceFilter ?? {},
+    createdAt: serializeDate(group.createdAt),
+    updatedAt: serializeDate(group.updatedAt),
+  };
+}
+
 function buildCustomerSort(sortBy?: CustomerListParams["sortBy"]): Record<string, 1 | -1> {
   if (sortBy === "recentLogin") return { lastLoginAt: -1, createdAt: -1 };
   if (sortBy === "mostOrders") return { totalOrders: -1, createdAt: -1 };
@@ -200,6 +355,7 @@ function mapCustomerSummary(customer: Record<string, any>) {
     liveOrders: numberValue(customer.liveOrders),
     deliveredOrders: numberValue(customer.deliveredOrders),
     deliveredSpend: numberValue(customer.deliveredSpend),
+    lastOrderAt: serializeDate(customer.lastOrderAt),
   };
 }
 
@@ -241,6 +397,7 @@ export async function listAdminCustomers(params: CustomerListParams = {}) {
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
   const query = buildCustomerQuery(params);
+  await applyCustomerGroupFilter(query, params.customerGroupKey);
   const sort = buildCustomerSort(params.sortBy);
   const [items, total, summaryRows] = await Promise.all([
     CustomerModel.aggregate<Record<string, any>>([
@@ -257,6 +414,7 @@ export async function listAdminCustomers(params: CustomerListParams = {}) {
       {
         $addFields: {
           totalOrders: { $size: "$orders" },
+          lastOrderAt: { $max: "$orders.createdAt" },
           liveOrders: {
             $size: {
               $filter: {
@@ -337,6 +495,185 @@ export async function listAdminCustomers(params: CustomerListParams = {}) {
     pageCount: Math.max(1, Math.ceil(total / pageSize)),
     summary,
   };
+}
+
+export async function listAdminCustomerGroups() {
+  const groups = await AdminCustomerGroupModel.find({ archivedAt: null })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  return {
+    items: groups.map(mapCustomerGroup),
+    total: groups.length,
+  };
+}
+
+async function resolveCustomerIdsForGroup(params: CustomerListParams = {}) {
+  const query = buildCustomerQuery(params);
+  await applyCustomerGroupFilter(query, params.customerGroupKey);
+  const customers = await CustomerModel.find(query, { _id: 1 })
+    .limit(5000)
+    .lean();
+  return customers.map((customer) => customer._id);
+}
+
+export async function createAdminCustomerGroup(params: CreateCustomerGroupParams) {
+  const name = params.name.trim();
+  if (name.length < 2) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "INVALID_GROUP_NAME",
+      "Group name is required",
+    );
+  }
+
+  const customerIds = params.customerIds?.length
+    ? objectIdValues(params.customerIds)
+    : await resolveCustomerIdsForGroup(params.sourceFilter ?? {});
+
+  if (!customerIds.length) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "EMPTY_CUSTOMER_GROUP",
+      "No customers match this group",
+    );
+  }
+
+  const group = await AdminCustomerGroupModel.create({
+    name,
+    description: params.description?.trim() ?? "",
+    customerIds,
+    sourceFilter: params.sourceFilter ?? {},
+    createdByAdminId: params.adminId ?? "",
+  });
+
+  return mapCustomerGroup(group.toObject());
+}
+
+export async function updateAdminCustomerGroup(params: UpdateCustomerGroupParams) {
+  const groupId = toObjectIdOrThrow(params.groupId, "Customer group");
+  const updates: Record<string, unknown> = {};
+
+  if (params.name !== undefined) {
+    const name = params.name.trim();
+    if (name.length < 2) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "INVALID_GROUP_NAME",
+        "Group name is required",
+      );
+    }
+    updates.name = name;
+  }
+
+  if (params.description !== undefined) {
+    updates.description = params.description.trim();
+  }
+
+  const group = await AdminCustomerGroupModel.findOneAndUpdate(
+    { _id: groupId, archivedAt: null },
+    { $set: updates },
+    { new: true },
+  ).lean();
+
+  if (!group) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_GROUP_NOT_FOUND",
+      "Customer group not found",
+    );
+  }
+
+  return mapCustomerGroup(group);
+}
+
+export async function archiveAdminCustomerGroup(groupId: string) {
+  const safeGroupId = toObjectIdOrThrow(groupId, "Customer group");
+  const group = await AdminCustomerGroupModel.findOneAndUpdate(
+    { _id: safeGroupId, archivedAt: null },
+    { $set: { archivedAt: new Date() } },
+    { new: true },
+  ).lean();
+
+  if (!group) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_GROUP_NOT_FOUND",
+      "Customer group not found",
+    );
+  }
+
+  return { deleted: true, group: mapCustomerGroup(group) };
+}
+
+export async function addAdminCustomerGroupMembers(
+  params: UpdateCustomerGroupMembersParams,
+) {
+  const groupId = toObjectIdOrThrow(params.groupId, "Customer group");
+  const customerIds = objectIdValues(params.customerIds);
+
+  if (!customerIds.length) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "CUSTOMER_GROUP_MEMBERS_REQUIRED",
+      "Choose at least one customer",
+    );
+  }
+
+  const existingCustomers = await CustomerModel.find(
+    { _id: { $in: customerIds } },
+    { _id: 1 },
+  ).lean();
+  const existingIds = existingCustomers.map((customer) => customer._id);
+
+  if (!existingIds.length) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "CUSTOMER_GROUP_MEMBERS_NOT_FOUND",
+      "Selected customers were not found",
+    );
+  }
+
+  const group = await AdminCustomerGroupModel.findOneAndUpdate(
+    { _id: groupId, archivedAt: null },
+    { $addToSet: { customerIds: { $each: existingIds } } },
+    { new: true },
+  ).lean();
+
+  if (!group) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_GROUP_NOT_FOUND",
+      "Customer group not found",
+    );
+  }
+
+  return mapCustomerGroup(group);
+}
+
+export async function removeAdminCustomerGroupMember(params: {
+  groupId: string;
+  customerId: string;
+}) {
+  const groupId = toObjectIdOrThrow(params.groupId, "Customer group");
+  const customerId = toObjectIdOrThrow(params.customerId, "Customer");
+
+  const group = await AdminCustomerGroupModel.findOneAndUpdate(
+    { _id: groupId, archivedAt: null },
+    { $pull: { customerIds: customerId } },
+    { new: true },
+  ).lean();
+
+  if (!group) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_GROUP_NOT_FOUND",
+      "Customer group not found",
+    );
+  }
+
+  return mapCustomerGroup(group);
 }
 
 export async function getAdminCustomerDetails(
@@ -599,6 +936,7 @@ export async function getAdminCustomerDetails(
       id: objectIdString(location._id),
       label: stringValue(location.label),
       address: stringValue(location.address),
+      addressDetails: stringValue(location.addressDetails),
       isDefault: location.isDefault === true,
       lastUsedAt: serializeDate(location.lastUsedAt),
     })),

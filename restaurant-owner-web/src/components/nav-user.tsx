@@ -25,6 +25,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { api } from "@/lib/api"
 import { clearOwnerAuthSession } from "@/lib/auth-session"
 import { useAppStore } from "@/store/app-store"
 
@@ -49,7 +50,13 @@ export function NavUser({
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("")
 
-  function handleLogout() {
+  async function handleLogout() {
+    try {
+      await api.post<{ revoked: true }>("/auth/owner/logout", undefined, false)
+    } catch {
+      // The local session should still be cleared even if the server is unreachable.
+    }
+
     clearOwnerAuthSession()
     sessionStorage.removeItem("owner:lastPath")
     resetAppState({ preserveAuthBootstrapped: true })

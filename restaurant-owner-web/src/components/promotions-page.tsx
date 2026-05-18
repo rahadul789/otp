@@ -106,7 +106,7 @@ type SortKey = "newestUpdated" | "highestUses" | "highestDiscount" | "endingSoon
 const pageSizeOptions = [5, 10, 20, 30]
 
 function formatMoney(value: number) {
-  return `${Math.round(value)}tk`
+  return `${Math.round(value).toLocaleString()}tk`
 }
 
 function getLifecycleBadgeClass(status: ReturnType<typeof getVoucherLifecycleStatus>) {
@@ -753,7 +753,7 @@ export function PromotionsPage() {
                   <TableHead>Minimum Order</TableHead>
                 ) : null}
                 {columnVisibility.usage ? <TableHead>Total Uses</TableHead> : null}
-                {columnVisibility.revenue ? <TableHead>Revenue</TableHead> : null}
+                {columnVisibility.revenue ? <TableHead>Sales / Owner Cost</TableHead> : null}
                 {columnVisibility.lifecycle ? <TableHead>Status</TableHead> : null}
                 {columnVisibility.dateRange ? (
                   <TableHead>Date Range</TableHead>
@@ -835,7 +835,7 @@ export function PromotionsPage() {
                             {formatMoney(voucher.analytics.revenueGenerated)}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            Discount {formatMoney(voucher.analytics.totalDiscountGiven)}
+                            Owner cost {formatMoney(voucher.analytics.totalDiscountGiven)}
                           </div>
                         </TableCell>
                       ) : null}

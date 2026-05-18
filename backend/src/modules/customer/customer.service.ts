@@ -9,7 +9,13 @@ import { logger } from "../../config/logger";
 import { env } from "../../config/env";
 import { emitSocketEvent } from "../../config/socket";
 import { createAdminOperationalAlert } from "../admin/admin-alert.service";
-import { createOtpSession } from "../auth/auth.service";
+import {
+  assertOtpVerificationAllowed,
+  createOtpSession,
+  getOtpSessionTiming,
+  recordOtpVerificationSuccess,
+  rejectInvalidOtpAttempt,
+} from "../auth/auth.service";
 import { getPlatformContent } from "../public/content.service";
 import {
   compareOtpCode,
@@ -21,7 +27,10 @@ import {
 } from "../auth/auth.utils";
 import { OtpSessionModel, RestaurantModel } from "../auth/auth.model";
 import { LedgerEntryModel } from "../owner/finance.model";
+import { syncOrderLedgerForFinalStatus } from "../owner/finance.service";
 import { createOwnerNotification } from "../owner/operational.service";
+import { buildOrderPreparationTiming } from "../owner/preparation-timing";
+import { sendPushToOwner } from "../owner/push.service";
 import { ReviewModel, SupportCaseModel } from "../owner/experience.model";
 import {
   CategoryModel,
@@ -36,14 +45,21 @@ import {
   VoucherModel,
   VoucherRedemptionModel,
 } from "./customer.model";
+import {
+  attachReferralToNewCustomer,
+  createCustomerReferralCode,
+  ensureCustomerReferralCode,
+} from "./referral.service";
 
-const CUSTOMER_REFRESH_EXPIRY_DAYS = 30;
+const CUSTOMER_REFRESH_EXPIRY_DAYS = 3650;
 const DEFAULT_CUSTOMER_ORDER_PAGE_SIZE = 80;
 const MAX_CUSTOMER_ORDER_PAGE_SIZE = 100;
 const MAX_CUSTOMER_PUSH_TOKENS = 5;
 const DISABLED_CUSTOMER_PUSH_TOKEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_SUPPORT_CASE_REPLIES = 300;
 const MAX_ORDER_HISTORY_ENTRIES = 100;
+const DEFAULT_CUSTOMER_FULL_NAME = "Foodbela User";
+const CUSTOMER_PASSWORD_MIN_LENGTH = 6;
 let restaurantDataBackfillPromise: Promise<void> | null = null;
 let customerIdentityBackfillPromise: Promise<void> | null = null;
 
@@ -78,6 +94,27 @@ function pruneCustomerPushTokens(customer: { pushTokens: any[] }) {
       );
     })
     .slice(0, MAX_CUSTOMER_PUSH_TOKENS);
+}
+
+function normalizeSigninContextText(value: unknown, maxLength: number) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+function rememberCustomerSigninContext(
+  customer: {
+    lastKnownDeviceId?: string;
+    lastKnownIpAddress?: string;
+    lastKnownUserAgent?: string;
+  },
+  context: { installId?: string; ipAddress?: string; userAgent?: string },
+) {
+  const installId = normalizeSigninContextText(context.installId, 160);
+  const ipAddress = normalizeSigninContextText(context.ipAddress, 80);
+  const userAgent = normalizeSigninContextText(context.userAgent, 300);
+
+  if (installId) customer.lastKnownDeviceId = installId;
+  if (ipAddress) customer.lastKnownIpAddress = ipAddress;
+  if (userAgent) customer.lastKnownUserAgent = userAgent;
 }
 
 async function ensureCustomerIdentityBackfill() {
@@ -116,44 +153,9 @@ async function ensureCustomerIdentityBackfill() {
 }
 
 async function ensureRestaurantDiscoveryBackfill() {
-  if (!restaurantDataBackfillPromise) {
-    restaurantDataBackfillPromise = Promise.all([
-      RestaurantModel.updateMany(
-        {
-          locationPoint: null,
-          "location.latitude": { $type: "number" },
-          "location.longitude": { $type: "number" },
-        },
-        [
-          {
-            $set: {
-              locationPoint: {
-                type: "Point",
-                coordinates: ["$location.longitude", "$location.latitude"],
-              },
-            },
-          },
-        ],
-      ),
-      RestaurantModel.updateMany(
-        {
-          $or: [
-            { "runtime.isVisible": { $exists: false } },
-            { "runtime.isVisible": false },
-          ],
-        },
-        {
-          $set: {
-            "runtime.isVisible": true,
-          },
-        },
-      ),
-    ])
-      .then(() => undefined)
-      .catch(() => undefined);
-  }
-
-  await restaurantDataBackfillPromise;
+  // Discovery reads must stay fast. Run restaurant data backfills from admin/migrations,
+  // not on customer-facing browse/details requests.
+  if (!restaurantDataBackfillPromise) restaurantDataBackfillPromise = Promise.resolve();
 }
 
 function buildCustomerAuthPayload(params: {
@@ -161,6 +163,8 @@ function buildCustomerAuthPayload(params: {
   fullName: string;
   phone?: string;
   email?: string;
+  referralCode?: string;
+  hasPassword?: boolean;
   profileImage?: { url?: string; publicId?: string };
   previousPhones?: Array<{ phone?: string; changedAt?: Date | string | null }>;
   notificationSettings?: {
@@ -186,11 +190,13 @@ function buildCustomerAuthPayload(params: {
     }>;
   };
   refreshToken: string;
+  tokenId: string;
 }) {
   return {
     accessToken: signAccessToken({
       subject: params.customerId,
       role: "customer",
+      tokenId: params.tokenId,
     }),
     refreshToken: params.refreshToken,
     customer: {
@@ -198,6 +204,8 @@ function buildCustomerAuthPayload(params: {
       fullName: params.fullName,
       phone: params.phone ?? "",
       email: params.email ?? "",
+      referralCode: params.referralCode ?? "",
+      hasPassword: params.hasPassword ?? false,
       profileImage: params.profileImage ?? { url: "", publicId: "" },
       previousPhones: (params.previousPhones ?? []).map((entry) => ({
         phone: entry.phone ?? "",
@@ -242,6 +250,7 @@ function mapSavedLocation(location: {
   id?: string;
   label?: string;
   address?: string;
+  addressDetails?: string;
   latitude?: number;
   longitude?: number;
   source?: string;
@@ -252,6 +261,7 @@ function mapSavedLocation(location: {
     id: String(location._id ?? location.id ?? ""),
     label: location.label ?? "",
     address: location.address ?? "",
+    addressDetails: location.addressDetails ?? "",
     latitude: location.latitude ?? 0,
     longitude: location.longitude ?? 0,
     source:
@@ -292,7 +302,7 @@ async function createCustomerRefreshSession(params: {
     ),
   });
 
-  return refreshToken;
+  return { refreshToken, tokenId };
 }
 
 function normalizeCustomerEmail(email?: string) {
@@ -302,15 +312,19 @@ function normalizeCustomerEmail(email?: string) {
 function validateCustomerPassword(password?: string) {
   const normalizedPassword = password?.trim() ?? "";
 
-  if (normalizedPassword.length < 8) {
+  if (normalizedPassword.length < CUSTOMER_PASSWORD_MIN_LENGTH) {
     throw new AppError(
       StatusCodes.BAD_REQUEST,
       "PASSWORD_TOO_SHORT",
-      "Use at least 8 characters for your password",
+      `Use at least ${CUSTOMER_PASSWORD_MIN_LENGTH} characters for your password`,
     );
   }
 
   return normalizedPassword;
+}
+
+function customerHasPassword(customer: { passwordHash?: string | null }) {
+  return Boolean(customer.passwordHash?.trim());
 }
 
 function getBkashConfig() {
@@ -334,6 +348,16 @@ function getBkashConfig() {
     password: env.BKASH_PASSWORD,
     appKey: env.BKASH_APP_KEY,
     appSecret: env.BKASH_APP_SECRET,
+  };
+}
+
+async function getPaymentMethodSettings() {
+  const content = await getPlatformContent();
+  const payments = content.operations?.payments ?? {};
+
+  return {
+    cashOnDeliveryEnabled: true,
+    bkashEnabled: payments.bkashEnabled === true,
   };
 }
 
@@ -456,14 +480,17 @@ async function executeBkashPayment(paymentID: string) {
   });
 }
 
-export async function startCustomerPhoneSignin(phone: string) {
+export async function startCustomerPhoneSignin(
+  phone: string,
+  context?: { userAgent?: string; ipAddress?: string; useOtp?: boolean },
+) {
   await ensureCustomerIdentityBackfill();
   const customer = await CustomerModel.findOne({ phone });
 
   if (customer) {
     assertCustomerAccountAccessible(customer);
 
-    if (customer.passwordHash?.trim()) {
+    if (customerHasPassword(customer) && !context?.useOtp) {
       return {
         flow: "password" as const,
         phone,
@@ -479,13 +506,15 @@ export async function startCustomerPhoneSignin(phone: string) {
     phone,
     purpose: "customer_phone_signin",
     referenceId: phone,
+    userAgent: context?.userAgent,
+    ipAddress: context?.ipAddress,
   });
 
   return {
     flow: "otp" as const,
     phone,
     verificationSessionId: otpSession.id,
-    expiresInSeconds: 300,
+    ...getOtpSessionTiming(otpSession),
     customer: customer
       ? {
           fullName: customer.fullName ?? "",
@@ -498,6 +527,7 @@ export async function startCustomerPhoneSignin(phone: string) {
 export async function signinCustomerWithPassword(params: {
   phone: string;
   password: string;
+  installId?: string;
   userAgent?: string;
   ipAddress?: string;
 }) {
@@ -527,10 +557,15 @@ export async function signinCustomerWithPassword(params: {
     );
   }
 
+  if (!customer.referralCode) {
+    customer.referralCode = await createCustomerReferralCode();
+  }
+
   customer.lastLoginAt = new Date();
+  rememberCustomerSigninContext(customer, params);
   await customer.save();
 
-  const refreshToken = await createCustomerRefreshSession({
+  const refreshSession = await createCustomerRefreshSession({
     customerId: customer.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress,
@@ -541,17 +576,183 @@ export async function signinCustomerWithPassword(params: {
     fullName: customer.fullName,
     phone: customer.phone ?? undefined,
     email: customer.email ?? undefined,
+    referralCode: customer.referralCode ?? "",
+    hasPassword: customerHasPassword(customer),
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
     accountRequest: customer.accountRequest,
-    refreshToken,
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId,
   });
+}
+
+export async function requestCustomerPasswordReset(params: {
+  phone: string;
+  userAgent?: string;
+  ipAddress?: string;
+}) {
+  await ensureCustomerIdentityBackfill();
+  const customer = await CustomerModel.findOne({ phone: params.phone });
+
+  if (!customer || !customer.passwordHash?.trim()) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_NOT_FOUND",
+      "Customer account not found for this phone number",
+    );
+  }
+
+  assertCustomerAccountAccessible(customer);
+
+  const otpSession = await createOtpSession({
+    phone: params.phone,
+    purpose: "customer_password_reset",
+    referenceId: customer.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress,
+  });
+
+  return {
+    verificationSessionId: otpSession.id,
+    phone: otpSession.phone,
+    ...getOtpSessionTiming(otpSession),
+  };
+}
+
+export async function verifyCustomerPasswordResetOtp(params: {
+  verificationSessionId: string;
+  otpCode: string;
+  userAgent?: string;
+  ipAddress?: string;
+}) {
+  await ensureCustomerIdentityBackfill();
+  const otpSession = await OtpSessionModel.findById(
+    params.verificationSessionId,
+  );
+
+  if (!otpSession || otpSession.purpose !== "customer_password_reset") {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RESET_SESSION_NOT_FOUND",
+      "Password reset session not found",
+    );
+  }
+
+  if (otpSession.status !== "pending") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "OTP_NOT_ACTIVE",
+      "OTP session is not active",
+    );
+  }
+
+  if (otpSession.expiresAt.getTime() < Date.now()) {
+    otpSession.status = "expired";
+    await otpSession.save();
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "OTP_EXPIRED",
+      "OTP has expired",
+    );
+  }
+
+  await assertOtpVerificationAllowed(otpSession, params);
+  const isOtpValid = await compareOtpCode(
+    params.otpCode,
+    otpSession.otpCodeHash,
+  );
+
+  if (!isOtpValid) {
+    await rejectInvalidOtpAttempt(otpSession, params);
+  }
+
+  otpSession.status = "verified";
+  otpSession.verifiedAt = new Date();
+  await recordOtpVerificationSuccess(otpSession, params);
+  await otpSession.save();
+
+  return {
+    verificationSessionId: otpSession.id,
+    phone: otpSession.phone,
+    expiresInSeconds: Math.max(
+      0,
+      Math.floor((otpSession.expiresAt.getTime() - Date.now()) / 1000),
+    ),
+  };
+}
+
+export async function resetCustomerPassword(params: {
+  verificationSessionId: string;
+  newPassword: string;
+}) {
+  await ensureCustomerIdentityBackfill();
+  const otpSession = await OtpSessionModel.findById(
+    params.verificationSessionId,
+  );
+
+  if (!otpSession || otpSession.purpose !== "customer_password_reset") {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RESET_SESSION_NOT_FOUND",
+      "Password reset session not found",
+    );
+  }
+
+  if (otpSession.status !== "verified") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "RESET_SESSION_NOT_VERIFIED",
+      "Verify OTP before resetting the password",
+    );
+  }
+
+  if (otpSession.expiresAt.getTime() < Date.now()) {
+    otpSession.status = "expired";
+    await otpSession.save();
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "OTP_EXPIRED",
+      "OTP has expired",
+    );
+  }
+
+  const customer = await CustomerModel.findById(otpSession.referenceId);
+
+  if (!customer || customer.phone !== otpSession.phone) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_NOT_FOUND",
+      "Customer account not found",
+    );
+  }
+
+  assertCustomerAccountAccessible(customer);
+
+  const password = validateCustomerPassword(params.newPassword);
+  customer.passwordHash = await hashPassword(password);
+
+  if (!customer.authProviders.includes("phone")) {
+    customer.authProviders = [...customer.authProviders, "phone"];
+  }
+
+  await customer.save();
+  await CustomerRefreshTokenSessionModel.updateMany(
+    { customerId: customer._id, revokedAt: null },
+    { revokedAt: new Date() },
+  );
+
+  otpSession.status = "consumed";
+  await otpSession.save();
+
+  return { reset: true, phone: customer.phone ?? "" };
 }
 
 export async function verifyCustomerPhoneOtp(params: {
   verificationSessionId: string;
   otpCode: string;
+  userAgent?: string;
+  ipAddress?: string;
 }) {
   await ensureCustomerIdentityBackfill();
   const otpSession = await OtpSessionModel.findById(
@@ -584,21 +785,19 @@ export async function verifyCustomerPhoneOtp(params: {
     );
   }
 
+  await assertOtpVerificationAllowed(otpSession, params);
   const isOtpValid = await compareOtpCode(
     params.otpCode,
     otpSession.otpCodeHash,
   );
 
   if (!isOtpValid) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "INVALID_OTP",
-      "Invalid OTP code",
-    );
+    await rejectInvalidOtpAttempt(otpSession, params);
   }
 
   otpSession.status = "verified";
   otpSession.verifiedAt = new Date();
+  await recordOtpVerificationSuccess(otpSession, params);
   await otpSession.save();
 
   return {
@@ -616,6 +815,8 @@ export async function verifyCustomerPhoneSignin(params: {
   fullName?: string;
   email?: string;
   password?: string;
+  referralCode?: string;
+  installId?: string;
   userAgent?: string;
   ipAddress?: string;
 }) {
@@ -643,53 +844,57 @@ export async function verifyCustomerPhoneSignin(params: {
   let customer = await CustomerModel.findOne({ phone: otpSession.phone });
   const normalizedFullName = params.fullName?.trim() ?? "";
   const normalizedEmail = normalizeCustomerEmail(params.email);
+  const normalizedPassword = params.password?.trim() ?? "";
 
   if (!customer) {
-    const password = validateCustomerPassword(params.password);
-
-    if (!normalizedFullName) {
-      throw new AppError(
-        StatusCodes.BAD_REQUEST,
-        "FULL_NAME_REQUIRED",
-        "Enter your name to finish creating this account",
-      );
-    }
-
-    customer = await CustomerModel.create({
-      fullName: normalizedFullName,
+    customer = new CustomerModel({
+      fullName: normalizedFullName || DEFAULT_CUSTOMER_FULL_NAME,
       phone: otpSession.phone,
       email: normalizedEmail,
-      passwordHash: await hashPassword(password),
+      passwordHash: normalizedPassword
+        ? await hashPassword(validateCustomerPassword(normalizedPassword))
+        : "",
+      referralCode: await createCustomerReferralCode(),
       authProviders: ["phone"],
     });
+    await attachReferralToNewCustomer({
+      customer,
+      referralCode: params.referralCode,
+      installId: params.installId,
+      userAgent: params.userAgent,
+      ipAddress: params.ipAddress,
+    });
+    rememberCustomerSigninContext(customer, params);
+    await customer.save();
   } else {
     assertCustomerAccountAccessible(customer);
 
-    if (!customer.passwordHash?.trim()) {
-      const password = validateCustomerPassword(params.password);
-
-      if (!normalizedFullName && !customer.fullName?.trim()) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "FULL_NAME_REQUIRED",
-          "Enter your name to finish creating this account",
-        );
-      }
-
+    if (!customer.fullName?.trim()) {
+      customer.fullName = normalizedFullName || DEFAULT_CUSTOMER_FULL_NAME;
+    } else if (normalizedFullName) {
       customer.fullName =
-        normalizedFullName || customer.fullName || "Foodex Customer";
+        normalizedFullName || customer.fullName || DEFAULT_CUSTOMER_FULL_NAME;
+    }
 
-      if (normalizedEmail) {
-        customer.email = normalizedEmail;
-      }
+    if (normalizedEmail) {
+      customer.email = normalizedEmail;
+    }
 
-      customer.passwordHash = await hashPassword(password);
+    if (!customerHasPassword(customer) && normalizedPassword) {
+      customer.passwordHash = await hashPassword(
+        validateCustomerPassword(normalizedPassword),
+      );
     }
 
     if (!customer.authProviders.includes("phone")) {
       customer.authProviders = [...customer.authProviders, "phone"];
     }
 
+    if (!customer.referralCode) {
+      customer.referralCode = await createCustomerReferralCode();
+    }
+
+    rememberCustomerSigninContext(customer, params);
     await customer.save();
   }
 
@@ -701,7 +906,7 @@ export async function verifyCustomerPhoneSignin(params: {
   otpSession.status = "consumed";
   await otpSession.save();
 
-  const refreshToken = await createCustomerRefreshSession({
+  const refreshSession = await createCustomerRefreshSession({
     customerId: customer.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress,
@@ -712,11 +917,14 @@ export async function verifyCustomerPhoneSignin(params: {
     fullName: customer.fullName,
     phone: customer.phone ?? undefined,
     email: customer.email ?? undefined,
+    referralCode: customer.referralCode ?? "",
+    hasPassword: customerHasPassword(customer),
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
     accountRequest: customer.accountRequest,
-    refreshToken,
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId,
   });
 }
 
@@ -737,6 +945,7 @@ export async function signinCustomerWithGoogle(params: {
       email: params.email,
       fullName: params.fullName,
       profileImage: params.profileImage ?? { url: "", publicId: "" },
+      referralCode: await createCustomerReferralCode(),
       authProviders: ["google"],
     });
   } else {
@@ -750,6 +959,9 @@ export async function signinCustomerWithGoogle(params: {
     if (!customer.authProviders.includes("google")) {
       customer.authProviders = [...customer.authProviders, "google"];
     }
+    if (!customer.referralCode) {
+      customer.referralCode = await createCustomerReferralCode();
+    }
     await customer.save();
   }
 
@@ -758,7 +970,7 @@ export async function signinCustomerWithGoogle(params: {
   customer.lastLoginAt = new Date();
   await customer.save();
 
-  const refreshToken = await createCustomerRefreshSession({
+  const refreshSession = await createCustomerRefreshSession({
     customerId: customer.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress,
@@ -769,11 +981,14 @@ export async function signinCustomerWithGoogle(params: {
     fullName: customer.fullName,
     phone: customer.phone ?? undefined,
     email: customer.email ?? undefined,
+    referralCode: customer.referralCode ?? "",
+    hasPassword: customerHasPassword(customer),
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
     accountRequest: customer.accountRequest,
-    refreshToken,
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId,
   });
 }
 
@@ -838,7 +1053,7 @@ export async function refreshCustomerSession(params: {
   session.revokedAt = new Date();
   await session.save();
 
-  const refreshToken = await createCustomerRefreshSession({
+  const refreshSession = await createCustomerRefreshSession({
     customerId: customer.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress,
@@ -849,17 +1064,22 @@ export async function refreshCustomerSession(params: {
     fullName: customer.fullName,
     phone: customer.phone ?? undefined,
     email: customer.email ?? undefined,
+    referralCode: customer.referralCode ?? "",
+    hasPassword: customerHasPassword(customer),
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
     accountRequest: customer.accountRequest,
-    refreshToken,
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId,
   });
 }
 
 export async function startCustomerPhoneChange(params: {
   customerId: string;
   phone: string;
+  userAgent?: string;
+  ipAddress?: string;
 }) {
   await ensureCustomerIdentityBackfill();
   const customerId = ensureCustomerIdentity(params.customerId);
@@ -902,11 +1122,13 @@ export async function startCustomerPhoneChange(params: {
     phone: nextPhone,
     purpose: "customer_phone_change",
     referenceId: customer.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress,
   });
 
   return {
     verificationSessionId: otpSession.id,
-    expiresInSeconds: 300,
+    ...getOtpSessionTiming(otpSession),
   };
 }
 
@@ -914,6 +1136,8 @@ export async function verifyCustomerPhoneChange(params: {
   customerId: string;
   verificationSessionId: string;
   otpCode: string;
+  userAgent?: string;
+  ipAddress?: string;
 }) {
   await ensureCustomerIdentityBackfill();
   const customerId = ensureCustomerIdentity(params.customerId);
@@ -956,17 +1180,14 @@ export async function verifyCustomerPhoneChange(params: {
     );
   }
 
+  await assertOtpVerificationAllowed(otpSession, params);
   const isOtpValid = await compareOtpCode(
     params.otpCode,
     otpSession.otpCodeHash,
   );
 
   if (!isOtpValid) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "INVALID_OTP",
-      "Invalid OTP code",
-    );
+    await rejectInvalidOtpAttempt(otpSession, params);
   }
 
   if (customer.pendingPhone !== otpSession.phone) {
@@ -1008,6 +1229,7 @@ export async function verifyCustomerPhoneChange(params: {
 
   otpSession.status = "consumed";
   otpSession.verifiedAt = new Date();
+  await recordOtpVerificationSuccess(otpSession, params);
   await otpSession.save();
 
   return {
@@ -1016,6 +1238,8 @@ export async function verifyCustomerPhoneChange(params: {
       fullName: customer.fullName,
       phone: customer.phone ?? "",
       email: customer.email ?? "",
+      referralCode: customer.referralCode ?? "",
+      hasPassword: customerHasPassword(customer),
       profileImage: customer.profileImage ?? { url: "", publicId: "" },
       previousPhones: (customer.previousPhones ?? []).map((entry) => ({
         phone: entry.phone ?? "",
@@ -1084,6 +1308,10 @@ export async function updateCustomerProfile(params: {
     };
   }
 
+  if (!customer.referralCode) {
+    customer.referralCode = await createCustomerReferralCode();
+  }
+
   await customer.save();
 
   return {
@@ -1092,6 +1320,81 @@ export async function updateCustomerProfile(params: {
       fullName: customer.fullName,
       phone: customer.phone ?? "",
       email: customer.email ?? "",
+      referralCode: customer.referralCode ?? "",
+      hasPassword: customerHasPassword(customer),
+      profileImage: customer.profileImage ?? { url: "", publicId: "" },
+      previousPhones: (customer.previousPhones ?? []).map((entry) => ({
+        phone: entry.phone ?? "",
+        changedAt: entry.changedAt
+          ? new Date(entry.changedAt).toISOString()
+          : null,
+      })),
+      notificationSettings: {
+        orderUpdates: customer.notificationSettings?.orderUpdates ?? true,
+        restaurantStatus:
+          customer.notificationSettings?.restaurantStatus ?? true,
+        reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
+      },
+      accountRequest: {
+        type: customer.accountRequest?.type ?? null,
+        reason: customer.accountRequest?.reason ?? "",
+        status: customer.accountRequest?.status ?? null,
+        requestedAt: customer.accountRequest?.requestedAt
+          ? new Date(customer.accountRequest.requestedAt).toISOString()
+          : null,
+        reviewedAt: customer.accountRequest?.reviewedAt
+          ? new Date(customer.accountRequest.reviewedAt).toISOString()
+          : null,
+      },
+    },
+  };
+}
+
+export async function updateCustomerPassword(params: {
+  customerId: string;
+  currentPassword?: string;
+  newPassword: string;
+}) {
+  const customerId = ensureCustomerIdentity(params.customerId);
+  const customer = await getCustomerById(customerId);
+  const nextPassword = validateCustomerPassword(params.newPassword);
+
+  if (customerHasPassword(customer)) {
+    const currentPassword = params.currentPassword?.trim() ?? "";
+
+    if (!currentPassword) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "CURRENT_PASSWORD_REQUIRED",
+        "Enter your current password",
+      );
+    }
+
+    const isCurrentPasswordValid = await comparePassword(
+      currentPassword,
+      customer.passwordHash ?? "",
+    );
+
+    if (!isCurrentPasswordValid) {
+      throw new AppError(
+        StatusCodes.UNAUTHORIZED,
+        "INVALID_CURRENT_PASSWORD",
+        "Current password is incorrect",
+      );
+    }
+  }
+
+  customer.passwordHash = await hashPassword(nextPassword);
+  await customer.save();
+
+  return {
+    customer: {
+      id: customer.id,
+      fullName: customer.fullName,
+      phone: customer.phone ?? "",
+      email: customer.email ?? "",
+      referralCode: customer.referralCode ?? "",
+      hasPassword: customerHasPassword(customer),
       profileImage: customer.profileImage ?? { url: "", publicId: "" },
       previousPhones: (customer.previousPhones ?? []).map((entry) => ({
         phone: entry.phone ?? "",
@@ -1122,6 +1425,7 @@ export async function updateCustomerProfile(params: {
 
 export async function getCustomerProfile(customerId: string) {
   const customer = await getCustomerById(ensureCustomerIdentity(customerId));
+  const referralCode = await ensureCustomerReferralCode(customer);
 
   return {
     customer: {
@@ -1129,6 +1433,8 @@ export async function getCustomerProfile(customerId: string) {
       fullName: customer.fullName,
       phone: customer.phone ?? "",
       email: customer.email ?? "",
+      referralCode,
+      hasPassword: customerHasPassword(customer),
       profileImage: customer.profileImage ?? { url: "", publicId: "" },
       previousPhones: (customer.previousPhones ?? []).map((entry) => ({
         phone: entry.phone ?? "",
@@ -1214,6 +1520,8 @@ export async function requestCustomerAccountChange(params: {
       fullName: customer.fullName,
       phone: customer.phone ?? "",
       email: customer.email ?? "",
+      referralCode: customer.referralCode ?? "",
+      hasPassword: customerHasPassword(customer),
       profileImage: customer.profileImage ?? { url: "", publicId: "" },
       previousPhones: (customer.previousPhones ?? []).map((entry) => ({
         phone: entry.phone ?? "",
@@ -1287,6 +1595,8 @@ export async function cancelCustomerAccountChangeRequest(params: {
       fullName: customer.fullName,
       phone: customer.phone ?? "",
       email: customer.email ?? "",
+      referralCode: customer.referralCode ?? "",
+      hasPassword: customerHasPassword(customer),
       profileImage: customer.profileImage ?? { url: "", publicId: "" },
       previousPhones: (customer.previousPhones ?? []).map((entry) => ({
         phone: entry.phone ?? "",
@@ -1315,19 +1625,40 @@ export async function cancelCustomerAccountChangeRequest(params: {
   };
 }
 
-export async function logoutCustomerSession(refreshToken: string) {
+export async function logoutCustomerSession(
+  refreshToken: string,
+  options?: { expoPushToken?: string },
+) {
   const payload = verifyRefreshToken(refreshToken);
+  const signedOutAt = new Date();
+  let pushTokenRemoved = false;
+
+  if (options?.expoPushToken && payload.sub) {
+    const pushTokenResult = await CustomerModel.updateOne(
+      {
+        _id: payload.sub,
+        "pushTokens.expoPushToken": options.expoPushToken,
+      },
+      {
+        $set: {
+          "pushTokens.$.disabledAt": signedOutAt,
+          "pushTokens.$.lastSeenAt": signedOutAt,
+        },
+      },
+    );
+    pushTokenRemoved = pushTokenResult.modifiedCount > 0;
+  }
 
   if (!payload.tokenId) {
-    return { revoked: true };
+    return { revoked: true, pushTokenRemoved };
   }
 
   await CustomerRefreshTokenSessionModel.findOneAndUpdate(
     { tokenId: payload.tokenId, customerId: payload.sub, revokedAt: null },
-    { revokedAt: new Date() },
+    { revokedAt: signedOutAt },
   );
 
-  return { revoked: true };
+  return { revoked: true, pushTokenRemoved };
 }
 
 function getVisibleRestaurantQuery() {
@@ -1343,99 +1674,86 @@ function getDiscoverableRestaurantQuery() {
   };
 }
 
-function buildReviewMetricsPipeline() {
-  return [
-    {
-      $lookup: {
-        from: ReviewModel.collection.name,
-        let: { restaurantId: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              moderationStatus: "visible",
-              isHidden: { $ne: true },
-              $expr: {
-                $eq: ["$restaurantId", "$$restaurantId"],
-              },
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              avgRating: { $avg: "$rating" },
-              reviewCount: { $sum: 1 },
-            },
-          },
-        ],
-        as: "reviewMetrics",
-      },
-    },
-    {
-      $addFields: {
-        reviewCount: {
-          $ifNull: [{ $first: "$reviewMetrics.reviewCount" }, 0],
-        },
-        avgRating: {
-          $cond: [
-            {
-              $gt: [
-                { $ifNull: [{ $first: "$reviewMetrics.reviewCount" }, 0] },
-                0,
-              ],
-            },
-            { $round: [{ $first: "$reviewMetrics.avgRating" }, 1] },
-            null,
-          ],
-        },
-      },
-    },
-    {
-      $project: {
-        reviewMetrics: 0,
-      },
-    },
-  ];
-}
+async function enrichRestaurantDiscoveryRows<T extends Record<string, any>>(
+  restaurants: T[],
+) {
+  const restaurantObjectIds = restaurants
+    .map((restaurant) => String(restaurant._id ?? ""))
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
 
-function buildRestaurantCommercialsPipeline() {
-  return [
-    {
-      $lookup: {
-        from: MenuItemModel.collection.name,
-        let: { restaurantId: "$_id" },
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $eq: ["$restaurantId", "$$restaurantId"],
-              },
-              status: "active",
-              availability: "available",
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              lowestMenuPrice: { $min: "$basePrice" },
-            },
-          },
-        ],
-        as: "menuPricing",
-      },
-    },
-    {
-      $addFields: {
-        lowestMenuPrice: {
-          $ifNull: [{ $first: "$menuPricing.lowestMenuPrice" }, null],
+  if (!restaurantObjectIds.length) {
+    return restaurants;
+  }
+
+  const [pricingRows, reviewRows] = await Promise.all([
+    MenuItemModel.aggregate<{
+      _id: mongoose.Types.ObjectId;
+      lowestMenuPrice: number | null;
+    }>([
+      {
+        $match: {
+          restaurantId: { $in: restaurantObjectIds },
+          status: "active",
+          availability: "available",
         },
       },
-    },
-    {
-      $project: {
-        menuPricing: 0,
+      {
+        $group: {
+          _id: "$restaurantId",
+          lowestMenuPrice: { $min: "$basePrice" },
+        },
       },
-    },
-  ];
+    ]),
+    ReviewModel.aggregate<{
+      _id: mongoose.Types.ObjectId;
+      avgRating: number | null;
+      reviewCount: number;
+    }>([
+      {
+        $match: {
+          restaurantId: { $in: restaurantObjectIds },
+          moderationStatus: "visible",
+          isHidden: { $ne: true },
+        },
+      },
+      {
+        $group: {
+          _id: "$restaurantId",
+          avgRating: { $avg: "$rating" },
+          reviewCount: { $sum: 1 },
+        },
+      },
+    ]),
+  ]);
+
+  const pricingByRestaurantId = new Map(
+    pricingRows.map((row) => [String(row._id), row.lowestMenuPrice ?? null]),
+  );
+  const reviewsByRestaurantId = new Map(
+    reviewRows.map((row) => [
+      String(row._id),
+      {
+        avgRating:
+          row.reviewCount > 0 && typeof row.avgRating === "number"
+            ? Math.round(row.avgRating * 10) / 10
+            : null,
+        reviewCount: row.reviewCount ?? 0,
+      },
+    ]),
+  );
+
+  restaurants.forEach((restaurant) => {
+    const mutableRestaurant = restaurant as Record<string, any>;
+    const restaurantId = String(mutableRestaurant._id ?? "");
+    const reviewMetrics = reviewsByRestaurantId.get(restaurantId);
+    mutableRestaurant.lowestMenuPrice =
+      pricingByRestaurantId.get(restaurantId) ?? null;
+    mutableRestaurant.reviewCount = reviewMetrics?.reviewCount ?? 0;
+    mutableRestaurant.avgRating = reviewMetrics?.avgRating ?? null;
+  });
+
+  return restaurants;
 }
 
 function toRadians(value: number) {
@@ -1540,10 +1858,57 @@ function resolveDeliveryPricingConfig(params: {
   };
 }
 
+function assertRestaurantServiceableForDelivery(params: {
+  platformContent: Awaited<ReturnType<typeof getPlatformContent>>;
+  restaurant: Record<string, any>;
+  latitude?: number;
+  longitude?: number;
+}) {
+  if (
+    typeof params.latitude !== "number" ||
+    typeof params.longitude !== "number"
+  ) {
+    return null;
+  }
+
+  if (
+    typeof params.restaurant.location?.latitude !== "number" ||
+    typeof params.restaurant.location?.longitude !== "number"
+  ) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "RESTAURANT_OUT_OF_DELIVERY_AREA",
+      "This restaurant does not deliver to your selected location.",
+    );
+  }
+
+  const deliveryDistanceKm = calculateDistanceKm(
+    params.latitude,
+    params.longitude,
+    params.restaurant.location.latitude,
+    params.restaurant.location.longitude,
+  );
+  const deliveryRadiusKm = Math.max(
+    0,
+    params.platformContent.operations.serviceArea.radiusKm,
+  );
+
+  if (deliveryDistanceKm > deliveryRadiusKm) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "RESTAURANT_OUT_OF_DELIVERY_AREA",
+      "This restaurant does not deliver to your selected location.",
+    );
+  }
+
+  return deliveryDistanceKm;
+}
+
 export async function listDiscoverableRestaurants(params?: {
   search?: string;
   collectionKey?: string;
   restaurantIds?: string[];
+  featuredOnly?: boolean;
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
@@ -1576,12 +1941,16 @@ export async function listDiscoverableRestaurants(params?: {
     };
   }
 
+  if (params?.featuredOnly) {
+    query["discovery.isFeatured"] = true;
+  }
+
   if (
     params?.latitude === undefined ||
     params?.longitude === undefined ||
     params?.radiusKm === undefined
   ) {
-    return RestaurantModel.aggregate([
+    const restaurants = await RestaurantModel.aggregate([
       {
         $match: query,
       },
@@ -1593,23 +1962,32 @@ export async function listDiscoverableRestaurants(params?: {
           },
         },
       },
-      ...buildRestaurantCommercialsPipeline(),
-      ...buildReviewMetricsPipeline(),
       {
         $sort: {
+          isOpen: -1,
           "discovery.featuredSortOrder": 1,
           createdAt: -1,
         },
       },
     ]);
+
+    return enrichRestaurantDiscoveryRows(restaurants);
   }
 
   const geoNearQuery = {
     ...query,
     locationPoint: { $ne: null },
   };
+  const platformContent = await getPlatformContent();
+  const maxDistanceKm = Math.max(
+    0,
+    Math.min(
+      params.radiusKm,
+      platformContent.operations.serviceArea.radiusKm,
+    ),
+  );
 
-  return RestaurantModel.aggregate([
+  const restaurants = await RestaurantModel.aggregate([
     {
       $geoNear: {
         near: {
@@ -1617,7 +1995,7 @@ export async function listDiscoverableRestaurants(params?: {
           coordinates: [params.longitude, params.latitude],
         },
         distanceField: "distanceMeters",
-        maxDistance: params.radiusKm * 1000,
+        maxDistance: maxDistanceKm * 1000,
         spherical: true,
         query: geoNearQuery,
       },
@@ -1636,10 +2014,9 @@ export async function listDiscoverableRestaurants(params?: {
         },
       },
     },
-    ...buildRestaurantCommercialsPipeline(),
-    ...buildReviewMetricsPipeline(),
     {
       $sort: {
+        isOpen: -1,
         "discovery.featuredSortOrder": 1,
         distanceMeters: 1,
         createdAt: -1,
@@ -1651,6 +2028,8 @@ export async function listDiscoverableRestaurants(params?: {
       },
     },
   ]);
+
+  return enrichRestaurantDiscoveryRows(restaurants);
 }
 
 export async function getCustomerDiscoveryHome(params?: {
@@ -1662,30 +2041,34 @@ export async function getCustomerDiscoveryHome(params?: {
   const [
     platformContent,
     featuredCollection,
-    featuredRestaurants,
+    flaggedFeaturedRows,
     activeOffers,
   ] = await Promise.all([
     getPlatformContent(),
     RestaurantCollectionModel.findOne({
       key: "featured_restaurants",
       isActive: true,
-    }),
-    listDiscoverableRestaurants({
-      collectionKey: "featured_restaurants",
-      latitude: params?.latitude,
-      longitude: params?.longitude,
-      radiusKm: params?.radiusKm,
-    }),
+    }).lean(),
+    RestaurantModel.find({
+      ...getDiscoverableRestaurantQuery(),
+      "discovery.isFeatured": true,
+    })
+      .select({ _id: 1 })
+      .lean(),
     VoucherModel.find({
       archivedAt: null,
       status: "Active",
       startsAt: { $lte: new Date() },
       endsAt: { $gte: new Date() },
-    }).limit(20),
+    })
+      .limit(20)
+      .lean(),
   ]);
 
-  const featuredIds = new Set(
-    featuredCollection?.restaurantIds.map((id) => id.toString()) ?? [],
+  const collectionFeaturedRestaurantIds =
+    featuredCollection?.restaurantIds.map((id) => id.toString()) ?? [];
+  const flaggedFeaturedRestaurantIds = flaggedFeaturedRows.map((restaurant) =>
+    restaurant._id.toString(),
   );
   const restaurantIdsWithOffers = [
     ...new Set(
@@ -1702,14 +2085,38 @@ export async function getCustomerDiscoveryHome(params?: {
     ),
   ];
 
-  const offerRestaurants = restaurantIdsWithOffers.length
+  const restaurantIdsToLoad = [
+    ...new Set([
+      ...collectionFeaturedRestaurantIds,
+      ...flaggedFeaturedRestaurantIds,
+      ...restaurantIdsWithOffers,
+    ]),
+  ];
+  const discoverableRestaurants = restaurantIdsToLoad.length
     ? await listDiscoverableRestaurants({
-        restaurantIds: restaurantIdsWithOffers,
+        restaurantIds: restaurantIdsToLoad,
         latitude: params?.latitude,
         longitude: params?.longitude,
         radiusKm: params?.radiusKm,
       })
     : [];
+  const restaurantById = new Map(
+    discoverableRestaurants.map((restaurant) => [
+      restaurant._id.toString(),
+      restaurant,
+    ]),
+  );
+  const featuredRestaurants = [
+    ...new Set([
+      ...collectionFeaturedRestaurantIds,
+      ...flaggedFeaturedRestaurantIds,
+    ]),
+  ]
+    .map((restaurantId) => restaurantById.get(restaurantId))
+    .filter(Boolean);
+  const offerRestaurants = restaurantIdsWithOffers
+    .map((restaurantId) => restaurantById.get(restaurantId))
+    .filter(Boolean);
 
   const hasCustomerOrders = params?.customerId
     ? Boolean(await OrderModel.exists({ customerId: params.customerId }))
@@ -1729,15 +2136,13 @@ export async function getCustomerDiscoveryHome(params?: {
       ? platformContent.customerApp.homeBanner
       : null,
     homeCms,
-    featuredRestaurants: featuredRestaurants.filter((restaurant) =>
-      featuredIds.has(restaurant._id.toString()),
-    ),
+    featuredRestaurants,
     restaurantsWithOffers: offerRestaurants,
     campaignPlacements: activeOffers
       .filter((offer) => (offer as any).display?.showOnHome)
       .map((offer) => ({
-        _id: offer.id,
-        voucherId: offer.id,
+        _id: offer._id.toString(),
+        voucherId: offer._id.toString(),
         name: offer.name,
         code: offer.code,
         scopeType: (offer as any).scopeType,
@@ -1749,7 +2154,7 @@ export async function getCustomerDiscoveryHome(params?: {
           (left.display?.position ?? 0) - (right.display?.position ?? 0),
       ),
     activeOffers: activeOffers.map((offer) => ({
-      _id: offer.id,
+      _id: offer._id.toString(),
       restaurantId: offer.restaurantId?.toString?.() ?? "",
       scopeType: (offer as any).scopeType,
       audienceType: (offer as any).audienceType,
@@ -1772,25 +2177,26 @@ export async function getCustomerRestaurantDetails(
   },
 ) {
   await ensureRestaurantDiscoveryBackfill();
-  const restaurantAggregate = await RestaurantModel.aggregate([
-    {
-      $match: {
-        _id: new mongoose.Types.ObjectId(restaurantId),
-        ...getDiscoverableRestaurantQuery(),
-      },
-    },
-    {
-      $addFields: {
-        isOpen: {
-          $ifNull: ["$runtime.isOnline", false],
-        },
-      },
-    },
-    ...buildRestaurantCommercialsPipeline(),
-    ...buildReviewMetricsPipeline(),
-  ]);
-
-  const restaurant = restaurantAggregate[0];
+  const restaurant = await RestaurantModel.findOne({
+    _id: new mongoose.Types.ObjectId(restaurantId),
+    ...getDiscoverableRestaurantQuery(),
+  })
+    .select({
+      name: 1,
+      slug: 1,
+      description: 1,
+      cuisineTypes: 1,
+      tags: 1,
+      logo: 1,
+      coverImage: 1,
+      address: 1,
+      location: 1,
+      runtime: 1,
+      discovery: 1,
+      preparationTimeMinutes: 1,
+      createdAt: 1,
+    })
+    .lean<Record<string, any>>();
 
   if (!restaurant) {
     throw new AppError(
@@ -1799,6 +2205,14 @@ export async function getCustomerRestaurantDetails(
       "Restaurant not found",
     );
   }
+
+  restaurant.isOpen = restaurant.runtime?.isOnline ?? false;
+  const platformContent = await getPlatformContent();
+  const deliveryRadiusKm = Math.max(
+    0,
+    platformContent.operations.serviceArea.radiusKm,
+  );
+  restaurant.deliveryRadiusKm = deliveryRadiusKm;
 
   if (
     typeof params?.latitude === "number" &&
@@ -1812,21 +2226,48 @@ export async function getCustomerRestaurantDetails(
       restaurant.location.latitude,
       restaurant.location.longitude,
     );
+    restaurant.isServiceableForSelectedLocation =
+      restaurant.distanceKm <= deliveryRadiusKm;
   } else {
     restaurant.distanceKm = null;
+    restaurant.isServiceableForSelectedLocation = null;
   }
 
-  const [categories, menuItems, activeOffers, recentReviews] =
+  const [categories, menuItems, activeOffers, reviewFacetRows] =
     await Promise.all([
       CategoryModel.find({
         restaurantId: restaurant._id,
         status: "active",
-      }).sort({ displayOrder: 1 }),
+      })
+        .select({
+          name: 1,
+          slug: 1,
+          description: 1,
+          displayOrder: 1,
+        })
+        .sort({ displayOrder: 1 })
+        .lean(),
       MenuItemModel.find({
         restaurantId: restaurant._id,
         status: "active",
         availability: "available",
-      }).sort({ isPopular: -1, createdAt: -1 }),
+      })
+        .select({
+          categoryId: 1,
+          name: 1,
+          slug: 1,
+          description: 1,
+          images: 1,
+          basePrice: 1,
+          kind: 1,
+          availability: 1,
+          isPopular: 1,
+          variants: 1,
+          addOnGroups: 1,
+          createdAt: 1,
+        })
+        .sort({ isPopular: -1, createdAt: -1 })
+        .lean(),
       VoucherModel.find({
         archivedAt: null,
         $or: [
@@ -1840,16 +2281,79 @@ export async function getCustomerRestaurantDetails(
         status: "Active",
         startsAt: { $lte: new Date() },
         endsAt: { $gte: new Date() },
-      }).sort({ priority: -1 }),
-      ReviewModel.find({
-        restaurantId: restaurant._id,
-        moderationStatus: "visible",
-        isHidden: { $ne: true },
       })
-        .sort({ createdAt: -1 })
-        .limit(6)
+        .select({
+          restaurantId: 1,
+          name: 1,
+          code: 1,
+          type: 1,
+          mode: 1,
+          discountValue: 1,
+          minimumOrderAmount: 1,
+          display: 1,
+        })
+        .sort({ priority: -1 })
         .lean(),
+      ReviewModel.aggregate<{
+        recent: Array<Record<string, any>>;
+        metrics: Array<{
+          _id: null;
+          avgRating: number | null;
+          reviewCount: number;
+        }>;
+      }>([
+        {
+          $match: {
+            restaurantId: restaurant._id,
+            moderationStatus: "visible",
+            isHidden: { $ne: true },
+          },
+        },
+        {
+          $facet: {
+            recent: [
+              { $sort: { createdAt: -1 } },
+              { $limit: 6 },
+              {
+                $project: {
+                  rating: 1,
+                  comment: 1,
+                  createdAt: 1,
+                  customerId: 1,
+                  ownerReply: 1,
+                },
+              },
+            ],
+            metrics: [
+              {
+                $group: {
+                  _id: null,
+                  avgRating: { $avg: "$rating" },
+                  reviewCount: { $sum: 1 },
+                },
+              },
+            ],
+          },
+        },
+      ]),
     ]);
+
+  const reviewFacet = reviewFacetRows[0] ?? { recent: [], metrics: [] };
+  const recentReviews = reviewFacet.recent ?? [];
+  const reviewSummary = reviewFacet.metrics?.[0];
+  restaurant.lowestMenuPrice = menuItems.reduce<number | null>((lowest, item) => {
+    const price =
+      typeof item.basePrice === "number" && Number.isFinite(item.basePrice)
+        ? item.basePrice
+        : null;
+    if (price === null) return lowest;
+    return lowest === null ? price : Math.min(lowest, price);
+  }, null);
+  restaurant.reviewCount = reviewSummary?.reviewCount ?? 0;
+  restaurant.avgRating =
+    reviewSummary?.reviewCount && typeof reviewSummary.avgRating === "number"
+      ? Math.round(reviewSummary.avgRating * 10) / 10
+      : null;
 
   const reviewCustomerIds = [
     ...new Set(
@@ -1904,6 +2408,110 @@ type CartInputItem = {
   selectedAddOnOptions?: Array<{ groupName: string; optionLabel: string }>;
 };
 
+type CustomerDeliveryAddressInput = {
+  label: string;
+  addressLine: string;
+  addressDetails?: string;
+  latitude: number;
+  longitude: number;
+};
+
+function normalizeClientOrderId(value?: string | null) {
+  return typeof value === "string" ? value.trim().slice(0, 120) : "";
+}
+
+function createOrderNumber() {
+  return `FB-${Date.now()}-${crypto.randomInt(1000, 10000)}`;
+}
+
+function isDuplicateKeyError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === 11000
+  );
+}
+
+function buildQuoteFromOrder(order: Record<string, any>) {
+  return {
+    restaurant: {
+      id: String(order.restaurantId ?? ""),
+      name: order.restaurantSnapshot?.name ?? "",
+    },
+    items: Array.isArray(order.itemsSnapshot) ? order.itemsSnapshot : [],
+    pricing: order.pricing ?? {},
+    appliedVouchers: Array.isArray(order.appliedVouchers)
+      ? order.appliedVouchers
+      : [],
+  };
+}
+
+async function findIdempotentOrder(customerId: string, clientOrderId: string) {
+  if (!clientOrderId) return null;
+  return OrderModel.findOne({ customerId, clientOrderId });
+}
+
+async function countActiveVoucherRedemptions(params: {
+  voucherId: unknown;
+  customerId?: string;
+}) {
+  const match: Record<string, unknown> = {
+    voucherId: params.voucherId,
+    releasedAt: null,
+  };
+  if (params.customerId) {
+    match["voucherSnapshot.customerId"] = params.customerId;
+  }
+
+  const [result] = await VoucherRedemptionModel.aggregate<{ count: number }>([
+    { $match: match },
+    {
+      $lookup: {
+        from: "orders",
+        localField: "orderId",
+        foreignField: "_id",
+        as: "orderDocs",
+      },
+    },
+    {
+      $addFields: {
+        relatedOrderStatus: {
+          $let: {
+            vars: { relatedOrder: { $arrayElemAt: ["$orderDocs", 0] } },
+            in: "$$relatedOrder.status",
+          },
+        },
+      },
+    },
+    {
+      $match: {
+        relatedOrderStatus: { $nin: ["Cancelled", "Rejected"] },
+      },
+    },
+    { $count: "count" },
+  ]);
+
+  return result?.count ?? 0;
+}
+
+async function releaseVoucherRedemptionsForOrder(
+  orderId: unknown,
+  reason: string,
+  session?: mongoose.ClientSession,
+) {
+  await VoucherRedemptionModel.updateMany(
+    { orderId, releasedAt: null },
+    {
+      $set: {
+        releasedAt: new Date(),
+        releaseReason: reason,
+      },
+    },
+    session ? { session } : undefined,
+  );
+}
+
 function ensureCustomerIdentity(customerId?: string) {
   if (!customerId) {
     throw new AppError(
@@ -1955,6 +2563,7 @@ function normalizeSavedLocations(
     _id?: mongoose.Types.ObjectId | string;
     label?: string;
     address?: string;
+    addressDetails?: string;
     latitude?: number;
     longitude?: number;
     source?: string;
@@ -1975,28 +2584,42 @@ function normalizeSavedLocations(
     return rightUsedAt - leftUsedAt;
   });
 
-  return sorted.map((location, index) => ({
+  return sorted.slice(0, 1).map((location) => ({
     ...location,
-    isDefault:
-      index === 0 ? true : Boolean(location.isDefault) && !sorted[0]?.isDefault,
+    isDefault: true,
   }));
-}
-
-function enforceSavedLocationLimit<T>(locations: T[]) {
-  if (locations.length > 3) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "LOCATION_LIMIT_REACHED",
-      "You can save up to 3 locations only",
-    );
-  }
 }
 
 export async function getCustomerSavedLocations(customerId: string) {
   const customer = await getCustomerById(ensureCustomerIdentity(customerId));
-  return (customer.savedLocations ?? []).map((location) =>
-    mapSavedLocation(location.toObject()),
+  const currentLocations = (customer.savedLocations ?? []).map((location) =>
+    location.toObject(),
   );
+  const normalizedLocations = normalizeSavedLocations(
+    currentLocations,
+  );
+
+  const needsNormalization =
+    currentLocations.length !== normalizedLocations.length ||
+    currentLocations.some((location, index) => {
+      const next = normalizedLocations[index];
+      return (
+        String(location._id ?? "") !== String(next?._id ?? "") ||
+        location.label !== next?.label ||
+        location.address !== next?.address ||
+        (location.addressDetails ?? "") !== (next?.addressDetails ?? "") ||
+        location.latitude !== next?.latitude ||
+        location.longitude !== next?.longitude ||
+        Boolean(location.isDefault) !== Boolean(next?.isDefault)
+      );
+    });
+
+  if (needsNormalization) {
+    customer.savedLocations = normalizedLocations as typeof customer.savedLocations;
+    await customer.save();
+  }
+
+  return normalizedLocations.map((location) => mapSavedLocation(location));
 }
 
 export async function listCustomerFavoriteRestaurantIds(customerId: string) {
@@ -2136,6 +2759,9 @@ export async function registerCustomerPushToken(params: {
   }
 
   pruneCustomerPushTokens(customer);
+  if (params.deviceId) {
+    customer.lastKnownDeviceId = params.deviceId;
+  }
   await customer.save();
 
   logger.info(
@@ -2187,6 +2813,7 @@ export async function createCustomerSavedLocation(params: {
   customerId: string;
   label: string;
   address: string;
+  addressDetails?: string;
   latitude: number;
   longitude: number;
   source?: "gps" | "manual" | "saved";
@@ -2195,42 +2822,21 @@ export async function createCustomerSavedLocation(params: {
   const customer = await getCustomerById(
     ensureCustomerIdentity(params.customerId),
   );
-  const currentLocations = customer.savedLocations.map((location) =>
-    location.toObject(),
-  );
-
-  const deduped = currentLocations.filter(
-    (location) =>
-      !(
-        location.label === params.label &&
-        location.address === params.address &&
-        location.latitude === params.latitude &&
-        location.longitude === params.longitude
-      ),
-  );
+  const existingLocation = customer.savedLocations[0]?.toObject();
 
   const nextLocation = {
+    ...(existingLocation?._id ? { _id: existingLocation._id } : {}),
     label: params.label,
     address: params.address,
+    addressDetails: params.addressDetails ?? "",
     latitude: params.latitude,
     longitude: params.longitude,
     source: params.source ?? "saved",
-    isDefault: params.isDefault ?? deduped.length === 0,
+    isDefault: true,
     lastUsedAt: new Date(),
   };
 
-  const nextLocations = normalizeSavedLocations(
-    params.isDefault
-      ? [
-          { ...nextLocation, isDefault: true },
-          ...deduped.map((location) => ({ ...location, isDefault: false })),
-        ]
-      : [...deduped, nextLocation],
-  );
-
-  enforceSavedLocationLimit(nextLocations);
-
-  customer.savedLocations = nextLocations as typeof customer.savedLocations;
+  customer.savedLocations = [nextLocation] as typeof customer.savedLocations;
   await customer.save();
 
   return customer.savedLocations.map((location) =>
@@ -2243,6 +2849,7 @@ export async function updateCustomerSavedLocation(params: {
   locationId: string;
   label?: string;
   address?: string;
+  addressDetails?: string;
   latitude?: number;
   longitude?: number;
   source?: "gps" | "manual" | "saved";
@@ -2251,7 +2858,8 @@ export async function updateCustomerSavedLocation(params: {
   const customer = await getCustomerById(
     ensureCustomerIdentity(params.customerId),
   );
-  const targetLocation = customer.savedLocations.id(params.locationId);
+  const targetLocation =
+    customer.savedLocations.id(params.locationId) ?? customer.savedLocations[0];
 
   if (!targetLocation) {
     throw new AppError(
@@ -2263,6 +2871,8 @@ export async function updateCustomerSavedLocation(params: {
 
   if (params.label !== undefined) targetLocation.label = params.label;
   if (params.address !== undefined) targetLocation.address = params.address;
+  if (params.addressDetails !== undefined)
+    targetLocation.addressDetails = params.addressDetails;
   if (params.latitude !== undefined) targetLocation.latitude = params.latitude;
   if (params.longitude !== undefined)
     targetLocation.longitude = params.longitude;
@@ -2291,9 +2901,9 @@ export async function setDefaultCustomerSavedLocation(params: {
   );
   const nextLocations = customer.savedLocations.map((location) => ({
     ...location.toObject(),
-    isDefault: location.id === params.locationId,
+    isDefault: String(location._id ?? "") === params.locationId,
     lastUsedAt:
-      location.id === params.locationId ? new Date() : location.lastUsedAt,
+      String(location._id ?? "") === params.locationId ? new Date() : location.lastUsedAt,
   }));
 
   if (!nextLocations.some((location) => location.isDefault)) {
@@ -2321,7 +2931,8 @@ export async function touchCustomerSavedLocation(params: {
   const customer = await getCustomerById(
     ensureCustomerIdentity(params.customerId),
   );
-  const targetLocation = customer.savedLocations.id(params.locationId);
+  const targetLocation =
+    customer.savedLocations.id(params.locationId) ?? customer.savedLocations[0];
 
   if (!targetLocation) {
     throw new AppError(
@@ -2349,11 +2960,11 @@ export async function removeCustomerSavedLocation(params: {
   const customer = await getCustomerById(
     ensureCustomerIdentity(params.customerId),
   );
-  const nextLocations = customer.savedLocations
-    .filter((location) => location.id !== params.locationId)
-    .map((location) => location.toObject());
+  const hasLocation = customer.savedLocations.some(
+    (location) => location.id === params.locationId,
+  );
 
-  if (nextLocations.length === customer.savedLocations.length) {
+  if (!hasLocation) {
     throw new AppError(
       StatusCodes.NOT_FOUND,
       "LOCATION_NOT_FOUND",
@@ -2361,9 +2972,7 @@ export async function removeCustomerSavedLocation(params: {
     );
   }
 
-  customer.savedLocations = normalizeSavedLocations(
-    nextLocations,
-  ) as typeof customer.savedLocations;
+  customer.savedLocations = [] as unknown as typeof customer.savedLocations;
   await customer.save();
 
   return customer.savedLocations.map((location) =>
@@ -2419,23 +3028,52 @@ async function resolveActiveVoucher(params: {
   items: Array<{ itemId: string; categoryId: string }>;
 }) {
   const now = new Date();
-  const previousOrderCount = params.customerId
-    ? await OrderModel.countDocuments({ customerId: params.customerId })
-    : 0;
-  const activeVouchers = await VoucherModel.find({
-    archivedAt: null,
-    $or: [
-      { restaurantId: params.restaurantId },
-      { scopeType: "all_restaurants" },
-      {
-        scopeType: "selected_restaurants",
-        selectedRestaurantIds: params.restaurantId,
-      },
-    ],
-    status: "Active",
-    startsAt: { $lte: now },
-    endsAt: { $gte: now },
-  }).sort({ priority: -1, createdAt: 1 });
+  const [previousOrderCount, activeVouchers] = await Promise.all([
+    params.customerId
+      ? OrderModel.countDocuments({ customerId: params.customerId })
+      : Promise.resolve(0),
+    VoucherModel.find({
+      archivedAt: null,
+      $or: [
+        { restaurantId: params.restaurantId },
+        { scopeType: "all_restaurants" },
+        {
+          scopeType: "selected_restaurants",
+          selectedRestaurantIds: params.restaurantId,
+        },
+      ],
+      status: "Active",
+      startsAt: { $lte: now },
+      endsAt: { $gte: now },
+    })
+      .select({
+        restaurantId: 1,
+        selectedRestaurantIds: 1,
+        selectedCustomerIds: 1,
+        categoryIds: 1,
+        itemIds: 1,
+        code: 1,
+        name: 1,
+        type: 1,
+        mode: 1,
+        fundedBy: 1,
+        scopeType: 1,
+        audienceType: 1,
+        applicability: 1,
+        minimumOrderAmount: 1,
+        discountValue: 1,
+        maxDiscountAmount: 1,
+        maxTotalUses: 1,
+        maxUsesPerUser: 1,
+        stackingRule: 1,
+        priority: 1,
+        ownerSharePercent: 1,
+        platformSharePercent: 1,
+        archivedAt: 1,
+      })
+      .sort({ priority: -1, createdAt: 1 })
+      .lean(),
+  ]);
 
   const eligibleVouchers = [];
   const itemIdSet = new Set(params.items.map((item) => item.itemId));
@@ -2486,7 +3124,7 @@ async function resolveActiveVoucher(params: {
     }
 
     if (voucher.maxTotalUses > 0) {
-      const totalUses = await VoucherRedemptionModel.countDocuments({
+      const totalUses = await countActiveVoucherRedemptions({
         voucherId: voucher._id,
       });
       if (totalUses >= voucher.maxTotalUses) {
@@ -2495,9 +3133,9 @@ async function resolveActiveVoucher(params: {
     }
 
     if (params.customerId && voucher.maxUsesPerUser > 0) {
-      const customerUses = await VoucherRedemptionModel.countDocuments({
+      const customerUses = await countActiveVoucherRedemptions({
         voucherId: voucher._id,
-        "voucherSnapshot.customerId": params.customerId,
+        customerId: params.customerId,
       });
       if (customerUses >= voucher.maxUsesPerUser) {
         continue;
@@ -2538,9 +3176,7 @@ async function resolveActiveVoucher(params: {
     return [autoVoucher, couponVoucher].sort((a, b) => b.priority - a.priority);
   }
 
-  return [autoVoucher, couponVoucher]
-    .sort((a, b) => b.priority - a.priority)
-    .slice(0, 1);
+  return [couponVoucher];
 }
 
 function calculateVoucherDiscount(params: {
@@ -2611,11 +3247,20 @@ export async function quoteCustomerCart(params: {
   latitude?: number;
   longitude?: number;
 }) {
-  const platformContent = await getPlatformContent();
-  const restaurant = await RestaurantModel.findOne({
-    _id: params.restaurantId,
-    ...getVisibleRestaurantQuery(),
-  });
+  const [platformContent, restaurant] = await Promise.all([
+    getPlatformContent(),
+    RestaurantModel.findOne({
+      _id: params.restaurantId,
+      ...getVisibleRestaurantQuery(),
+    })
+      .select({
+        name: 1,
+        runtime: 1,
+        location: 1,
+        commercial: 1,
+      })
+      .lean<Record<string, any>>(),
+  ]);
 
   if (!restaurant) {
     throw new AppError(
@@ -2639,9 +3284,19 @@ export async function quoteCustomerCart(params: {
     restaurantId: restaurant._id,
     status: "active",
     availability: "available",
-  });
+  })
+    .select({
+      categoryId: 1,
+      name: 1,
+      slug: 1,
+      images: 1,
+      basePrice: 1,
+      variants: 1,
+      addOnGroups: 1,
+    })
+    .lean();
 
-  const menuItemMap = new Map(menuItems.map((item) => [item.id, item]));
+  const menuItemMap = new Map(menuItems.map((item) => [String(item._id), item]));
   const categoryIds = [
     ...new Set(menuItems.map((item) => item.categoryId.toString())),
   ];
@@ -2667,9 +3322,9 @@ export async function quoteCustomerCart(params: {
     }
 
     const variantPrice = resolveSelectedVariantPrice(
-      menuItem.variants.map((variant) => ({
+      (menuItem.variants ?? []).map((variant) => ({
         name: variant.name,
-        options: variant.options.map((option) => ({
+        options: (variant.options ?? []).map((option) => ({
           label: option.label,
           priceDelta: option.priceDelta,
         })),
@@ -2678,9 +3333,9 @@ export async function quoteCustomerCart(params: {
     );
 
     const addOnPrice = resolveSelectedAddOnPrice(
-      menuItem.addOnGroups.map((group) => ({
+      (menuItem.addOnGroups ?? []).map((group) => ({
         name: group.name,
-        options: group.options.map((option) => ({
+        options: (group.options ?? []).map((option) => ({
           label: option.label,
           price: option.price,
         })),
@@ -2695,7 +3350,7 @@ export async function quoteCustomerCart(params: {
     const image = Array.isArray(menuItem.images) ? menuItem.images[0] : null;
 
     return {
-      itemId: menuItem.id,
+      itemId: String(menuItem._id),
       categoryId,
       itemName: menuItem.name,
       name: menuItem.name,
@@ -2716,18 +3371,12 @@ export async function quoteCustomerCart(params: {
     platformContent,
     restaurant,
   });
-  const deliveryDistanceKm =
-    typeof params.latitude === "number" &&
-    typeof params.longitude === "number" &&
-    typeof restaurant.location?.latitude === "number" &&
-    typeof restaurant.location?.longitude === "number"
-      ? calculateDistanceKm(
-          params.latitude,
-          params.longitude,
-          restaurant.location.latitude,
-          restaurant.location.longitude,
-        )
-      : null;
+  const deliveryDistanceKm = assertRestaurantServiceableForDelivery({
+    platformContent,
+    restaurant,
+    latitude: params.latitude,
+    longitude: params.longitude,
+  });
   const deliveryFee = calculateConfiguredDeliveryFee({
     baseFeeTaka: deliveryPricingConfig.baseFeeTaka,
     distanceSurchargeEnabled: deliveryPricingConfig.distanceSurchargeEnabled,
@@ -2737,7 +3386,7 @@ export async function quoteCustomerCart(params: {
     distanceKm: deliveryDistanceKm,
   });
   const vouchers = await resolveActiveVoucher({
-    restaurantId: restaurant.id,
+    restaurantId: String(restaurant._id),
     voucherCode: params.voucherCode,
     subtotal,
     customerId: params.customerId,
@@ -2755,13 +3404,13 @@ export async function quoteCustomerCart(params: {
       subtotal: Math.max(subtotal - totalDiscount, 0),
       deliveryFee: baseDeliveryFee,
     });
-    voucherDiscounts.set(voucher.id, currentDiscount);
+    voucherDiscounts.set(String(voucher._id), currentDiscount);
     return totalDiscount + currentDiscount;
   }, 0);
 
   const total = Math.max(subtotal + deliveryFee - discountAmount, 0);
   const ownerDiscountCost = vouchers.reduce((totalOwnerCost, voucher) => {
-    const voucherDiscount = voucherDiscounts.get(voucher.id) ?? 0;
+    const voucherDiscount = voucherDiscounts.get(String(voucher._id)) ?? 0;
     return (
       totalOwnerCost +
       Math.round(
@@ -2770,7 +3419,7 @@ export async function quoteCustomerCart(params: {
     );
   }, 0);
   const platformDiscountCost = vouchers.reduce((totalPlatformCost, voucher) => {
-    const voucherDiscount = voucherDiscounts.get(voucher.id) ?? 0;
+    const voucherDiscount = voucherDiscounts.get(String(voucher._id)) ?? 0;
     return (
       totalPlatformCost +
       Math.round(
@@ -2781,7 +3430,7 @@ export async function quoteCustomerCart(params: {
 
   return {
     restaurant: {
-      id: restaurant.id,
+      id: String(restaurant._id),
       name: restaurant.name,
     },
     items: resolvedItems,
@@ -2795,7 +3444,7 @@ export async function quoteCustomerCart(params: {
     },
     appliedVouchers: summarizeAppliedVouchers(
       vouchers.map((voucher) => ({
-        id: voucher.id,
+        id: String(voucher._id),
         code: voucher.code,
         name: voucher.name,
         type: voucher.type,
@@ -2805,7 +3454,7 @@ export async function quoteCustomerCart(params: {
         audienceType: (voucher as any).audienceType,
         ownerSharePercent: voucher.ownerSharePercent,
         platformSharePercent: voucher.platformSharePercent,
-        discountAmount: voucherDiscounts.get(voucher.id) ?? 0,
+        discountAmount: voucherDiscounts.get(String(voucher._id)) ?? 0,
       })),
     ),
   };
@@ -2814,6 +3463,7 @@ export async function quoteCustomerCart(params: {
 export async function placeCustomerOrder(params: {
   customerId: string;
   restaurantId: string;
+  clientOrderId?: string;
   items: CartInputItem[];
   voucherCode?: string;
   paymentMethod: string;
@@ -2823,22 +3473,26 @@ export async function placeCustomerOrder(params: {
     walletNumber?: string;
   };
   note?: string;
-  deliveryAddress: {
-    label: string;
-    addressLine: string;
-    latitude?: number | null;
-    longitude?: number | null;
-  };
+  deliveryAddress: CustomerDeliveryAddressInput;
 }) {
   const customerId = ensureCustomerIdentity(params.customerId);
   const customer = await getCustomerById(customerId);
+  const clientOrderId = normalizeClientOrderId(params.clientOrderId);
+  const existingOrder = await findIdempotentOrder(customer.id, clientOrderId);
+  if (existingOrder) {
+    return {
+      order: existingOrder,
+      quote: buildQuoteFromOrder(existingOrder.toObject()),
+    };
+  }
+
   const quote = await quoteCustomerCart({
     restaurantId: params.restaurantId,
     items: params.items,
     voucherCode: params.voucherCode,
     customerId,
-    latitude: params.deliveryAddress.latitude ?? undefined,
-    longitude: params.deliveryAddress.longitude ?? undefined,
+    latitude: params.deliveryAddress.latitude,
+    longitude: params.deliveryAddress.longitude,
   });
 
   const restaurant = await RestaurantModel.findById(params.restaurantId);
@@ -2851,14 +3505,25 @@ export async function placeCustomerOrder(params: {
     );
   }
 
-  let paymentStatus = "pending";
-  let paymentSnapshot: Record<string, unknown> = {};
   const orderId = new mongoose.Types.ObjectId();
-  let reservedBkashSessionId: string | null = null;
+  const paymentSettings = await getPaymentMethodSettings();
+  const shouldAutoAcceptOrder =
+    (restaurant.settings as { orderSettings?: { autoAcceptOrders?: boolean } } | undefined)
+      ?.orderSettings?.autoAcceptOrders === true;
+  let order: any | null = null;
+  let createdOrder = false;
 
-  if (params.paymentMethod === "Bkash") {
+  if (params.paymentMethod === "Cash") {
+    if (!paymentSettings.cashOnDeliveryEnabled) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "COD_DISABLED",
+        "Cash on delivery is not available right now",
+      );
+    }
+
+  } else if (params.paymentMethod === "Bkash") {
     const bkashSessionId = params.paymentReference?.bkashSessionId;
-
     if (!bkashSessionId) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
@@ -2867,50 +3532,23 @@ export async function placeCustomerOrder(params: {
       );
     }
 
-    const paymentSession =
-      await BkashSandboxPaymentSessionModel.findOneAndUpdate(
-        {
-          _id: bkashSessionId,
-          customerId,
-          restaurantId: params.restaurantId,
-          status: "confirmed",
-          usedAt: null,
-          amount: quote.pricing.total,
-        },
-        {
-          $set: {
-            orderId,
-            usedAt: new Date(),
-          },
-        },
-        {
-          new: true,
-        },
-      );
-
-    if (!paymentSession) {
-      throw new AppError(
-        StatusCodes.BAD_REQUEST,
-        "BKASH_PAYMENT_INVALID",
-        "The selected bKash payment is not valid anymore",
-      );
+    if (!paymentSettings.bkashEnabled) {
+      const confirmedSessionExists = await BkashSandboxPaymentSessionModel.exists({
+        _id: bkashSessionId,
+        customerId,
+        restaurantId: params.restaurantId,
+        status: "confirmed",
+        usedAt: null,
+        amount: quote.pricing.total,
+      });
+      if (!confirmedSessionExists) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "BKASH_DISABLED",
+          "bKash payment is not available right now",
+        );
+      }
     }
-
-    reservedBkashSessionId = paymentSession.id;
-    paymentStatus = "paid";
-    paymentSnapshot = {
-      provider: "Bkash",
-      sessionId: paymentSession.id,
-      paymentID: paymentSession.sandboxPaymentId,
-      transactionId: paymentSession.transactionId,
-      walletNumber: paymentSession.walletNumber,
-      confirmedAt: paymentSession.confirmedAt,
-    };
-  } else if (params.paymentMethod === "Cash") {
-    paymentStatus = "pending";
-    paymentSnapshot = {
-      provider: "Cash",
-    };
   } else {
     throw new AppError(
       StatusCodes.BAD_REQUEST,
@@ -2919,94 +3557,223 @@ export async function placeCustomerOrder(params: {
     );
   }
 
+  const session = await mongoose.startSession();
+
   try {
-    const order = await OrderModel.create({
-      _id: orderId,
-      restaurantId: params.restaurantId,
-      customerId: customer.id,
-      orderNumber: `FB-${Date.now()}`,
-      status: "New",
-      paymentMethod: params.paymentMethod,
-      paymentStatus,
-      paymentSnapshot,
-      pricing: quote.pricing,
-      customerSnapshot: {
-        id: customer.id,
-        fullName: customer.fullName,
-        phone: customer.phone,
-        deliveryAddress: params.deliveryAddress,
-      },
-      itemsSnapshot: quote.items,
-      history: [
+    await session.withTransaction(async () => {
+      if (clientOrderId) {
+        const existingInsideTransaction = await OrderModel.findOne({
+          customerId: customer.id,
+          clientOrderId,
+        }).session(session);
+        if (existingInsideTransaction) {
+          order = existingInsideTransaction;
+          return;
+        }
+      }
+
+      let paymentStatus = "pending";
+      let paymentSnapshot: Record<string, unknown> = {};
+
+      if (params.paymentMethod === "Bkash") {
+        const paymentSession =
+          await BkashSandboxPaymentSessionModel.findOneAndUpdate(
+            {
+              _id: params.paymentReference?.bkashSessionId,
+              customerId,
+              restaurantId: params.restaurantId,
+              status: "confirmed",
+              usedAt: null,
+              amount: quote.pricing.total,
+            },
+            {
+              $set: {
+                orderId,
+                usedAt: new Date(),
+              },
+            },
+            {
+              new: true,
+              session,
+            },
+          );
+
+        if (!paymentSession) {
+          throw new AppError(
+            StatusCodes.BAD_REQUEST,
+            "BKASH_PAYMENT_INVALID",
+            "The selected bKash payment is not valid anymore",
+          );
+        }
+
+        paymentStatus = "paid";
+        paymentSnapshot = {
+          provider: "Bkash",
+          sessionId: paymentSession.id,
+          paymentID: paymentSession.sandboxPaymentId,
+          transactionId: paymentSession.transactionId,
+          walletNumber: paymentSession.walletNumber,
+          confirmedAt: paymentSession.confirmedAt,
+        };
+      } else {
+        paymentSnapshot = {
+          provider: "Cash",
+        };
+      }
+
+      const placedAt = new Date();
+      const initialStatus = shouldAutoAcceptOrder ? "Accepted" : "New";
+      const initialHistory = [
         {
           status: "New",
           actor: "customer",
           note: params.note ?? "",
-          createdAt: new Date(),
+          createdAt: placedAt,
         },
-      ],
-      timestamps: {
-        placedAt: new Date(),
-      },
-    });
+        ...(shouldAutoAcceptOrder
+          ? [
+              {
+                status: "Accepted",
+                actor: "system",
+                note: "Auto-accepted by restaurant settings",
+                createdAt: placedAt,
+              },
+            ]
+          : []),
+      ];
 
-    if (quote.appliedVouchers.length) {
-      await Promise.all(
-        quote.appliedVouchers.map((voucher) =>
-          VoucherRedemptionModel.create({
-            orderId: order._id,
+      const [created] = await OrderModel.create(
+        [
+          {
+            _id: orderId,
             restaurantId: params.restaurantId,
-            voucherId: voucher.id,
-            voucherSnapshot: {
-              ...voucher,
-              customerId,
+            customerId: customer.id,
+            clientOrderId,
+            orderNumber: createOrderNumber(),
+            status: initialStatus,
+            paymentMethod: params.paymentMethod,
+            paymentStatus,
+            paymentSnapshot,
+            pricing: quote.pricing,
+            customerSnapshot: {
+              id: customer.id,
+              fullName: customer.fullName,
+              phone: customer.phone,
+              deliveryAddress: params.deliveryAddress,
             },
-            discountBreakdown: {
-              discountAmount:
-                voucher.discountAmount ?? quote.pricing.discountAmount,
-              ownerFundedAmount: Math.round(
-                (voucher.discountAmount ?? quote.pricing.discountAmount) *
-                  ((voucher.ownerSharePercent ?? 100) / 100),
-              ),
-              platformFundedAmount: Math.round(
-                (voucher.discountAmount ?? quote.pricing.discountAmount) *
-                  ((voucher.platformSharePercent ?? 0) / 100),
-              ),
+            itemsSnapshot: quote.items,
+            history: initialHistory,
+            timestamps: {
+              placedAt,
+              ...(shouldAutoAcceptOrder ? { Accepted: placedAt, acceptedAt: placedAt } : {}),
             },
-          }),
-        ),
+          },
+        ],
+        { session },
       );
+      order = created;
+      createdOrder = true;
+
+      if (quote.appliedVouchers.length) {
+        await VoucherRedemptionModel.create(
+          quote.appliedVouchers.map((voucher) => {
+            const discountAmount =
+              voucher.discountAmount ?? quote.pricing.discountAmount;
+            const ownerFundedAmount = Math.round(
+              discountAmount * ((voucher.ownerSharePercent ?? 100) / 100),
+            );
+            const platformFundedAmount = Math.round(
+              discountAmount * ((voucher.platformSharePercent ?? 0) / 100),
+            );
+            return {
+              orderId: created._id,
+              restaurantId: params.restaurantId,
+              voucherId: voucher.id,
+              voucherSnapshot: {
+                ...voucher,
+                customerId,
+              },
+              discountBreakdown: {
+                discountAmount,
+                ownerFundedAmount,
+                platformFundedAmount,
+                ownerDiscountCost: ownerFundedAmount,
+                platformDiscountCost: platformFundedAmount,
+              },
+            };
+          }),
+          { session },
+        );
+      }
+
+      const subtotal = quote.pricing.subtotal;
+      const commissionRate =
+        typeof restaurant.commercial?.commissionRate === "number"
+          ? restaurant.commercial.commissionRate
+          : 15;
+      const discountCost =
+        quote.pricing.ownerDiscountCost ?? quote.pricing.discountAmount;
+      const platformDiscountCost = quote.pricing.platformDiscountCost ?? 0;
+      const commissionBase = subtotal;
+      const commission = Math.round(commissionBase * (commissionRate / 100));
+      const deliveryCost = quote.pricing.deliveryFee;
+      const netAmount = subtotal - commission - discountCost;
+
+      await LedgerEntryModel.create(
+        [
+          {
+            restaurantId: params.restaurantId,
+            orderId: created._id,
+            sourceEntityType: "order",
+            sourceEntityId: created.id,
+            entryType: "earning",
+            grossAmount: subtotal,
+            commissionBase,
+            commission,
+            discountCost,
+            platformDiscountCost,
+            deliveryCost,
+            netAmount,
+            settlementStatus: "pending",
+            availableAt: null,
+          },
+        ],
+        { session },
+      );
+    });
+  } catch (error) {
+    if (clientOrderId && isDuplicateKeyError(error)) {
+      const duplicateOrder = await findIdempotentOrder(customer.id, clientOrderId);
+      if (duplicateOrder) {
+        return {
+          order: duplicateOrder,
+          quote: buildQuoteFromOrder(duplicateOrder.toObject()),
+        };
+      }
     }
 
-    const subtotal = quote.pricing.subtotal;
-    const commissionRate =
-      typeof restaurant.commercial?.commissionRate === "number"
-        ? restaurant.commercial.commissionRate
-        : 15;
-    const discountCost =
-      quote.pricing.ownerDiscountCost ?? quote.pricing.discountAmount;
-    const platformDiscountCost = quote.pricing.platformDiscountCost ?? 0;
-    const commissionBase = subtotal;
-    const commission = Math.round(commissionBase * (commissionRate / 100));
-    const deliveryCost = quote.pricing.deliveryFee;
-    const netAmount = subtotal - commission - discountCost;
+    throw error;
+  } finally {
+    await session.endSession();
+  }
 
-    await LedgerEntryModel.create({
-      restaurantId: params.restaurantId,
-      orderId: order._id,
-      sourceEntityType: "order",
-      sourceEntityId: order.id,
-      entryType: "earning",
-      grossAmount: subtotal,
-      commissionBase,
-      commission,
-      discountCost,
-      platformDiscountCost,
-      deliveryCost,
-      netAmount,
-      settlementStatus: "pending",
-      availableAt: null,
-    });
+  if (!order) {
+    const latestOrder = await findIdempotentOrder(customer.id, clientOrderId);
+    if (latestOrder) {
+      return {
+        order: latestOrder,
+        quote: buildQuoteFromOrder(latestOrder.toObject()),
+      };
+    }
+    throw new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      "ORDER_NOT_CREATED",
+      "Order could not be created",
+    );
+  }
+
+  if (createdOrder) {
+    const orderObject = order.toObject();
 
     try {
       await createOwnerNotification({
@@ -3024,54 +3791,66 @@ export async function placeCustomerOrder(params: {
       // Checkout is already committed; realtime order events still notify the owner UI.
     }
 
+    try {
+      await sendPushToOwner({
+        ownerId: restaurant.ownerId.toString(),
+        payload: {
+          title: "New order received",
+          body: `Order ${order.orderNumber} is waiting for action.`,
+          data: {
+            type: "order.created",
+            orderId: order.id,
+            path: `/orders/${order.id}`
+          }
+        }
+      })
+    } catch {
+      // Checkout is already committed; realtime order events still notify the owner UI.
+    }
+
     emitSocketEvent(
       `owner:${restaurant.ownerId.toString()}`,
       "order.updated",
-      order.toObject(),
+      orderObject,
     );
     emitSocketEvent(
       `restaurant:${restaurant.id}`,
       "order.updated",
-      order.toObject(),
+      orderObject,
     );
     emitSocketEvent(
       `customer:${customer.id}`,
       "customer.order.created",
-      order.toObject(),
+      orderObject,
     );
-
-    return {
-      order,
-      quote,
-    };
-  } catch (error) {
-    if (reservedBkashSessionId) {
-      await BkashSandboxPaymentSessionModel.updateOne(
-        { _id: reservedBkashSessionId, orderId },
-        {
-          $set: {
-            usedAt: null,
-            orderId: null,
-          },
-        },
-      );
-    }
-
-    throw error;
   }
+
+  return {
+    order,
+    quote,
+  };
 }
 
 export async function initiateBkashPayment(params: {
   customerId: string;
   restaurantId: string;
+  clientOrderId?: string;
   items: CartInputItem[];
   voucherCode?: string;
   walletNumber: string;
-  latitude?: number;
-  longitude?: number;
+  deliveryAddress: CustomerDeliveryAddressInput;
 }) {
   const customerId = ensureCustomerIdentity(params.customerId);
   const customer = await getCustomerById(customerId);
+  const paymentSettings = await getPaymentMethodSettings();
+
+  if (!paymentSettings.bkashEnabled) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "BKASH_DISABLED",
+      "bKash payment is not available right now",
+    );
+  }
 
   if (!/^01\d{9}$/.test(params.walletNumber)) {
     throw new AppError(
@@ -3086,8 +3865,8 @@ export async function initiateBkashPayment(params: {
     items: params.items,
     voucherCode: params.voucherCode,
     customerId,
-    latitude: params.latitude,
-    longitude: params.longitude,
+    latitude: params.deliveryAddress.latitude,
+    longitude: params.deliveryAddress.longitude,
   });
 
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
@@ -3097,6 +3876,12 @@ export async function initiateBkashPayment(params: {
     walletNumber: params.walletNumber,
     amount: quote.pricing.total,
     voucherCode: params.voucherCode ?? "",
+    checkoutSnapshot: {
+      clientOrderId: normalizeClientOrderId(params.clientOrderId),
+      items: params.items,
+      voucherCode: params.voucherCode ?? "",
+      deliveryAddress: params.deliveryAddress,
+    },
     status: "initiated",
     expiresAt,
   });
@@ -3123,6 +3908,89 @@ export async function initiateBkashPayment(params: {
   };
 }
 
+function appendBkashReturnParams(
+  redirectUrlBase: string,
+  params: Record<string, string | undefined>,
+) {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined) searchParams.set(key, value);
+  });
+  return `${redirectUrlBase}?${searchParams.toString()}`;
+}
+
+function getBkashCheckoutSnapshot(session: any) {
+  const snapshot = session.checkoutSnapshot ?? {};
+  const deliveryAddress = snapshot.deliveryAddress ?? {};
+  if (
+    !Array.isArray(snapshot.items) ||
+    !snapshot.items.length ||
+    typeof deliveryAddress.label !== "string" ||
+    typeof deliveryAddress.addressLine !== "string" ||
+    typeof deliveryAddress.latitude !== "number" ||
+    typeof deliveryAddress.longitude !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    clientOrderId: normalizeClientOrderId(snapshot.clientOrderId),
+    items: snapshot.items as CartInputItem[],
+    voucherCode:
+      typeof snapshot.voucherCode === "string" && snapshot.voucherCode.trim()
+        ? snapshot.voucherCode.trim()
+        : undefined,
+    deliveryAddress: {
+      label: deliveryAddress.label,
+      addressLine: deliveryAddress.addressLine,
+      addressDetails:
+        typeof deliveryAddress.addressDetails === "string"
+          ? deliveryAddress.addressDetails
+          : undefined,
+      latitude: deliveryAddress.latitude,
+      longitude: deliveryAddress.longitude,
+    } satisfies CustomerDeliveryAddressInput,
+  };
+}
+
+async function finalizeConfirmedBkashSessionOrder(session: any) {
+  if (session.orderId) {
+    return String(session.orderId);
+  }
+
+  const checkoutSnapshot = getBkashCheckoutSnapshot(session);
+  if (!checkoutSnapshot) {
+    return "";
+  }
+
+  try {
+    const result = await placeCustomerOrder({
+      customerId: String(session.customerId ?? ""),
+      restaurantId: String(session.restaurantId ?? ""),
+      clientOrderId: checkoutSnapshot.clientOrderId,
+      items: checkoutSnapshot.items,
+      voucherCode: checkoutSnapshot.voucherCode,
+      paymentMethod: "Bkash",
+      paymentReference: {
+        provider: "Bkash",
+        bkashSessionId: session.id,
+        walletNumber: session.walletNumber,
+      },
+      deliveryAddress: checkoutSnapshot.deliveryAddress,
+    });
+    return String(result.order?._id ?? result.order?.id ?? "");
+  } catch (error) {
+    logger.error(
+      {
+        err: error,
+        bkashSessionId: session.id,
+      },
+      "bKash payment confirmed but automatic order finalization failed",
+    );
+    return "";
+  }
+}
+
 export async function handleBkashCallback(params: {
   sessionId: string;
   status?: string;
@@ -3142,13 +4010,16 @@ export async function handleBkashCallback(params: {
     params.paymentID &&
     session.sandboxPaymentId === params.paymentID
   ) {
-    return `${redirectUrlBase}?status=success&sessionId=${session.id}&transactionId=${encodeURIComponent(
-      session.transactionId ?? "",
-    )}&confirmedAt=${encodeURIComponent(
-      session.confirmedAt?.toISOString() ?? new Date().toISOString(),
-    )}&walletNumber=${encodeURIComponent(session.walletNumber)}&paymentID=${encodeURIComponent(
-      session.sandboxPaymentId ?? "",
-    )}`;
+    const orderId = await finalizeConfirmedBkashSessionOrder(session);
+    return appendBkashReturnParams(redirectUrlBase, {
+      status: "success",
+      sessionId: session.id,
+      transactionId: session.transactionId ?? "",
+      confirmedAt: session.confirmedAt?.toISOString() ?? new Date().toISOString(),
+      walletNumber: session.walletNumber,
+      paymentID: session.sandboxPaymentId ?? "",
+      orderId: orderId || undefined,
+    });
   }
 
   if (params.status !== "success" || !params.paymentID) {
@@ -3175,12 +4046,17 @@ export async function handleBkashCallback(params: {
     session.transactionId = executeResponse.trxID ?? "";
     session.confirmedAt = new Date();
     await session.save();
+    const orderId = await finalizeConfirmedBkashSessionOrder(session);
 
-    return `${redirectUrlBase}?status=success&sessionId=${session.id}&transactionId=${encodeURIComponent(
-      session.transactionId,
-    )}&confirmedAt=${encodeURIComponent(session.confirmedAt.toISOString())}&walletNumber=${encodeURIComponent(
-      session.walletNumber,
-    )}&paymentID=${encodeURIComponent(session.sandboxPaymentId ?? "")}`;
+    return appendBkashReturnParams(redirectUrlBase, {
+      status: "success",
+      sessionId: session.id,
+      transactionId: session.transactionId,
+      confirmedAt: session.confirmedAt.toISOString(),
+      walletNumber: session.walletNumber,
+      paymentID: session.sandboxPaymentId ?? "",
+      orderId: orderId || undefined,
+    });
   } catch {
     session.status = "failed";
     await session.save();
@@ -3192,11 +4068,27 @@ export async function handleBkashCallback(params: {
 
 export async function listCustomerOrders(
   customerId: string,
-  params?: { page?: number; pageSize?: number },
+  params?: {
+    page?: number;
+    pageSize?: number;
+    status?: string;
+    statusGroup?: "live" | "history";
+  },
 ) {
   const safeCustomerId = ensureCustomerIdentity(customerId);
   const { page, pageSize } = normalizePageBounds(params);
-  const orders = await OrderModel.find({ customerId: safeCustomerId })
+  const statusFilter = params?.status
+    ? { status: params.status }
+    : params?.statusGroup === "live"
+      ? { status: { $in: ["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"] } }
+      : params?.statusGroup === "history"
+        ? { status: { $in: ["Delivered", "Rejected", "Cancelled"] } }
+        : {};
+  const orderQuery = {
+    customerId: safeCustomerId,
+    ...statusFilter,
+  };
+  const orders = await OrderModel.find(orderQuery)
     .sort({ createdAt: -1 })
     .skip((page - 1) * pageSize)
     .limit(pageSize);
@@ -3212,11 +4104,27 @@ export async function listCustomerOrders(
   const reviewedOrderIds = new Set(
     reviews.map((review) => review.orderId?.toString()),
   );
+  const restaurantIds = [
+    ...new Set(orders.map((order) => String(order.restaurantId ?? "")).filter(Boolean)),
+  ];
+  const restaurants = restaurantIds.length
+    ? await RestaurantModel.find({ _id: { $in: restaurantIds } }).lean()
+    : [];
+  const restaurantById = new Map(
+    restaurants.map((restaurant) => [String(restaurant._id ?? ""), restaurant]),
+  );
 
-  return orders.map((order) => ({
-    ...order.toObject(),
-    hasCustomerReview: reviewedOrderIds.has(order._id.toString()),
-  }));
+  return orders.map((order) => {
+    const orderObject = order.toObject();
+    return {
+      ...orderObject,
+      preparationTiming: buildOrderPreparationTiming({
+        order: orderObject,
+        restaurant: restaurantById.get(String(order.restaurantId ?? "")),
+      }),
+      hasCustomerReview: reviewedOrderIds.has(order._id.toString()),
+    };
+  });
 }
 
 export async function getCustomerOrderDetails(params: {
@@ -3242,10 +4150,17 @@ export async function getCustomerOrderDetails(params: {
     customerId: safeCustomerId,
   });
 
+  const orderObject = order.toObject();
+  const restaurant = await RestaurantModel.findById(order.restaurantId).lean();
+
   return {
-    ...order.toObject(),
+    ...orderObject,
+    preparationTiming: buildOrderPreparationTiming({
+      order: orderObject,
+      restaurant,
+    }),
     riderTracking: decorateTrackingSnapshot(
-      (order.toObject() as Record<string, any>).riderTracking ?? {},
+      (orderObject as Record<string, any>).riderTracking ?? {},
       order.status,
     ),
     customerReview: review
@@ -3297,6 +4212,16 @@ export async function cancelCustomerOrder(params: {
   order.cancelledBy = "customer";
   order.terminalReason = params.reason ?? "customer_cancelled";
   const cancelledAt = new Date();
+  if (order.paymentMethod === "Bkash" && order.paymentStatus === "paid") {
+    order.paymentStatus = "refund_pending";
+    order.paymentSnapshot = {
+      ...(order.paymentSnapshot ?? {}),
+      refundStatus: "pending",
+      refundRequestedAt: cancelledAt,
+      refundReason: params.reason ?? "customer_cancelled",
+    };
+    order.markModified("paymentSnapshot");
+  }
   order.history.push({
     status: "Cancelled",
     actor: "customer",
@@ -3313,6 +4238,15 @@ export async function cancelCustomerOrder(params: {
   };
 
   await order.save();
+  await Promise.all([
+    syncOrderLedgerForFinalStatus({
+      restaurantId: order.restaurantId.toString(),
+      orderId: order.id,
+      nextStatus: "Cancelled",
+      finalizedAt: cancelledAt,
+    }),
+    releaseVoucherRedemptionsForOrder(order._id, "customer_cancelled"),
+  ]);
 
   const restaurant = await RestaurantModel.findById(order.restaurantId);
   if (restaurant) {

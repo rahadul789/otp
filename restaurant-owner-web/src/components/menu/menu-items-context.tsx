@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useLocation } from "react-router-dom"
 
 import { useOwnerMenuItemsQuery } from "@/hooks/use-owner-api"
 import {
@@ -15,7 +16,12 @@ export function MenuItemsProvider({
 }) {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const setItems = useAppStore((state) => state.setMenuItems)
-  const menuItemsQuery = useOwnerMenuItemsQuery(ownerAccount.isAuthenticated)
+  const location = useLocation()
+  const shouldLoadMenuItems =
+    location.pathname === "/" || location.pathname === "/analytics"
+  const menuItemsQuery = useOwnerMenuItemsQuery(
+    ownerAccount.isAuthenticated && shouldLoadMenuItems
+  )
 
   React.useEffect(() => {
     if (!menuItemsQuery.data) return
@@ -27,11 +33,11 @@ export function MenuItemsProvider({
   }, [menuItemsQuery.data, setItems])
 
   React.useEffect(() => {
-    if (!ownerAccount.isAuthenticated) return
+    if (!ownerAccount.isAuthenticated || !shouldLoadMenuItems) return
     if (menuItemsQuery.isPending && !menuItemsQuery.data) {
       setItems([])
     }
-  }, [menuItemsQuery.data, menuItemsQuery.isPending, ownerAccount.isAuthenticated, setItems])
+  }, [menuItemsQuery.data, menuItemsQuery.isPending, ownerAccount.isAuthenticated, setItems, shouldLoadMenuItems])
 
   return <>{children}</>
 }

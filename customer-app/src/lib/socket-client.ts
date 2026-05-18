@@ -1,8 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:5000/api/v1";
+import { API_BASE_URL } from "@/src/config/runtime";
 
 function resolveSocketUrl() {
   if (API_BASE_URL.includes("/api/v1")) {
@@ -13,6 +11,7 @@ function resolveSocketUrl() {
 }
 
 let customerSocket: Socket | null = null;
+let customerSocketAuthToken = "";
 
 export function getCustomerSocket() {
   if (!customerSocket) {
@@ -26,8 +25,21 @@ export function getCustomerSocket() {
   return customerSocket;
 }
 
-export function connectCustomerSocket(customerId: string) {
+export function connectCustomerSocket(customerId: string, accessToken: string) {
   const socket = getCustomerSocket();
+  const nextToken = accessToken.trim();
+
+  if (!customerId || !nextToken) {
+    disconnectCustomerSocket();
+    return socket;
+  }
+
+  if (customerSocketAuthToken !== nextToken && socket.connected) {
+    socket.disconnect();
+  }
+
+  customerSocketAuthToken = nextToken;
+  socket.auth = { token: nextToken };
 
   if (!socket.connected) {
     socket.connect();

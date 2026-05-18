@@ -212,6 +212,20 @@ const platformContentSchema = z.object({
     }),
   }),
   operations: z.object({
+    ownerApp: z
+      .object({
+        webDashboardUrl: z
+          .string()
+          .trim()
+          .url()
+          .max(500)
+          .optional()
+          .default("http://localhost:5173"),
+      })
+      .optional()
+      .default({
+        webDashboardUrl: "http://localhost:5173",
+      }),
     serviceArea: z.object({
       name: z.string().trim().min(1),
       centerLatitude: z.number().min(-90).max(90),
@@ -225,6 +239,97 @@ const platformContentSchema = z.object({
       surchargeStepMeters: z.number().int().min(100).max(10000).optional().default(500),
       surchargeAmountTaka: z.number().int().min(0).max(5000).optional().default(5),
     }),
+    liveTracking: z.object({
+      mode: z.enum(["balanced", "battery_saver", "high_accuracy"]).optional().default("balanced"),
+      updateIntervalSeconds: z.number().int().min(10).max(60).optional().default(15),
+      distanceIntervalMeters: z.number().int().min(30).max(100).optional().default(60),
+      passiveHeartbeatSeconds: z.number().int().min(30).max(180).optional().default(60),
+    }),
+    payments: z.object({
+      cashOnDeliveryEnabled: z.boolean().optional().default(true),
+      bkashEnabled: z.boolean().optional().default(false),
+      bkashLabel: z.string().trim().min(1).max(40).optional().default("bKash"),
+      bkashSubtitle: z
+        .string()
+        .trim()
+        .min(1)
+        .max(120)
+        .optional()
+        .default("Continue to the official hosted payment page."),
+    }),
+    finance: z
+      .object({
+        settlementDelayDays: z.number().int().min(0).max(30).optional().default(3),
+        minimumPayoutAmountTaka: z.number().int().min(1).max(100000).optional().default(500),
+        oneActivePayoutRequest: z.boolean().optional().default(true),
+      })
+      .optional()
+      .default({
+        settlementDelayDays: 3,
+        minimumPayoutAmountTaka: 500,
+        oneActivePayoutRequest: true,
+      }),
+    adminNotifications: z
+      .object({
+        orderPlaced: z.boolean().optional().default(true),
+        customerOrderUpdates: z.boolean().optional().default(false),
+        orderDelays: z.boolean().optional().default(true),
+        preparationDelays: z.boolean().optional().default(true),
+        riderDelays: z.boolean().optional().default(true),
+        deliveryDelays: z.boolean().optional().default(true),
+        payoutRequests: z.boolean().optional().default(true),
+        support: z.boolean().optional().default(true),
+        security: z.boolean().optional().default(true),
+        campaigns: z.boolean().optional().default(true),
+      })
+      .optional()
+      .default({
+        orderPlaced: true,
+        customerOrderUpdates: false,
+        orderDelays: true,
+        preparationDelays: true,
+        riderDelays: true,
+        deliveryDelays: true,
+        payoutRequests: true,
+        support: true,
+        security: true,
+        campaigns: true,
+      }),
+    referrals: z
+      .object({
+        enabled: z.boolean().optional().default(true),
+        rewardAmountTaka: z.number().int().min(1).max(10000).optional().default(50),
+        minimumOrderAmountTaka: z.number().int().min(0).max(100000).optional().default(250),
+        voucherExpiryDays: z.number().int().min(1).max(365).optional().default(30),
+        monthlyRewardCapPerCustomer: z.number().int().min(1).max(100).optional().default(5),
+        shareLinkTemplate: z
+          .string()
+          .trim()
+          .min(1)
+          .max(500)
+          .optional()
+          .default("foodbela://checkout?ref={{code}}"),
+        shareMessageTemplate: z
+          .string()
+          .trim()
+          .min(1)
+          .max(700)
+          .optional()
+          .default(
+            "Use my Foodbela referral code {{code}} at checkout before your first delivered order. After your first delivered order, I get a Tk {{rewardAmount}} reward voucher. {{link}}"
+          ),
+      })
+      .optional()
+      .default({
+        enabled: true,
+        rewardAmountTaka: 50,
+        minimumOrderAmountTaka: 250,
+        voucherExpiryDays: 30,
+        monthlyRewardCapPerCustomer: 5,
+        shareLinkTemplate: "foodbela://checkout?ref={{code}}",
+        shareMessageTemplate:
+          "Use my Foodbela referral code {{code}} at checkout before your first delivered order. After your first delivered order, I get a Tk {{rewardAmount}} reward voucher. {{link}}",
+      }),
     dispatch: z.object({
       autoAssignmentEnabled: z.boolean(),
       autoReassignTimedOutOrders: z.boolean(),
@@ -236,16 +341,34 @@ const platformContentSchema = z.object({
       maxActiveOrdersPerRider: z.number().int().min(1).max(50),
       staleLocationCutoffMinutes: z.number().int().min(1).max(180),
       assignmentTimeoutMinutes: z.number().int().min(1).max(180),
-      prepStartGraceMinutes: z.number().int().min(1).max(180).optional().default(8),
+      prepStartGraceMinutes: z.number().int().min(1).max(180).optional().default(3),
+      preparationMaxExtraMinutes: z.number().int().min(0).max(180).optional().default(20),
       prepLateGraceMinutes: z.number().int().min(0).max(180).optional().default(5),
       pickupLateGraceMinutes: z.number().int().min(1).max(180).optional().default(10),
       deliveryLateGraceMinutes: z.number().int().min(1).max(180).optional().default(10),
+      deliveryWatchAfterPickupMinutes: z.number().int().min(1).max(240).optional().default(20),
+      deliveryLateAfterPickupMinutes: z.number().int().min(1).max(240).optional().default(25),
+      deliveryCriticalAfterPickupMinutes: z.number().int().min(1).max(240).optional().default(30),
       retryCooldownMinutes: z.number().int().min(1).max(60),
       surgeReadyOrderThreshold: z.number().int().min(1).max(100),
       surgeUnassignedOrderThreshold: z.number().int().min(1).max(100),
       autoCancelUnacceptedOrdersEnabled: z.boolean().optional().default(false),
       autoCancelAfterMinutes: z.number().int().min(2).max(240).optional().default(12),
       autoCancelNotifyBeforeMinutes: z.number().int().min(1).max(60).optional().default(3),
+    }),
+  }),
+  auth: z.object({
+    otp: z.object({
+      expiresInSeconds: z.number().int().min(60).max(900),
+      resendCooldownSeconds: z.number().int().min(15).max(300),
+      messageTemplate: z
+        .string()
+        .trim()
+        .min(20)
+        .max(320)
+        .refine((value) => value.includes("{{code}}"), {
+          message: "OTP message template must include {{code}}",
+        }),
     }),
   }),
   supportContact: z.object({
@@ -321,6 +444,7 @@ const platformContentSchema = z.object({
 
 type PlatformContent = z.infer<typeof platformContentSchema>
 const defaultPlatformContent = platformContentSchema.parse(platformContent)
+export type OperationalFinanceSettings = PlatformContent["operations"]["finance"]
 type AdminEditablePlatformContent = {
   content: PlatformContent
   meta: {
@@ -365,11 +489,18 @@ function deepMerge<T>(base: T, override: unknown): T {
 }
 
 const CONTENT_KEY = "platform-content"
+const platformContentCacheTtlMs = 30_000
+const platformContentHistoryLimit = 6
+let platformContentCache: { content: PlatformContent; expiresAt: number } | null = null
+let adminEditablePlatformContentCache:
+  | { content: AdminEditablePlatformContent; expiresAt: number }
+  | null = null
 
 const SECTION_LABELS = {
   branding: "Branding",
   customerApp: "Customer App",
   operations: "Operations",
+  auth: "Authentication",
   supportContact: "Support Contact",
   helpCategories: "Help Categories",
   helpArticles: "Help Guides",
@@ -402,6 +533,10 @@ function getChangedSections(
 
   if (!isEqualSection(previousContent.operations, nextContent.operations)) {
     changedSections.push(SECTION_LABELS.operations)
+  }
+
+  if (!isEqualSection(previousContent.auth, nextContent.auth)) {
+    changedSections.push(SECTION_LABELS.auth)
   }
 
   if (!isEqualSection(previousContent.supportContact, nextContent.supportContact)) {
@@ -459,16 +594,22 @@ function mapAdminEditablePlatformContent(
     }>
   } | null
 ) {
+  const toIsoStringOrNull = (value: Date | string | null | undefined) => {
+    if (!value) return null
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  }
+
   return {
     content,
     meta: {
-      updatedAt: contentDoc?.updatedAt ? new Date(contentDoc.updatedAt).toISOString() : null,
+      updatedAt: toIsoStringOrNull(contentDoc?.updatedAt),
       updatedByAdminId: contentDoc?.updatedByAdminId ?? null,
       updatedByAdminName: contentDoc?.updatedByAdminName ?? "",
     },
     history:
       contentDoc?.history?.map((entry) => ({
-        updatedAt: new Date(entry.updatedAt).toISOString(),
+        updatedAt: toIsoStringOrNull(entry.updatedAt) ?? "",
         updatedByAdminId:
           typeof entry.updatedByAdminId === "string" ? entry.updatedByAdminId : null,
         updatedByAdminName:
@@ -482,69 +623,122 @@ function mapAdminEditablePlatformContent(
 }
 
 export async function getPlatformContent() {
-  const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY }).lean()
-  if (!contentDoc?.content) {
-    return defaultPlatformContent
+  if (platformContentCache && platformContentCache.expiresAt > Date.now()) {
+    return platformContentCache.content
   }
 
-  return deepMerge(defaultPlatformContent, contentDoc.content)
-}
-
-export async function getAdminEditablePlatformContent() {
-  const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY }).lean()
+  const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
+    .select({ content: 1 })
+    .lean()
   const content = contentDoc?.content
     ? deepMerge(defaultPlatformContent, contentDoc.content)
     : defaultPlatformContent
 
-  return mapAdminEditablePlatformContent(content, contentDoc)
+  platformContentCache = {
+    content,
+    expiresAt: Date.now() + platformContentCacheTtlMs
+  }
+
+  return content
+}
+
+export async function getOperationalFinanceSettings(): Promise<OperationalFinanceSettings> {
+  const content = await getPlatformContent()
+  return content.operations.finance
+}
+
+export async function getAdminEditablePlatformContent() {
+  if (
+    adminEditablePlatformContentCache &&
+    adminEditablePlatformContentCache.expiresAt > Date.now()
+  ) {
+    return adminEditablePlatformContentCache.content
+  }
+
+  const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
+    .select({
+      content: 1,
+      updatedAt: 1,
+      updatedByAdminId: 1,
+      updatedByAdminName: 1,
+      history: 1,
+    })
+    .slice("history", -platformContentHistoryLimit)
+    .lean()
+  const content = contentDoc?.content
+    ? deepMerge(defaultPlatformContent, contentDoc.content)
+    : defaultPlatformContent
+
+  const mapped = mapAdminEditablePlatformContent(content, contentDoc)
+  adminEditablePlatformContentCache = {
+    content: mapped,
+    expiresAt: Date.now() + platformContentCacheTtlMs,
+  }
+  return mapped
 }
 
 export async function updatePlatformContent(params: {
   content: unknown
   adminId: string
 }) {
+  platformContentCache = null
+  adminEditablePlatformContentCache = null
   const parsed = platformContentSchema.parse(params.content)
-  const admin = await AdminModel.findById(params.adminId).lean()
+  const [admin, currentDoc] = await Promise.all([
+    AdminModel.findById(params.adminId).select({ fullName: 1 }).lean(),
+    PublicContentModel.findOne({ key: CONTENT_KEY }).select({ content: 1 }).lean(),
+  ])
   const adminName = admin?.fullName ?? "Support Team"
-  const currentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY }).lean()
   const currentContent = currentDoc?.content
     ? deepMerge(defaultPlatformContent, currentDoc.content)
     : null
   const nextUpdatedAt = new Date()
   const changedSections = getChangedSections(currentContent, parsed)
-  const nextHistory = [
-    ...(currentDoc?.history ?? []),
-    {
-      updatedByAdminId: params.adminId,
-      updatedByAdminName: adminName,
-      updatedAt: nextUpdatedAt,
-      changedSections,
-      content: parsed,
-    },
-  ].slice(-20)
+  const nextHistoryEntry = {
+    updatedByAdminId: params.adminId,
+    updatedByAdminName: adminName,
+    updatedAt: nextUpdatedAt,
+    changedSections,
+    content: parsed,
+  }
 
-  await PublicContentModel.findOneAndUpdate(
+  await PublicContentModel.updateOne(
     { key: CONTENT_KEY },
     {
-      key: CONTENT_KEY,
-      content: parsed,
-      updatedByAdminId: params.adminId,
-      updatedByAdminName: adminName,
-      history: nextHistory,
+      $set: {
+        key: CONTENT_KEY,
+        content: parsed,
+        updatedByAdminId: params.adminId,
+        updatedByAdminName: adminName,
+      },
+      $push: {
+        history: {
+          $each: [nextHistoryEntry],
+          $slice: -platformContentHistoryLimit,
+        },
+      },
     },
     {
       upsert: true,
-      new: true,
       setDefaultsOnInsert: true,
     }
   )
 
-  return mapAdminEditablePlatformContent(parsed, {
+  const mapped = mapAdminEditablePlatformContent(parsed, {
     updatedAt: nextUpdatedAt,
     updatedByAdminId: params.adminId,
     updatedByAdminName: adminName,
-    history: nextHistory,
+    history: [nextHistoryEntry],
   })
+  adminEditablePlatformContentCache = {
+    content: mapped,
+    expiresAt: Date.now() + platformContentCacheTtlMs,
+  }
+  platformContentCache = {
+    content: parsed,
+    expiresAt: Date.now() + platformContentCacheTtlMs,
+  }
+  return mapped
 }
 
 export async function recordCustomerHomeCmsEvent(params: {
@@ -696,7 +890,6 @@ export async function sendCustomerHomeCmsPushCampaign(params: { adminId: string 
   const editor = await getAdminEditablePlatformContent()
   const content = editor.content
   const pushCampaign = content.customerApp.homeCms.pushCampaign
-  const occurredAt = new Date().toISOString()
 
   if (!pushCampaign.title.trim() || !pushCampaign.body.trim()) {
     throw new AppError(
@@ -991,7 +1184,6 @@ export async function checkCustomerHomeCmsPushReceipts(params: { adminId: string
   const editor = await getAdminEditablePlatformContent()
   const content = editor.content
   const pushCampaign = content.customerApp.homeCms.pushCampaign
-  const occurredAt = new Date().toISOString()
   const ticketIds = pushCampaign.recipientEvents.flatMap((event) => event.ticketIds ?? [])
 
   if (!ticketIds.length) {
@@ -1320,6 +1512,8 @@ export async function rollbackPlatformContent(params: {
   updatedAt: string
   adminId: string
 }) {
+  adminEditablePlatformContentCache = null
+  platformContentCache = null
   const rollbackUpdatedAt = new Date(params.updatedAt)
   if (Number.isNaN(rollbackUpdatedAt.getTime())) {
     throw new AppError(
@@ -1329,9 +1523,22 @@ export async function rollbackPlatformContent(params: {
     )
   }
 
-  const admin = await AdminModel.findById(params.adminId).lean()
+  const admin = await AdminModel.findById(params.adminId)
+    .select({ fullName: 1 })
+    .lean()
   const adminName = admin?.fullName ?? "Support Team"
-  const currentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY }).lean()
+  const currentDoc = await PublicContentModel.findOne({
+    key: CONTENT_KEY,
+    "history.updatedAt": rollbackUpdatedAt,
+  })
+    .select({
+      content: 1,
+      updatedAt: 1,
+      updatedByAdminId: 1,
+      updatedByAdminName: 1,
+      history: { $elemMatch: { updatedAt: rollbackUpdatedAt } },
+    })
+    .lean()
 
   if (!currentDoc) {
     throw new AppError(
@@ -1341,9 +1548,7 @@ export async function rollbackPlatformContent(params: {
     )
   }
 
-  const historyEntry = currentDoc.history?.find(
-    (entry) => new Date(entry.updatedAt).toISOString() === rollbackUpdatedAt.toISOString()
-  )
+  const historyEntry = currentDoc.history?.[0]
 
   if (!historyEntry?.content) {
     throw new AppError(
@@ -1364,35 +1569,45 @@ export async function rollbackPlatformContent(params: {
     ...getChangedSections(currentContent, restoredContent),
     "Rollback",
   ]
-  const nextHistory = [
-    ...(currentDoc.history ?? []),
-    {
-      updatedByAdminId: params.adminId,
-      updatedByAdminName: adminName,
-      updatedAt: nextUpdatedAt,
-      changedSections,
-      content: restoredContent,
-    },
-  ].slice(-20)
+  const nextHistoryEntry = {
+    updatedByAdminId: params.adminId,
+    updatedByAdminName: adminName,
+    updatedAt: nextUpdatedAt,
+    changedSections,
+    content: restoredContent,
+  }
 
-  await PublicContentModel.findOneAndUpdate(
+  await PublicContentModel.updateOne(
     { key: CONTENT_KEY },
     {
-      key: CONTENT_KEY,
-      content: restoredContent,
-      updatedByAdminId: params.adminId,
-      updatedByAdminName: adminName,
-      history: nextHistory,
-    },
-    {
-      new: true,
+      $set: {
+        key: CONTENT_KEY,
+        content: restoredContent,
+        updatedByAdminId: params.adminId,
+        updatedByAdminName: adminName,
+      },
+      $push: {
+        history: {
+          $each: [nextHistoryEntry],
+          $slice: -platformContentHistoryLimit,
+        },
+      },
     }
   )
 
-  return mapAdminEditablePlatformContent(restoredContent, {
+  const mapped = mapAdminEditablePlatformContent(restoredContent, {
     updatedAt: nextUpdatedAt,
     updatedByAdminId: params.adminId,
     updatedByAdminName: adminName,
-    history: nextHistory,
+    history: [nextHistoryEntry],
   })
+  adminEditablePlatformContentCache = {
+    content: mapped,
+    expiresAt: Date.now() + platformContentCacheTtlMs,
+  }
+  platformContentCache = {
+    content: restoredContent,
+    expiresAt: Date.now() + platformContentCacheTtlMs,
+  }
+  return mapped
 }

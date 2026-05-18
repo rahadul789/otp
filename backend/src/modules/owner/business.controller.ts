@@ -28,6 +28,7 @@ const mediaAssetSchema = z.object({
 const storeSettingsUpdateSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().optional(),
+  phone: z.string().regex(/^01\d{9}$/).optional(),
   preparationTimeMinutes: z.number().int().min(5).max(120).nullable().optional(),
   autoAcceptOrders: z.boolean().optional(),
   cuisineTypes: z.array(z.string()).optional(),
@@ -73,7 +74,9 @@ const reviewReplySchema = z.object({
 const reviewsQuerySchema = z.object({
   search: z.string().optional(),
   rating: z.string().optional(),
-  datePreset: z.enum(["today", "last7Days", "custom"]).optional(),
+  datePreset: z
+    .enum(["today", "yesterday", "last7Days", "last30Days", "last90Days", "thisWeek", "thisMonth", "lastMonth", "lifetime", "custom"])
+    .optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   commentFilter: z.enum(["all", "with-comments", "without-comments"]).optional(),

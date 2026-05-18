@@ -6,7 +6,13 @@ import { AppError } from "../../common/utils/app-error"
 import { decorateTrackingSnapshot } from "../../common/utils/tracking-freshness"
 import { emitSocketEvent } from "../../config/socket"
 import { runAutoDispatchForReadyOrders } from "../admin/orders-monitor.service"
-import { createOtpSession } from "../auth/auth.service"
+import {
+  assertOtpVerificationAllowed,
+  createOtpSession,
+  getOtpSessionTiming,
+  recordOtpVerificationSuccess,
+  rejectInvalidOtpAttempt,
+} from "../auth/auth.service"
 import {
   OtpSessionModel,
   RestaurantModel,
@@ -14,6 +20,7 @@ import {
   RiderRefreshTokenSessionModel
 } from "../auth/auth.model"
 import {
+  comparePassword,
   compareOtpCode,
   hashPassword,
   signAccessToken,
@@ -25,7 +32,7 @@ import { transitionOrderBySystem, updateOrderRiderLocation } from "../owner/oper
 import { getPlatformContent } from "../public/content.service"
 import { syncRiderAvailabilitySession } from "./availability-session.service"
 
-const RIDER_REFRESH_EXPIRY_DAYS = 30
+const RIDER_REFRESH_EXPIRY_DAYS = 3650
 const DEFAULT_MAX_ACTIVE_ORDERS_PER_RIDER = 3
 const DEFAULT_RIDER_ORDER_PAGE_SIZE = 80
 const MAX_RIDER_ORDER_PAGE_SIZE = 100
@@ -97,11 +104,13 @@ function buildRiderAuthPayload(params: {
   status?: string
   profileImage?: { url?: string; publicId?: string }
   refreshToken: string
+  tokenId: string
 }) {
   return {
     accessToken: signAccessToken({
       subject: params.riderId,
-      role: "rider"
+      role: "rider",
+      tokenId: params.tokenId
     }),
     refreshToken: params.refreshToken,
     rider: {
@@ -140,7 +149,7 @@ async function createRiderRefreshSession(params: {
     expiresAt: new Date(Date.now() + RIDER_REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
   })
 
-  return refreshToken
+  return { refreshToken, tokenId }
 }
 
 function mapRiderProfile(rider: {
@@ -209,10 +218,11 @@ function mapRiderOrder(
     paymentMethod: order.paymentMethod ?? "Cash",
     paymentStatus: order.paymentStatus ?? "pending",
     assignmentState,
-    isTrackingActiveForRider:
+    isFocusedLiveTrip:
       Boolean(activeTrackingOrderId) &&
       activeTrackingOrderId === String(order._id ?? order.id ?? "") &&
       order.status === "PickedUp",
+    isTrackingActiveForRider: assignedRiderId === riderId && order.status === "PickedUp",
     createdAt: order.createdAt ? new Date(order.createdAt).toISOString() : null,
     updatedAt: order.updatedAt ? new Date(order.updatedAt).toISOString() : null,
     pricing: order.pricing ?? {},
@@ -225,6 +235,7 @@ function mapRiderOrder(
       deliveryAddress: {
         label: order.customerSnapshot?.deliveryAddress?.label ?? "",
         addressLine: order.customerSnapshot?.deliveryAddress?.addressLine ?? "",
+        addressDetails: order.customerSnapshot?.deliveryAddress?.addressDetails ?? "",
         latitude: order.customerSnapshot?.deliveryAddress?.latitude ?? null,
         longitude: order.customerSnapshot?.deliveryAddress?.longitude ?? null
       }
@@ -284,35 +295,58 @@ async function enrichRiderOrders(
 
 async function setActiveTrackingOrder(params: { riderId: string; orderId: string }) {
   await OrderModel.updateMany(
-    { riderId: params.riderId, status: "PickedUp", _id: { $ne: params.orderId } },
+    { riderId: params.riderId, status: "PickedUp" },
     {
       $set: {
-        "riderTracking.isActive": false
+        "riderTracking.isActive": true,
+        "riderTracking.isFocused": false
       }
     }
   )
 
   await OrderModel.updateOne(
-    { _id: params.orderId },
+    { _id: params.orderId, riderId: params.riderId, status: "PickedUp" },
     {
       $set: {
-        "riderTracking.isActive": true
+        "riderTracking.isActive": true,
+        "riderTracking.isFocused": true
       }
     }
   )
 
-  await RiderModel.updateOne(
-    { _id: params.riderId },
+  const updatedRider = await RiderModel.findByIdAndUpdate(
+    params.riderId,
     {
       $set: {
         activeTrackingOrderId: params.orderId
       }
-    }
+    },
+    { new: true }
   )
+
+  if (updatedRider) {
+    emitSocketEvent(`rider:${updatedRider.id}`, "rider.profile.updated", mapRiderProfile(updatedRider))
+  }
 }
 
 async function clearActiveTrackingOrderIfMatches(params: { riderId: string; orderId: string }) {
-  await RiderModel.updateOne(
+  const nextPickedUpOrder = await OrderModel.findOne({
+    riderId: params.riderId,
+    status: "PickedUp",
+    _id: { $ne: params.orderId }
+  })
+    .sort({ "timestamps.PickedUp": 1, createdAt: 1 })
+    .select("_id")
+
+  if (nextPickedUpOrder) {
+    await setActiveTrackingOrder({
+      riderId: params.riderId,
+      orderId: nextPickedUpOrder.id
+    })
+    return
+  }
+
+  const updatedRider = await RiderModel.findOneAndUpdate(
     {
       _id: params.riderId,
       activeTrackingOrderId: params.orderId
@@ -321,21 +355,237 @@ async function clearActiveTrackingOrderIfMatches(params: { riderId: string; orde
       $set: {
         activeTrackingOrderId: ""
       }
-    }
+    },
+    { new: true }
   )
+
+  if (updatedRider) {
+    emitSocketEvent(`rider:${updatedRider.id}`, "rider.profile.updated", mapRiderProfile(updatedRider))
+  }
 }
 
-export async function startRiderPhoneSignin(phone: string) {
+export async function startRiderPhoneSignin(
+  phone: string,
+  context?: { userAgent?: string; ipAddress?: string }
+) {
+  const rider = await RiderModel.findOne({ phone })
+
+  if (!rider) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RIDER_NOT_FOUND",
+      "No rider account was found for this phone number"
+    )
+  }
+
+  assertRiderAccessible(rider)
+
   const otpSession = await createOtpSession({
     phone,
     purpose: "rider_phone_signin",
-    referenceId: phone
+    referenceId: rider.id,
+    userAgent: context?.userAgent,
+    ipAddress: context?.ipAddress
   })
 
   return {
     verificationSessionId: otpSession.id,
-    expiresInSeconds: 300
+    ...getOtpSessionTiming(otpSession)
   }
+}
+
+export async function signinRiderWithPassword(params: {
+  phone: string
+  password: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  const rider = await RiderModel.findOne({ phone: params.phone })
+
+  if (!rider || !rider.passwordHash?.trim()) {
+    throw new AppError(
+      StatusCodes.UNAUTHORIZED,
+      "INVALID_CREDENTIALS",
+      "This phone number or password is incorrect"
+    )
+  }
+
+  assertRiderAccessible(rider)
+
+  const isPasswordValid = await comparePassword(params.password, rider.passwordHash)
+
+  if (!isPasswordValid) {
+    throw new AppError(
+      StatusCodes.UNAUTHORIZED,
+      "INVALID_CREDENTIALS",
+      "This phone number or password is incorrect"
+    )
+  }
+
+  rider.lastLoginAt = new Date()
+  await rider.save()
+
+  const refreshSession = await createRiderRefreshSession({
+    riderId: rider.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
+  })
+
+  return buildRiderAuthPayload({
+    riderId: rider.id,
+    fullName: rider.fullName,
+    phone: rider.phone,
+    vehicleType: rider.vehicleType,
+    activeTrackingOrderId: rider.activeTrackingOrderId ?? "",
+    isAvailableForAssignments: rider.isAvailableForAssignments ?? true,
+    status: rider.status,
+    profileImage: rider.profileImage,
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
+  })
+}
+
+export async function requestRiderPasswordReset(params: {
+  phone: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  const rider = await RiderModel.findOne({ phone: params.phone })
+
+  if (!rider) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RIDER_NOT_FOUND",
+      "No rider account was found for this phone number"
+    )
+  }
+
+  assertRiderAccessible(rider)
+
+  const otpSession = await createOtpSession({
+    phone: params.phone,
+    purpose: "rider_password_reset",
+    referenceId: rider.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
+  })
+
+  return {
+    verificationSessionId: otpSession.id,
+    phone: otpSession.phone,
+    ...getOtpSessionTiming(otpSession)
+  }
+}
+
+export async function verifyRiderPasswordResetOtp(params: {
+  verificationSessionId: string
+  otpCode: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  const otpSession = await OtpSessionModel.findById(params.verificationSessionId)
+
+  if (!otpSession || otpSession.purpose !== "rider_password_reset") {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RESET_SESSION_NOT_FOUND",
+      "Password reset session not found"
+    )
+  }
+
+  if (otpSession.status !== "pending") {
+    throw new AppError(StatusCodes.BAD_REQUEST, "OTP_NOT_ACTIVE", "OTP session is not active")
+  }
+
+  if (otpSession.expiresAt.getTime() < Date.now()) {
+    otpSession.status = "expired"
+    await otpSession.save()
+    throw new AppError(StatusCodes.BAD_REQUEST, "OTP_EXPIRED", "OTP has expired")
+  }
+
+  await assertOtpVerificationAllowed(otpSession, params)
+  const isValidOtp = await compareOtpCode(params.otpCode, otpSession.otpCodeHash)
+
+  if (!isValidOtp) {
+    await rejectInvalidOtpAttempt(otpSession, params)
+  }
+
+  const rider = await RiderModel.findById(otpSession.referenceId)
+
+  if (!rider || rider.phone !== otpSession.phone) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RIDER_NOT_FOUND",
+      "No rider account was found for this phone number"
+    )
+  }
+
+  assertRiderAccessible(rider)
+
+  otpSession.status = "verified"
+  otpSession.verifiedAt = new Date()
+  await recordOtpVerificationSuccess(otpSession, params)
+  await otpSession.save()
+
+  return {
+    verificationSessionId: otpSession.id,
+    phone: otpSession.phone,
+    expiresInSeconds: Math.max(0, Math.floor((otpSession.expiresAt.getTime() - Date.now()) / 1000))
+  }
+}
+
+export async function resetRiderPassword(params: {
+  verificationSessionId: string
+  newPassword: string
+}) {
+  const otpSession = await OtpSessionModel.findById(params.verificationSessionId)
+
+  if (!otpSession || otpSession.purpose !== "rider_password_reset") {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RESET_SESSION_NOT_FOUND",
+      "Password reset session not found"
+    )
+  }
+
+  if (otpSession.status !== "verified") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "RESET_SESSION_NOT_VERIFIED",
+      "Verify OTP before resetting the password"
+    )
+  }
+
+  if (otpSession.expiresAt.getTime() < Date.now()) {
+    otpSession.status = "expired"
+    await otpSession.save()
+    throw new AppError(StatusCodes.BAD_REQUEST, "OTP_EXPIRED", "OTP has expired")
+  }
+
+  const rider = await RiderModel.findById(otpSession.referenceId)
+
+  if (!rider || rider.phone !== otpSession.phone) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RIDER_NOT_FOUND",
+      "No rider account was found for this phone number"
+    )
+  }
+
+  assertRiderAccessible(rider)
+
+  rider.passwordHash = await hashPassword(params.newPassword.trim())
+  await rider.save()
+
+  await RiderRefreshTokenSessionModel.updateMany(
+    { riderId: rider._id, revokedAt: null },
+    { revokedAt: new Date() }
+  )
+
+  otpSession.status = "consumed"
+  await otpSession.save()
+
+  return { reset: true, phone: rider.phone }
 }
 
 export async function verifyRiderPhoneSignin(params: {
@@ -361,21 +611,21 @@ export async function verifyRiderPhoneSignin(params: {
     throw new AppError(StatusCodes.BAD_REQUEST, "OTP_EXPIRED", "OTP has expired")
   }
 
+  await assertOtpVerificationAllowed(otpSession, params)
   const isValidOtp = await compareOtpCode(params.otpCode, otpSession.otpCodeHash)
 
   if (!isValidOtp) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "INVALID_OTP", "Invalid OTP code")
+    await rejectInvalidOtpAttempt(otpSession, params)
   }
 
-  let rider = await RiderModel.findOne({ phone: otpSession.phone })
+  const rider = await RiderModel.findOne({ phone: otpSession.phone })
 
   if (!rider) {
-    rider = await RiderModel.create({
-      fullName: params.fullName?.trim() || "Foodbela Rider",
-      phone: otpSession.phone,
-      vehicleType: "cycle",
-      isPhoneVerified: true
-    })
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RIDER_NOT_FOUND",
+      "No rider account was found for this phone number"
+    )
   }
 
   assertRiderAccessible(rider)
@@ -385,9 +635,10 @@ export async function verifyRiderPhoneSignin(params: {
 
   otpSession.status = "consumed"
   otpSession.verifiedAt = new Date()
+  await recordOtpVerificationSuccess(otpSession, params)
   await otpSession.save()
 
-  const refreshToken = await createRiderRefreshSession({
+  const refreshSession = await createRiderRefreshSession({
     riderId: rider.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress
@@ -402,7 +653,8 @@ export async function verifyRiderPhoneSignin(params: {
     isAvailableForAssignments: rider.isAvailableForAssignments ?? true,
     status: rider.status,
     profileImage: rider.profileImage,
-    refreshToken
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
   })
 }
 
@@ -448,7 +700,7 @@ export async function refreshRiderSession(params: {
   rider.lastLoginAt = new Date()
   await rider.save()
 
-  const refreshToken = await createRiderRefreshSession({
+  const refreshSession = await createRiderRefreshSession({
     riderId: rider.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress
@@ -463,7 +715,8 @@ export async function refreshRiderSession(params: {
     isAvailableForAssignments: rider.isAvailableForAssignments ?? true,
     status: rider.status,
     profileImage: rider.profileImage,
-    refreshToken
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
   })
 }
 
@@ -637,6 +890,13 @@ export async function updateRiderLastKnownLocation(params: {
 
   assertRiderAccessible(rider)
 
+  const pickedUpOrders = await OrderModel.find({
+    riderId: rider.id,
+    status: "PickedUp"
+  })
+    .sort({ "timestamps.PickedUp": 1, createdAt: 1 })
+    .select("_id")
+
   rider.lastKnownLocation = {
     latitude: params.latitude,
     longitude: params.longitude,
@@ -646,10 +906,56 @@ export async function updateRiderLastKnownLocation(params: {
     updatedAt: new Date()
   }
 
+  const pickedUpOrderIds = pickedUpOrders.map((order) => order.id)
+  const currentFocusedOrderId = rider.activeTrackingOrderId ?? ""
+  if (pickedUpOrderIds.length === 0) {
+    rider.activeTrackingOrderId = ""
+  } else if (!pickedUpOrderIds.includes(currentFocusedOrderId)) {
+    rider.activeTrackingOrderId = pickedUpOrderIds[0] ?? ""
+  }
+
   await rider.save()
 
   const profile = mapRiderProfile(rider)
   emitSocketEvent(`rider:${rider.id}`, "rider.profile.updated", profile)
+
+  if (pickedUpOrderIds.length > 0) {
+    await OrderModel.updateMany(
+      { riderId: rider.id, status: "PickedUp" },
+      {
+        $set: {
+          "riderTracking.isActive": true,
+          "riderTracking.isFocused": false
+        }
+      }
+    )
+    if (rider.activeTrackingOrderId) {
+      await OrderModel.updateOne(
+        { _id: rider.activeTrackingOrderId, riderId: rider.id, status: "PickedUp" },
+        {
+          $set: {
+            "riderTracking.isFocused": true
+          }
+        }
+      )
+    }
+  }
+
+  await Promise.allSettled(
+    pickedUpOrderIds.map((orderId) =>
+      updateOrderRiderLocation({
+        orderId,
+        actor: "rider",
+        latitude: params.latitude,
+        longitude: params.longitude,
+        heading: params.heading,
+        accuracyMeters: params.accuracyMeters,
+        speedKmph: params.speedKmph,
+        riderName: rider.fullName,
+        riderPhone: rider.phone
+      })
+    )
+  )
 
   return profile
 }
@@ -970,37 +1276,22 @@ export async function postRiderLocation(params: {
     throw new AppError(StatusCodes.NOT_FOUND, "ORDER_NOT_FOUND", "Order not found")
   }
 
-  if ((rider.activeTrackingOrderId ?? "") !== order.id) {
+  if (order.status !== "PickedUp") {
     throw new AppError(
       StatusCodes.BAD_REQUEST,
-      "TRACKING_NOT_ACTIVE_FOR_ORDER",
-      "Make this order your active live trip before sharing location"
+      "ORDER_NOT_IN_TRANSIT",
+      "Rider location can only be shared after pickup"
     )
   }
 
-  const updatedOrder = await updateOrderRiderLocation({
-    orderId: order.id,
-    actor: "rider",
+  await updateRiderLastKnownLocation({
+    riderId: rider.id,
     latitude: params.latitude,
     longitude: params.longitude,
     heading: params.heading,
     accuracyMeters: params.accuracyMeters,
-    speedKmph: params.speedKmph,
-    riderName: rider.fullName,
-    riderPhone: rider.phone
+    speedKmph: params.speedKmph
   })
-
-  rider.lastKnownLocation = {
-    latitude: params.latitude,
-    longitude: params.longitude,
-    heading: params.heading ?? null,
-    accuracyMeters: params.accuracyMeters ?? null,
-    speedKmph: params.speedKmph ?? null,
-    updatedAt: new Date(),
-  }
-  await rider.save()
-
-  emitSocketEvent(`rider:${rider.id}`, "rider.order.updated", updatedOrder.toObject())
 
   return getRiderOrderDetails({
     riderId: rider.id,

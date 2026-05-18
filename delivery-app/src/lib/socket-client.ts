@@ -1,18 +1,9 @@
 import { io, type Socket } from "socket.io-client";
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:5000/api/v1";
-
-function resolveSocketUrl() {
-  if (API_BASE_URL.includes("/api/v1")) {
-    return API_BASE_URL.replace(/\/api\/v1\/?$/, "");
-  }
-
-  return API_BASE_URL;
-}
+import { resolveSocketUrl } from "@/src/config/api";
 
 let riderSocket: Socket | null = null;
+let riderSocketAuthToken = "";
 
 export function getRiderSocket() {
   if (!riderSocket) {
@@ -26,8 +17,21 @@ export function getRiderSocket() {
   return riderSocket;
 }
 
-export function connectRiderSocket(riderId: string) {
+export function connectRiderSocket(riderId: string, accessToken: string) {
   const socket = getRiderSocket();
+  const nextToken = accessToken.trim();
+
+  if (!riderId || !nextToken) {
+    disconnectRiderSocket();
+    return socket;
+  }
+
+  if (riderSocketAuthToken !== nextToken && socket.connected) {
+    socket.disconnect();
+  }
+
+  riderSocketAuthToken = nextToken;
+  socket.auth = { token: nextToken };
 
   if (!socket.connected) {
     socket.connect();

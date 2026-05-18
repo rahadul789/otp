@@ -4,6 +4,7 @@ import { StatusCodes } from "http-status-codes";
 import { AppError } from "../../common/utils/app-error";
 import { slugify } from "../../common/utils/slugify";
 import { hashPassword } from "../auth/auth.utils";
+import { emitSocketEvent } from "../../config/socket";
 import { AdminAuditLogModel, AdminModel } from "./admin.model";
 import {
   OpeningHoursModel,
@@ -14,8 +15,14 @@ import {
 import { SupportCaseModel, ReviewModel } from "../owner/experience.model";
 import { LedgerEntryModel, PayoutBatchModel } from "../owner/finance.model";
 import {
+  buildRelatedOrderPayoutEligibilityMatch,
+  isRestaurantPayoutEligibleOrder,
+} from "../owner/finance-rules";
+import { getOperationalFinanceSettings } from "../public/content.service";
+import {
   CategoryModel,
   MenuItemModel,
+  NotificationModel,
   OrderModel,
 } from "../owner/operational.model";
 
@@ -26,7 +33,6 @@ const LIVE_ORDER_STATUSES = [
   "ReadyForPickup",
   "PickedUp",
 ];
-const SETTLEMENT_DELAY_DAYS = 3;
 
 type RestaurantListParams = {
   search?: string;
@@ -58,6 +64,7 @@ type CreateRestaurantParams = {
   description?: string;
   phone?: string;
   email?: string;
+  payoutBkashNumber?: string;
   cuisineTypes?: string[];
   tags?: string[];
   address?: string;
@@ -193,9 +200,9 @@ function getRestaurantDeliveryPricingSnapshot(restaurant: Record<string, any>) {
   };
 }
 
-function getSettlementAvailableAt(deliveredAt: Date) {
+function getSettlementAvailableAt(deliveredAt: Date, settlementDelayDays: number) {
   return new Date(
-    deliveredAt.getTime() + SETTLEMENT_DELAY_DAYS * 24 * 60 * 60 * 1000,
+    deliveredAt.getTime() + settlementDelayDays * 24 * 60 * 60 * 1000,
   );
 }
 
@@ -649,6 +656,10 @@ function buildDateMatch(params?: {
   let from: Date | null = null;
   let to: Date | null = null;
 
+  if (params?.preset === "lifetime") {
+    return null;
+  }
+
   if (params?.preset === "today") {
     from = new Date(now);
     from.setHours(0, 0, 0, 0);
@@ -669,6 +680,9 @@ function buildDateMatch(params?: {
   } else if (params?.preset === "thisMonth") {
     from = new Date(now.getFullYear(), now.getMonth(), 1);
     to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else if (params?.preset === "lastMonth") {
+    from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
   } else if (params?.preset === "thisWeek") {
     from = new Date(now);
     const day = from.getDay();
@@ -746,14 +760,27 @@ function buildFinalizedLedgerPipeline(
             },
           },
         },
+        relatedOrderPaymentStatus: {
+          $let: {
+            vars: {
+              relatedOrder: { $arrayElemAt: ["$orderDocs", 0] },
+            },
+            in: "$$relatedOrder.paymentStatus",
+          },
+        },
+        relatedOrderPaymentMethod: {
+          $let: {
+            vars: {
+              relatedOrder: { $arrayElemAt: ["$orderDocs", 0] },
+            },
+            in: "$$relatedOrder.paymentMethod",
+          },
+        },
       },
     },
-    {
-      $match: {
-        relatedOrderStatus: "Delivered",
-        ...(dateMatch ? { relatedOrderDeliveredAt: dateMatch } : {}),
-      },
-    },
+    { $match: buildRelatedOrderPayoutEligibilityMatch(
+      dateMatch ? { relatedOrderDeliveredAt: dateMatch } : {},
+    ) },
     {
       $group: {
         _id: null,
@@ -798,13 +825,77 @@ function buildFinalizedLedgerPipeline(
 
 async function reconcileRestaurantLedgerStatuses(
   restaurantId: mongoose.Types.ObjectId,
+  settlementDelayDays: number,
 ) {
+  const now = new Date();
+  const settlementEntries = await LedgerEntryModel.find({
+    restaurantId,
+    entryType: { $in: ["earning", "refund", "adjustment"] },
+    settlementStatus: { $in: ["pending", "available"] },
+    orderId: { $ne: null },
+  }).select({ orderId: 1, settlementStatus: 1, availableAt: 1 });
+  const orderIds = settlementEntries
+    .map((entry) => entry.orderId)
+    .filter(Boolean);
+
+  if (orderIds.length) {
+    const orders = await OrderModel.find({ _id: { $in: orderIds } })
+      .select({ status: 1, paymentMethod: 1, paymentStatus: 1, timestamps: 1, updatedAt: 1 })
+      .lean();
+    const orderById = new Map(orders.map((order) => [objectIdString(order._id), order]));
+    const updates = settlementEntries.flatMap((entry) => {
+      const order = orderById.get(objectIdString(entry.orderId));
+      const isPayoutEligibleOrder = isRestaurantPayoutEligibleOrder(order);
+      const deliveredAt = order
+        ? getOrderTimestamp(order, "Delivered") ??
+          (order.updatedAt ? new Date(order.updatedAt) : now)
+        : now;
+      const nextAvailableAt = isPayoutEligibleOrder
+        ? getSettlementAvailableAt(deliveredAt, settlementDelayDays)
+        : null;
+      const nextSettlementStatus: "pending" | "available" = isPayoutEligibleOrder
+        ? nextAvailableAt && nextAvailableAt <= now
+          ? "available"
+          : "pending"
+        : "pending";
+      const currentAvailableAt = entry.availableAt
+        ? new Date(entry.availableAt).getTime()
+        : null;
+      const nextAvailableTime = nextAvailableAt?.getTime() ?? null;
+
+      if (
+        entry.settlementStatus === nextSettlementStatus &&
+        currentAvailableAt === nextAvailableTime
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          updateOne: {
+            filter: { _id: entry._id },
+            update: {
+              $set: {
+                settlementStatus: nextSettlementStatus,
+                availableAt: nextAvailableAt,
+              },
+            },
+          },
+        },
+      ];
+    });
+
+    if (updates.length) {
+      await LedgerEntryModel.bulkWrite(updates);
+    }
+  }
+
   await LedgerEntryModel.updateMany(
     {
       restaurantId,
       entryType: { $in: ["earning", "refund", "adjustment"] },
       settlementStatus: "pending",
-      availableAt: { $lte: new Date() },
+      availableAt: { $lte: now },
     },
     {
       $set: {
@@ -1097,6 +1188,27 @@ export async function createAdminRestaurant(params: CreateRestaurantParams) {
   owner.restaurantLifecycleStatus = "approved";
   await owner.save();
 
+  const payoutBkashNumber = params.payoutBkashNumber?.trim();
+  if (payoutBkashNumber) {
+    const sameAsOwnerPhone = payoutBkashNumber === params.ownerPhone;
+    await PayoutMethodModel.findOneAndUpdate(
+      { restaurantId: restaurant._id },
+      {
+        restaurantId: restaurant._id,
+        type: "bkash",
+        accountName: params.ownerFullName || restaurantName,
+        accountNumber: sameAsOwnerPhone ? payoutBkashNumber : "",
+        bankName: "",
+        branchName: "",
+        isVerified: sameAsOwnerPhone,
+        pendingAccountNumber: sameAsOwnerPhone ? null : payoutBkashNumber,
+        verificationSource: sameAsOwnerPhone ? "owner_phone" : "admin_created",
+        verifiedAt: sameAsOwnerPhone ? new Date() : null,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+  }
+
   const stats = await getRestaurantStats([restaurant._id]);
 
   return mapRestaurantSummary({
@@ -1122,7 +1234,11 @@ export async function getAdminRestaurantDetails(
     );
   }
 
-  await reconcileRestaurantLedgerStatuses(safeRestaurantId);
+  const financeSettings = await getOperationalFinanceSettings();
+  await reconcileRestaurantLedgerStatuses(
+    safeRestaurantId,
+    financeSettings.settlementDelayDays,
+  );
 
   const dateMatch = buildDateMatch(params);
   const orderMatch: Record<string, unknown> = {
@@ -1297,9 +1413,25 @@ export async function getAdminRestaurantDetails(
               in: "$$relatedOrder.status",
             },
           },
+          relatedOrderPaymentStatus: {
+            $let: {
+              vars: {
+                relatedOrder: { $arrayElemAt: ["$orderDocs", 0] },
+              },
+              in: "$$relatedOrder.paymentStatus",
+            },
+          },
+          relatedOrderPaymentMethod: {
+            $let: {
+              vars: {
+                relatedOrder: { $arrayElemAt: ["$orderDocs", 0] },
+              },
+              in: "$$relatedOrder.paymentMethod",
+            },
+          },
         },
       },
-      { $match: { relatedOrderStatus: "Delivered" } },
+      { $match: buildRelatedOrderPayoutEligibilityMatch() },
       {
         $group: {
           _id: null,
@@ -1519,13 +1651,22 @@ export async function getAdminRestaurantDetails(
       nextSettlementAvailableAt: serializeDate(
         nextSettlementRows[0]?.earliestAvailableAt,
       ),
-      settlementDelayDays: SETTLEMENT_DELAY_DAYS,
+      settlementDelayDays: financeSettings.settlementDelayDays,
+      minimumPayoutAmountTaka: financeSettings.minimumPayoutAmountTaka,
+      oneActivePayoutRequest: financeSettings.oneActivePayoutRequest,
       recentPayouts: recentPayouts.map((payout) => ({
         id: objectIdString(payout._id),
         amount: numberValue(payout.amount),
         status: stringValue(payout.status),
         batchReference: stringValue(payout.batchReference),
+        provider: stringValue(payout.provider, "manual"),
+        providerReference: stringValue(payout.providerReference),
+        providerPayoutId: stringValue(payout.providerPayoutId),
+        providerTransactionId: stringValue(payout.providerTransactionId),
+        paymentProofUrl: stringValue(payout.paymentProofUrl),
+        processingNote: stringValue(payout.processingNote),
         requestedAt: serializeDate(payout.requestedAt),
+        approvedAt: serializeDate(payout.approvedAt),
         processedAt: serializeDate(payout.processedAt),
         failureReason: stringValue(payout.failureReason),
       })),
@@ -2069,6 +2210,7 @@ export async function reconcileAdminRestaurantFinance(params: {
     status: "Delivered",
   }).lean();
   const deliveredOrderIds = deliveredOrders.map((order) => order._id);
+  const financeSettings = await getOperationalFinanceSettings();
   const existingLedgerEntries = deliveredOrderIds.length
     ? await LedgerEntryModel.find({
         restaurantId: safeRestaurantId,
@@ -2090,9 +2232,16 @@ export async function reconcileAdminRestaurantFinance(params: {
     const deliveredAt =
       getOrderTimestamp(order, "Delivered") ??
       (order.updatedAt ? new Date(order.updatedAt) : now);
-    const availableAt = getSettlementAvailableAt(deliveredAt);
-    const settlementStatus =
-      availableAt <= now ? ("available" as const) : ("pending" as const);
+    const isPayoutEligibleOrder = isRestaurantPayoutEligibleOrder(order);
+    const availableAt = isPayoutEligibleOrder
+      ? getSettlementAvailableAt(
+          deliveredAt,
+          financeSettings.settlementDelayDays,
+        )
+      : null;
+    const settlementStatus = isPayoutEligibleOrder && availableAt && availableAt <= now
+      ? ("available" as const)
+      : ("pending" as const);
     const grossAmount = numberValue(order.pricing?.subtotal);
     const commissionRate = resolveCommissionRateForDate(restaurant, deliveredAt);
     const discountCost = getOrderOwnerDiscountCost(order);
@@ -2164,6 +2313,7 @@ export async function reconcileAdminRestaurantFinance(params: {
     {
       restaurantId: safeRestaurantId,
       entryType: "earning",
+      settlementStatus: { $ne: "paid_out" },
       orderId: { $nin: deliveredOrderIds },
     },
     {
@@ -2200,6 +2350,252 @@ export async function reconcileAdminRestaurantFinance(params: {
     pending,
     available,
     reconciledAt: new Date().toISOString(),
+  };
+}
+
+export async function updateAdminRestaurantPayoutStatus(params: {
+  restaurantId: string;
+  payoutId: string;
+  status: "processing" | "completed" | "failed";
+  expectedStatus?: string;
+  failureReason?: string;
+  providerReference?: string;
+  providerPayoutId?: string;
+  providerTransactionId?: string;
+  paymentProofUrl?: string;
+  processingNote?: string;
+  adminId?: string;
+}) {
+  const restaurantId = toObjectIdOrThrow(params.restaurantId, "Restaurant");
+  const payoutId = toObjectIdOrThrow(params.payoutId, "Payout");
+  const restaurant = await RestaurantModel.findById(restaurantId)
+    .select({ ownerId: 1, name: 1 })
+    .lean();
+
+  if (!restaurant) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "RESTAURANT_NOT_FOUND",
+      "Restaurant not found",
+    );
+  }
+
+  const now = new Date();
+  const session = await mongoose.startSession();
+  let updatedBatch: Record<string, any> | null = null;
+
+  try {
+    await session.withTransaction(async () => {
+      const payoutBatch = await PayoutBatchModel.findOne({
+        _id: payoutId,
+        restaurantId,
+      }).session(session);
+
+      if (!payoutBatch) {
+        throw new AppError(
+          StatusCodes.NOT_FOUND,
+          "PAYOUT_NOT_FOUND",
+          "Payout request not found",
+        );
+      }
+
+      if (
+        params.expectedStatus &&
+        payoutBatch.status !== params.expectedStatus
+      ) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "PAYOUT_STATUS_CHANGED",
+          `Payout status is already ${payoutBatch.status}`,
+        );
+      }
+
+      if (payoutBatch.status === "completed" && params.status !== "completed") {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "PAYOUT_ALREADY_COMPLETED",
+          "Completed payouts cannot be moved back",
+        );
+      }
+
+      if (payoutBatch.status === "failed" && params.status !== "failed") {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "PAYOUT_ALREADY_FAILED",
+          "Failed payouts cannot be moved back. Create a new payout request instead",
+        );
+      }
+
+      const providerReference = params.providerReference?.trim() ?? "";
+      const providerPayoutId = params.providerPayoutId?.trim() ?? "";
+      const providerTransactionId = params.providerTransactionId?.trim() ?? "";
+      const paymentProofUrl = params.paymentProofUrl?.trim() ?? "";
+      const processingNote = params.processingNote?.trim() ?? "";
+      const failureReason = params.failureReason?.trim() ?? "";
+
+      if (
+        params.status === "completed" &&
+        !providerReference &&
+        !providerPayoutId &&
+        !providerTransactionId
+      ) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "PAYOUT_REFERENCE_REQUIRED",
+          "Add a bKash/bank transaction reference before completing payout",
+        );
+      }
+
+      if (params.status === "failed" && payoutBatch.status !== "failed") {
+        await LedgerEntryModel.updateMany(
+          {
+            restaurantId,
+            payoutBatchId: payoutId,
+            entryType: { $in: ["earning", "refund", "adjustment"] },
+            sourceEntityType: { $nin: ["payout_residual", "payout_residual_reversal"] },
+            settlementStatus: "paid_out",
+          },
+          {
+            $set: { settlementStatus: "available" },
+            $unset: { payoutBatchId: "" },
+          },
+          { session },
+        );
+
+        await LedgerEntryModel.updateMany(
+          {
+            restaurantId,
+            payoutBatchId: payoutId,
+            entryType: "adjustment",
+            sourceEntityType: "payout_residual",
+          },
+          {
+            $set: { settlementStatus: "paid_out" },
+          },
+          { session },
+        );
+
+        await LedgerEntryModel.updateMany(
+          {
+            restaurantId,
+            payoutBatchId: payoutId,
+            entryType: "payout",
+          },
+          {
+            $set: { settlementStatus: "pending" },
+          },
+          { session },
+        );
+      }
+
+      if (params.status === "completed") {
+        await LedgerEntryModel.updateMany(
+          {
+            restaurantId,
+            payoutBatchId: payoutId,
+            entryType: "payout",
+          },
+          {
+            $set: { settlementStatus: "paid_out" },
+          },
+          { session },
+        );
+      }
+
+      payoutBatch.status = params.status;
+      if (providerReference) payoutBatch.providerReference = providerReference;
+      if (providerPayoutId) payoutBatch.providerPayoutId = providerPayoutId;
+      if (providerTransactionId) payoutBatch.providerTransactionId = providerTransactionId;
+      if (paymentProofUrl) payoutBatch.paymentProofUrl = paymentProofUrl;
+      if (processingNote) payoutBatch.processingNote = processingNote;
+      if (params.status === "processing") {
+        payoutBatch.approvedByAdminId = params.adminId ?? "";
+        payoutBatch.approvedAt = now;
+      }
+      payoutBatch.processedAt =
+        params.status === "completed" || params.status === "failed"
+          ? now
+          : null;
+      if (params.status === "completed" || params.status === "failed") {
+        payoutBatch.processedByAdminId = params.adminId ?? "";
+      }
+      payoutBatch.failureReason =
+        params.status === "failed" ? failureReason || "Marked failed by admin" : "";
+      await payoutBatch.save({ session });
+      updatedBatch = payoutBatch.toObject();
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const savedBatch = updatedBatch as Record<string, any> | null;
+
+  if (!savedBatch) {
+    throw new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      "PAYOUT_STATUS_UPDATE_FAILED",
+      "Payout status could not be updated",
+    );
+  }
+
+  await createAdminAuditLog({
+    adminId: params.adminId,
+    entityType: "restaurant",
+    entityId: params.restaurantId,
+    action: "payout.status_updated",
+    title: "Payout status updated",
+    description: `Payout ${objectIdString(savedBatch._id)} marked as ${params.status}.`,
+    metadata: {
+      payoutId: objectIdString(savedBatch._id),
+      status: params.status,
+      amount: numberValue(savedBatch.amount),
+      providerReference: stringValue(savedBatch.providerReference),
+      providerPayoutId: stringValue(savedBatch.providerPayoutId),
+      providerTransactionId: stringValue(savedBatch.providerTransactionId),
+    },
+  });
+
+  if (restaurant.ownerId) {
+    const statusLabel =
+      params.status === "completed"
+        ? "completed"
+        : params.status === "failed"
+          ? "failed"
+          : "processing";
+    const notification = await NotificationModel.create({
+      ownerId: restaurant.ownerId,
+      restaurantId,
+      type: "payout",
+      eventType: `payout.${params.status}`,
+      entityType: "payout",
+      entityId: objectIdString(savedBatch._id),
+      title: "Payout status updated",
+      description: `Your payout request for Tk ${Math.round(numberValue(savedBatch.amount)).toLocaleString()} is now ${statusLabel}.`,
+      actionPath: "/payouts",
+    });
+    emitSocketEvent(
+      `owner:${objectIdString(restaurant.ownerId)}`,
+      "notification.created",
+      notification.toObject(),
+    );
+  }
+
+  return {
+    id: objectIdString(savedBatch._id),
+    amount: numberValue(savedBatch.amount),
+    status: stringValue(savedBatch.status),
+    batchReference: stringValue(savedBatch.batchReference),
+    provider: stringValue(savedBatch.provider, "manual"),
+    providerReference: stringValue(savedBatch.providerReference),
+    providerPayoutId: stringValue(savedBatch.providerPayoutId),
+    providerTransactionId: stringValue(savedBatch.providerTransactionId),
+    paymentProofUrl: stringValue(savedBatch.paymentProofUrl),
+    processingNote: stringValue(savedBatch.processingNote),
+    failureReason: stringValue(savedBatch.failureReason),
+    requestedAt: serializeDate(savedBatch.requestedAt),
+    approvedAt: serializeDate(savedBatch.approvedAt),
+    processedAt: serializeDate(savedBatch.processedAt),
+    updatedAt: serializeDate(savedBatch.updatedAt),
   };
 }
 

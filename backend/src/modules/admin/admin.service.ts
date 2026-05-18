@@ -13,7 +13,7 @@ import {
 } from "../auth/auth.utils"
 import { AdminModel, AdminRefreshTokenSessionModel } from "./admin.model"
 
-const ADMIN_REFRESH_EXPIRY_DAYS = 30
+export const ADMIN_REFRESH_EXPIRY_DAYS = 3650
 
 function buildAdminAuthPayload(params: {
   adminId: string
@@ -21,11 +21,13 @@ function buildAdminAuthPayload(params: {
   email: string
   role: "admin"
   refreshToken: string
+  tokenId: string
 }) {
   return {
     accessToken: signAccessToken({
       subject: params.adminId,
-      role: params.role
+      role: params.role,
+      tokenId: params.tokenId
     }),
     refreshToken: params.refreshToken,
     admin: {
@@ -60,7 +62,7 @@ async function createAdminRefreshSession(params: {
     expiresAt: new Date(Date.now() + ADMIN_REFRESH_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
   })
 
-  return refreshToken
+  return { refreshToken, tokenId }
 }
 
 export async function bootstrapAdminIfMissing() {
@@ -84,7 +86,9 @@ export async function signinAdmin(params: {
   userAgent?: string
   ipAddress?: string
 }) {
-  await bootstrapAdminIfMissing()
+  if (env.ADMIN_BOOTSTRAP_ENABLED) {
+    await bootstrapAdminIfMissing()
+  }
 
   const admin = await AdminModel.findOne({ email: params.email })
 
@@ -105,7 +109,7 @@ export async function signinAdmin(params: {
   admin.lastLoginAt = new Date()
   await admin.save()
 
-  const refreshToken = await createAdminRefreshSession({
+  const refreshSession = await createAdminRefreshSession({
     adminId: admin.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress
@@ -116,7 +120,8 @@ export async function signinAdmin(params: {
     fullName: admin.fullName,
     email: admin.email,
     role: "admin",
-    refreshToken
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
   })
 }
 
@@ -155,7 +160,7 @@ export async function refreshAdminSession(params: {
   session.revokedAt = new Date()
   await session.save()
 
-  const refreshToken = await createAdminRefreshSession({
+  const refreshSession = await createAdminRefreshSession({
     adminId: admin.id,
     userAgent: params.userAgent,
     ipAddress: params.ipAddress
@@ -166,7 +171,8 @@ export async function refreshAdminSession(params: {
     fullName: admin.fullName,
     email: admin.email,
     role: "admin",
-    refreshToken
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
   })
 }
 

@@ -39,6 +39,7 @@ export const APP_FALLBACK_STATE = {
     verificationSessionId: null,
     otpVerified: false,
     requestedAt: null,
+    resendAvailableInSeconds: undefined,
   } satisfies PasswordResetState,
   restaurant: {
     storeSettings: {

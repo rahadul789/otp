@@ -57,6 +57,7 @@ const categorySchema = new Schema(
 
 categorySchema.index({ restaurantId: 1, name: 1 }, { unique: true })
 categorySchema.index({ restaurantId: 1, slug: 1 }, { unique: true })
+categorySchema.index({ restaurantId: 1, status: 1, displayOrder: 1 })
 
 const menuItemSchema = new Schema(
   {
@@ -89,6 +90,8 @@ const menuItemSchema = new Schema(
 )
 
 menuItemSchema.index({ restaurantId: 1, slug: 1 }, { unique: true })
+menuItemSchema.index({ restaurantId: 1, status: 1, availability: 1, isPopular: -1, createdAt: -1 })
+menuItemSchema.index({ restaurantId: 1, categoryId: 1, status: 1, availability: 1 })
 
 const orderHistoryEntrySchema = new Schema(
   {
@@ -123,6 +126,7 @@ const orderSchema = new Schema(
   {
     restaurantId: { type: Schema.Types.ObjectId, ref: "Restaurant", required: true },
     customerId: { type: String, default: "" },
+    clientOrderId: { type: String, default: "" },
     riderId: { type: String, default: "" },
     orderNumber: { type: String, required: true, unique: true },
     status: {
@@ -150,6 +154,7 @@ const orderSchema = new Schema(
     riderSnapshot: { type: Schema.Types.Mixed, default: {} },
     riderTracking: { type: Schema.Types.Mixed, default: {} },
     dispatchMeta: { type: Schema.Types.Mixed, default: {} },
+    preparationMeta: { type: Schema.Types.Mixed, default: {} },
     itemsSnapshot: { type: [orderItemSnapshotSchema], default: [] },
     timestamps: { type: Schema.Types.Mixed, default: {} },
     history: { type: [orderHistoryEntrySchema], default: [] }
@@ -158,11 +163,26 @@ const orderSchema = new Schema(
 )
 
 orderSchema.index({ restaurantId: 1, status: 1, createdAt: -1 })
+orderSchema.index({ createdAt: -1 })
+orderSchema.index({ updatedAt: -1, createdAt: -1 })
+orderSchema.index({ status: 1, createdAt: -1 })
+orderSchema.index({ status: 1, updatedAt: -1 })
+orderSchema.index({ paymentMethod: 1, paymentStatus: 1, createdAt: -1 })
 orderSchema.index({ customerId: 1, createdAt: -1 })
+orderSchema.index(
+  { customerId: 1, clientOrderId: 1 },
+  { unique: true, partialFilterExpression: { clientOrderId: { $type: "string", $ne: "" } } }
+)
 orderSchema.index({ riderId: 1, status: 1, createdAt: -1 })
 orderSchema.index({ status: 1, "itemsSnapshot.categoryId": 1, createdAt: -1 })
 orderSchema.index({ status: 1, "itemsSnapshot.itemId": 1, createdAt: -1 })
 orderSchema.index({ status: 1, "timestamps.Delivered": -1 })
+orderSchema.index({ restaurantId: 1, status: 1, "timestamps.Delivered": -1 })
+orderSchema.index({ restaurantId: 1, status: 1, "timestamps.deliveredAt": -1 })
+orderSchema.index({ restaurantId: 1, status: 1, "timestamps.Cancelled": -1 })
+orderSchema.index({ restaurantId: 1, status: 1, "timestamps.cancelledAt": -1 })
+orderSchema.index({ restaurantId: 1, status: 1, "timestamps.Rejected": -1 })
+orderSchema.index({ restaurantId: 1, status: 1, "timestamps.rejectedAt": -1 })
 
 const notificationSchema = new Schema(
   {

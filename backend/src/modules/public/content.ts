@@ -1,6 +1,6 @@
 export const platformContent = {
   branding: {
-    platformName: "Foodex",
+    platformName: "Foodbela",
     tagline: "Eat & Smile",
   },
   customerApp: {
@@ -49,7 +49,7 @@ export const platformContent = {
       howToOrderGuide: {
         isActive: false,
         audience: "all_users",
-        title: "How to order on Foodex",
+        title: "How to order on Foodbela",
         subtitle: "Watch a quick guide or follow the image steps.",
         youtubeUrl: "",
         ctaLabel: "Watch guide",
@@ -62,7 +62,7 @@ export const platformContent = {
       pushCampaign: {
         contentType: "text",
         title: "Fresh offers are live",
-        body: "Open Foodex and discover offers near you.",
+        body: "Open Foodbela and discover offers near you.",
         imageUrl: "",
         imagePublicId: "",
         path: "/(tabs)/browse",
@@ -121,6 +121,9 @@ export const platformContent = {
     },
   },
   operations: {
+    ownerApp: {
+      webDashboardUrl: "http://localhost:5173",
+    },
     serviceArea: {
       name: "Netrokona service area",
       centerLatitude: 24.8771096,
@@ -134,6 +137,45 @@ export const platformContent = {
       surchargeStepMeters: 500,
       surchargeAmountTaka: 5,
     },
+    liveTracking: {
+      mode: "balanced",
+      updateIntervalSeconds: 15,
+      distanceIntervalMeters: 60,
+      passiveHeartbeatSeconds: 60,
+    },
+    payments: {
+      cashOnDeliveryEnabled: true,
+      bkashEnabled: false,
+      bkashLabel: "bKash",
+      bkashSubtitle: "Continue to the official hosted payment page.",
+    },
+    finance: {
+      settlementDelayDays: 3,
+      minimumPayoutAmountTaka: 500,
+      oneActivePayoutRequest: true,
+    },
+    adminNotifications: {
+      orderPlaced: true,
+      customerOrderUpdates: false,
+      orderDelays: true,
+      preparationDelays: true,
+      riderDelays: true,
+      deliveryDelays: true,
+      payoutRequests: true,
+      support: true,
+      security: true,
+      campaigns: true,
+    },
+    referrals: {
+      enabled: true,
+      rewardAmountTaka: 50,
+      minimumOrderAmountTaka: 250,
+      voucherExpiryDays: 30,
+      monthlyRewardCapPerCustomer: 5,
+      shareLinkTemplate: "foodbela://checkout?ref={{code}}",
+      shareMessageTemplate:
+        "Use my Foodbela referral code {{code}} at checkout before your first delivered order. After your first delivered order, I get a Tk {{rewardAmount}} reward voucher. {{link}}",
+    },
     dispatch: {
       autoAssignmentEnabled: true,
       autoReassignTimedOutOrders: true,
@@ -145,10 +187,14 @@ export const platformContent = {
       maxActiveOrdersPerRider: 3,
       staleLocationCutoffMinutes: 20,
       assignmentTimeoutMinutes: 8,
-      prepStartGraceMinutes: 8,
+      prepStartGraceMinutes: 3,
+      preparationMaxExtraMinutes: 20,
       prepLateGraceMinutes: 5,
       pickupLateGraceMinutes: 10,
       deliveryLateGraceMinutes: 10,
+      deliveryWatchAfterPickupMinutes: 20,
+      deliveryLateAfterPickupMinutes: 25,
+      deliveryCriticalAfterPickupMinutes: 30,
       retryCooldownMinutes: 3,
       surgeReadyOrderThreshold: 4,
       surgeUnassignedOrderThreshold: 2,
@@ -157,8 +203,16 @@ export const platformContent = {
       autoCancelNotifyBeforeMinutes: 3,
     },
   },
+  auth: {
+    otp: {
+      expiresInSeconds: 300,
+      resendCooldownSeconds: 60,
+      messageTemplate:
+        "Your {{platformName}} verification code is {{code}}. It expires in {{expiryMinutes}} minutes.",
+    },
+  },
   supportContact: {
-    email: "support@foodex.com",
+    email: "support@foodbela.com",
     phone: "01700000000",
     supportHours: "Daily, 9:00 AM - 11:00 PM",
     reportLabel: "Report Issue",
@@ -304,7 +358,7 @@ export const platformContent = {
       title: "Privacy Policy",
       label: "Privacy & Data",
       description:
-        "Learn how Foodex handles owner, business, and operational data across onboarding and dashboard usage.",
+        "Learn how Foodbela handles owner, business, and operational data across onboarding and dashboard usage.",
       lastUpdated: "12 April 2026",
       effectiveDate: "12 April 2026",
       overviewTitle: "Data handling overview",
@@ -318,8 +372,8 @@ export const platformContent = {
           id: "introduction",
           title: "Introduction",
           body: [
-            "This Privacy Policy explains how Foodex collects, uses, stores, and protects information from restaurant owners and related users of the platform.",
-            "It applies to onboarding, dashboard usage, operational management, support requests, and other interactions with the Foodex restaurant owner platform.",
+            "This Privacy Policy explains how Foodbela collects, uses, stores, and protects information from restaurant owners and related users of the platform.",
+            "It applies to onboarding, dashboard usage, operational management, support requests, and other interactions with the Foodbela restaurant owner platform.",
             "Effective date: 12 April 2026.",
           ],
         },
@@ -355,7 +409,7 @@ export const platformContent = {
           id: "data-storage-security",
           title: "Data Storage & Security",
           body: [
-            "Information may be stored in secure systems used to operate Foodex services and internal administrative workflows.",
+            "Information may be stored in secure systems used to operate Foodbela services and internal administrative workflows.",
             "We use reasonable technical and organizational measures to protect personal, business, and operational data against unauthorized access, misuse, or loss.",
             "Owners are also responsible for protecting credentials, devices, and account access.",
           ],
@@ -364,7 +418,7 @@ export const platformContent = {
           id: "cookies-tracking",
           title: "Cookies & Tracking",
           body: [
-            "Foodex may use cookies or similar technologies for authentication, preferences, session continuity, analytics, and service performance.",
+            "Foodbela may use cookies or similar technologies for authentication, preferences, session continuity, analytics, and service performance.",
             "Basic tracking may be used to understand product usage patterns and improve dashboard reliability and support experience.",
           ],
         },
@@ -406,16 +460,16 @@ export const platformContent = {
       title: "Terms & Conditions",
       label: "Legal Terms",
       description:
-        "Read how owner accounts, onboarding, orders, and payouts are governed inside the Foodex restaurant dashboard.",
+        "Read how owner accounts, onboarding, orders, and payouts are governed inside the Foodbela restaurant dashboard.",
       noticeTitle: "Owner Agreement Notice",
       noticeDescription:
-        "These terms apply to restaurant owners using Foodex for onboarding, dashboard access, order handling, payouts, and related operational workflows. Please read them carefully before continuing with account creation or store submission.",
+        "These terms apply to restaurant owners using Foodbela for onboarding, dashboard access, order handling, payouts, and related operational workflows. Please read them carefully before continuing with account creation or store submission.",
       sections: [
         {
           id: "introduction",
           title: "Introduction",
           body: [
-            "These Terms & Conditions govern how restaurant owners use the Foodex dashboard, onboarding flow, and operational tools.",
+            "These Terms & Conditions govern how restaurant owners use the Foodbela dashboard, onboarding flow, and operational tools.",
             "By creating an account or submitting a restaurant for review, you agree to follow these terms while using the platform.",
           ],
         },
@@ -425,7 +479,7 @@ export const platformContent = {
           body: [
             "You are responsible for keeping your phone number, password, and optional email up to date and secure.",
             "You must provide accurate business and owner information during sign up, onboarding, and later account updates.",
-            "Foodex may suspend access if false information, unauthorized access, or suspicious activity is detected.",
+            "Foodbela may suspend access if false information, unauthorized access, or suspicious activity is detected.",
           ],
         },
         {
@@ -443,7 +497,7 @@ export const platformContent = {
           body: [
             "Payout amounts may reflect commissions, discounts, delivery-cost adjustments, refunds, or other platform rules described in your payout reports.",
             "You are responsible for keeping payout details accurate, including bank or bKash information.",
-            "Foodex may delay or hold payouts if account review, settlement verification, or fraud checks are required.",
+            "Foodbela may delay or hold payouts if account review, settlement verification, or fraud checks are required.",
           ],
         },
         {
@@ -459,7 +513,7 @@ export const platformContent = {
           id: "termination",
           title: "Termination",
           body: [
-            "Foodex may suspend, reject, or terminate account access if these terms are violated or if required business information cannot be verified.",
+            "Foodbela may suspend, reject, or terminate account access if these terms are violated or if required business information cannot be verified.",
             "Restaurant owners may request account closure, though legal, financial, or payout obligations may continue where necessary.",
           ],
         },
@@ -467,7 +521,7 @@ export const platformContent = {
           id: "liability",
           title: "Liability",
           body: [
-            "Foodex provides the dashboard and related tools on a best-effort basis and may update features, workflows, or operational requirements over time.",
+            "Foodbela provides the dashboard and related tools on a best-effort basis and may update features, workflows, or operational requirements over time.",
             "We are not responsible for losses caused by inaccurate owner-provided data, unauthorized access resulting from weak credential security, or service interruptions outside our reasonable control.",
           ],
         },
@@ -475,7 +529,7 @@ export const platformContent = {
           id: "changes-to-terms",
           title: "Changes to Terms",
           body: [
-            "Foodex may update these Terms & Conditions when platform features, legal requirements, or operational policies change.",
+            "Foodbela may update these Terms & Conditions when platform features, legal requirements, or operational policies change.",
             "Material updates may be shown through dashboard notices, onboarding notices, or other account communications.",
           ],
         },

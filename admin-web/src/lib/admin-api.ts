@@ -190,6 +190,7 @@ export type AdminReportsResponse = {
     platformCommission: number
     restaurantPayable: number
     discountCost: number
+    platformDiscountCost: number
     deliveryFees: number
     riderPayrollExpense: number
     platformGrossIncome: number
@@ -644,6 +645,438 @@ export type AdminLiveMapDelivery = {
   }
 }
 
+export type AdminCustomerAnalyticsPreset =
+  | "today"
+  | "yesterday"
+  | "last7Days"
+  | "last30Days"
+  | "last90Days"
+  | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
+  | "custom"
+
+export type AdminCustomerAnalyticsSection =
+  | "overview"
+  | "graphs"
+  | "funnels"
+  | "customers"
+  | "abandoned"
+  | "payments"
+  | "events"
+  | "all"
+
+export type AdminCustomerAnalyticsResponse = {
+  timeframe: {
+    preset: AdminCustomerAnalyticsPreset
+    start: string
+    end: string
+  }
+  overview: {
+    totalEvents: number
+    pageViews: number
+    restaurantViews: number
+    cartViews: number
+    checkoutStarts: number
+    signupStarted: number
+    signupCompleted: number
+    ordersCreated: number
+    uniqueAnonymousVisitors: number
+    uniqueRegisteredCustomers: number
+    uniqueSessions: number
+    browseOnlyAnonymousVisitors: number
+    registeredBrowseNoOrderCustomers: number
+    checkoutAbandonedSessions: number
+    signupAbandonedVisitors: number
+  }
+  insights: {
+    signupCompletionRate: number
+    checkoutConversionRate: number
+    paymentCompletionRate: number
+    paymentFailureRate: number
+  }
+  alerts: Array<{
+    key: string
+    severity: "info" | "warning" | "critical"
+    title: string
+    description: string
+    metric: number
+  }>
+  recommendedActions: Array<{
+    key: string
+    severity: "info" | "warning" | "critical"
+    title: string
+    description: string
+    targetCount: number
+    actionType: string
+    actionLabel: string
+    href: string
+  }>
+  trend: Array<{
+    date: string
+    totalEvents: number
+    pageViews: number
+    checkoutStarts: number
+    signupStarted: number
+    signupCompleted: number
+    ordersCreated: number
+  }>
+  sessionJourneys: Array<{
+    sessionId: string
+    actorType: string
+    customerId: string
+    anonymousId: string
+    startPath: string
+    lastPath: string
+    firstSeenAt: string | null
+    lastSeenAt: string | null
+    eventCount: number
+    checkoutStarted: boolean
+    converted: boolean
+    paymentHadIssue: boolean
+    events: Array<{
+      eventType: string
+      path: string
+      screenName: string
+      entityType: string
+      entityId: string
+      occurredAt: string | null
+    }>
+  }>
+  restaurantConversions: Array<{
+    restaurantId: string
+    restaurantName: string
+    views: number
+    guestViews: number
+    customerViews: number
+    orders: number
+    deliveredOrders: number
+    revenue: number
+    uniqueCustomers: number
+    lastSeenAt: string | null
+    lastOrderAt: string | null
+    viewToOrderRate: number
+  }>
+  restaurantFunnels: Array<{
+    restaurantId: string
+    restaurantName: string
+    restaurantViews: number
+    menuItemViews: number
+    cartAdds: number
+    checkoutStarts: number
+    paymentInitiated: number
+    paymentIssues: number
+    orders: number
+    revenue: number
+    uniqueGuests: number
+    uniqueCustomers: number
+    lastSeenAt: string | null
+    lastOrderAt: string | null
+    viewToMenuRate: number
+    menuToCartRate: number
+    cartToCheckoutRate: number
+    checkoutToOrderRate: number
+    weakestStage: string
+  }>
+  menuItemConversions: Array<{
+    itemId: string
+    itemName: string
+    restaurantId: string
+    restaurantName: string
+    categoryId: string
+    views: number
+    cartAdds: number
+    cartQuantity: number
+    orders: number
+    orderedQuantity: number
+    revenue: number
+    lastSeenAt: string | null
+    lastOrderAt: string | null
+    viewToCartRate: number
+    cartToOrderRate: number
+  }>
+  searchAnalytics: Array<{
+    query: string
+    scope: string
+    restaurantId: string
+    restaurantName: string
+    count: number
+    zeroResultCount: number
+    averageResults: number
+    lastSeenAt: string | null
+  }>
+  attribution: Array<{
+    source: string
+    campaignId: string
+    events: number
+    checkouts: number
+    orders: number
+    checkoutRate: number
+    orderRate: number
+    lastSeenAt: string | null
+  }>
+  paymentHealth: {
+    initiated: number
+    completed: number
+    failed: number
+    cancelled: number
+    completionRate: number
+    events: Array<{
+      eventType: string
+      provider: string
+      count: number
+    }>
+    bkashSessions: Array<{
+      status: string
+      count: number
+      amount: number
+    }>
+    orderMethods: Array<{
+      paymentMethod: string
+      paymentStatus: string
+      orders: number
+      revenue: number
+    }>
+  }
+  retention: {
+    newCustomers: number
+    orderedWithin1Day: number
+    orderedWithin7Days: number
+    orderedWithin30Days: number
+    repeatCustomers: number
+    day1OrderRate: number
+    day7OrderRate: number
+    day30OrderRate: number
+  }
+  repeatCustomers: Array<{
+    customerId: string
+    fullName: string
+    phone: string
+    lifetimeOrders: number
+    timeframeOrders: number
+    deliveredOrders: number
+    cancelledOrders: number
+    lifetimeSpend: number
+    timeframeSpend: number
+    averageOrderValue: number
+    firstOrderAt: string | null
+    lastOrderAt: string | null
+    favoritePaymentMethod: string
+    paymentMethods: Array<{
+      paymentMethod: string
+      count: number
+    }>
+    topRestaurants: Array<{
+      restaurantId: string
+      restaurantName: string
+      orders: number
+      revenue: number
+    }>
+    orderTrend: Array<{
+      date: string
+      orders: number
+      revenue: number
+    }>
+    recentOrders: Array<{
+      orderId: string
+      orderNumber: string
+      restaurantId: string
+      restaurantName: string
+      status: string
+      paymentMethod: string
+      paymentStatus: string
+      total: number
+      createdAt: string | null
+    }>
+    recentActivities: Array<{
+      eventType: string
+      path: string
+      screenName: string
+      entityType: string
+      entityId: string
+      occurredAt: string | null
+    }>
+  }>
+  customerSegments: Array<{
+    key: string
+    label: string
+    description: string
+    count: number
+    actionLabel: string
+    members: Array<{
+      id: string
+      actorType: string
+      customerId: string
+      anonymousId: string
+      fullName: string
+      phone: string
+      status: string
+      createdAt: string | null
+      lastLoginAt: string | null
+      segmentReason: string
+      lifetimeOrders: number
+      lifetimeSpend: number
+      timeframeOrders: number
+      timeframeSpend: number
+      firstOrderAt: string | null
+      lastOrderAt: string | null
+      checkoutStarted: boolean
+      ordersCreated: number
+      lastPath: string
+      firstSeenAt: string | null
+      lastSeenAt: string | null
+      cartValue?: number
+      itemCount?: number
+      restaurantName?: string
+      activities: Array<{
+        eventType: string
+        path: string
+        screenName: string
+        entityType: string
+        entityId: string
+        occurredAt: string | null
+      }>
+    }>
+  }>
+  abandonedCheckouts: Array<{
+    sessionId: string
+    actorType: string
+    customerId: string
+    anonymousId: string
+    fullName: string
+    phone: string
+    restaurantId: string
+    restaurantName: string
+    estimatedCartValue: number
+    itemCount: number
+    paymentMethod: string
+    voucherCode: string
+    repeatVisitor: boolean
+    lifetimeOrders: number
+    lifetimeSpend: number
+    firstSeenAt: string | null
+    lastSeenAt: string | null
+    lastPath: string
+    eventCount: number
+    cartItems: Array<{
+      itemId: string
+      name: string
+      quantity: number
+      unitPrice: number
+      total: number
+    }>
+    events: Array<{
+      eventType: string
+      path: string
+      screenName: string
+      entityType: string
+      entityId: string
+      occurredAt: string | null
+    }>
+    recommendedAction: string
+  }>
+  eventTypes: Array<{
+    eventType: string
+    count: number
+  }>
+  actorTypes: Array<{
+    actorType: string
+    count: number
+  }>
+  sourceApps: Array<{
+    sourceApp: string
+    count: number
+  }>
+  topPaths: Array<{
+    path: string
+    count: number
+    guestCount: number
+    customerCount: number
+    lastSeenAt: string | null
+  }>
+  checkoutDropOffPaths: Array<{
+    path: string
+    sessions: number
+    guestSessions: number
+    customerSessions: number
+    lastSeenAt: string | null
+  }>
+  recentEvents: Array<{
+    id: string
+    eventType: string
+    actorType: string
+    customerId: string
+    anonymousId: string
+    sessionId: string
+    path: string
+    screenName: string
+    entityType: string
+    entityId: string
+    occurredAt: string | null
+    createdAt: string | null
+  }>
+}
+
+export type AdminCustomerAnalyticsActorDetail = {
+  timeframe: {
+    preset: AdminCustomerAnalyticsPreset
+    start: string
+    end: string
+  }
+  actorType: "customer" | "guest"
+  customerId: string
+  anonymousId: string
+  fullName: string
+  phone: string
+  status: string
+  createdAt: string | null
+  lastLoginAt: string | null
+  lifetimeOrders: number
+  timeframeOrders: number
+  deliveredOrders: number
+  cancelledOrders: number
+  lifetimeSpend: number
+  timeframeSpend: number
+  averageOrderValue: number
+  firstOrderAt: string | null
+  lastOrderAt: string | null
+  favoritePaymentMethod: string
+  paymentMethods: Array<{
+    paymentMethod: string
+    count: number
+  }>
+  topRestaurants: Array<{
+    restaurantId: string
+    restaurantName: string
+    orders: number
+    revenue: number
+  }>
+  orderTrend: Array<{
+    date: string
+    orders: number
+    revenue: number
+  }>
+  recentOrders: Array<{
+    orderId: string
+    orderNumber: string
+    restaurantId: string
+    restaurantName: string
+    status: string
+    paymentMethod: string
+    paymentStatus: string
+    total: number
+    createdAt: string | null
+  }>
+  recentActivities: Array<{
+    eventType: string
+    path: string
+    screenName: string
+    entityType: string
+    entityId: string
+    occurredAt: string | null
+  }>
+}
+
 export type AdminLiveMapRider = {
   id: string
   fullName: string
@@ -930,6 +1363,73 @@ export type AdminOperationalHealthSnapshot = {
     failureReason: string
     updatedAt: string | null
   }>
+  realtime: {
+    socket: {
+      initialized: boolean
+      totalConnections: number
+      authenticatedConnections: number
+      anonymousConnections: number
+      adminConnections: number
+      ownerConnections: number
+      customerConnections: number
+      riderConnections: number
+      byRole: Record<string, number>
+      roomCounts: Record<string, number>
+      connections: Array<{
+        id: string
+        userId: string
+        role: string
+        connectedAt: string | null
+        rooms: string[]
+        transport: string
+        ipAddress: string
+        userAgent: string
+      }>
+    }
+    liveLocation: {
+      activeShares: number
+      focusedShares: number
+      liveShares: number
+      staleShares: number
+      visibleLimit: number
+      sampleSize: number
+      orders: Array<{
+        id: string
+        orderNumber: string
+        status: string
+        restaurantId: string
+        customerId: string
+        riderId: string
+        customerName: string
+        customerPhone: string
+        riderName: string
+        riderPhone: string
+        deliveryAddress: string
+        isFocused: boolean
+        isNearCustomer: boolean
+        startedAt: string | null
+        lastUpdatedAt: string | null
+        freshness: {
+          state: string
+          ageSeconds: number | null
+          isFresh: boolean
+          isStale: boolean
+        }
+        remainingDistanceKm: number
+        directDistanceKm: number
+        remainingDurationMinutes: number
+        speedKmph: number
+        currentLocation: {
+          latitude: number
+          longitude: number
+          heading: number | null
+          accuracyMeters: number | null
+        } | null
+        createdAt: string | null
+        updatedAt: string | null
+      }>
+    }
+  }
 }
 
 export type AdminRestaurantSummary = {
@@ -1064,12 +1564,21 @@ export type AdminRestaurantDetails = AdminRestaurantSummary & {
     lastPayoutAt: string | null
     nextSettlementAvailableAt: string | null
     settlementDelayDays: number
+    minimumPayoutAmountTaka: number
+    oneActivePayoutRequest: boolean
     recentPayouts: Array<{
       id: string
       amount: number
       status: string
       batchReference: string
+      provider: string
+      providerReference: string
+      providerPayoutId: string
+      providerTransactionId: string
+      paymentProofUrl: string
+      processingNote: string
       requestedAt: string | null
+      approvedAt: string | null
       processedAt: string | null
       failureReason: string
     }>
@@ -1221,6 +1730,99 @@ export type AdminListResponse<T> = {
   pageSize: number
   pageCount: number
   summary?: Record<string, number>
+}
+
+export type AdminReferralStatus =
+  | "pending"
+  | "rewarded"
+  | "capped"
+  | "disabled"
+  | "under_review"
+  | "rejected"
+
+export type AdminReferralRow = {
+  id: string
+  status: AdminReferralStatus
+  referredAt: string | null
+  skippedAt: string | null
+  skippedReason: string
+  riskScore: number
+  referrer: {
+    id: string
+    fullName: string
+    phone: string
+    status: string
+    referralCode: string
+  }
+  referredCustomer: {
+    id: string
+    fullName: string
+    phone: string
+    status: string
+    referralCode: string
+    createdAt: string | null
+  }
+  reward: {
+    rewardedAt: string | null
+    voucherId: string
+    voucherCode: string
+    voucherStatus: string
+    amount: number
+    minimumOrderAmount: number
+    expiresAt: string | null
+  }
+  order: {
+    id: string
+    orderNumber: string
+    status: string
+    paymentMethod: string
+    paymentStatus: string
+    total: number
+    deliveredAt: string | null
+    createdAt: string | null
+    deliveryAddress: {
+      label: string
+      addressLine: string
+    }
+  }
+  fraud: {
+    signupDeviceId: string
+    signupIpAddress: string
+    signupUserAgent: string
+  }
+}
+
+export type AdminReferralSummary = {
+  totalReferrals: number
+  pendingReferrals: number
+  rewardedReferrals: number
+  underReviewReferrals: number
+  blockedReferrals: number
+  rewardValue: number
+  conversionRate: number
+  statusCounts: Record<AdminReferralStatus, number>
+}
+
+export type AdminReferralTopReferrer = {
+  id: string
+  fullName: string
+  phone: string
+  referralCode: string
+  totalReferrals: number
+  rewardedReferrals: number
+  underReviewReferrals: number
+  rejectedReferrals: number
+  rewardValue: number
+}
+
+export type AdminReferralListResponse = {
+  items: AdminReferralRow[]
+  total: number
+  page: number
+  pageSize: number
+  pageCount: number
+  summary: AdminReferralSummary
+  topReferrers: AdminReferralTopReferrer[]
 }
 
 export type AdminRestaurantVisibilityUpdate = {
@@ -1462,6 +2064,7 @@ export type AdminRestaurantCreateInput = {
   description?: string
   phone?: string
   email?: string
+  payoutBkashNumber?: string
   cuisineTypes?: string[]
   tags?: string[]
   address?: string
@@ -1508,8 +2111,11 @@ export type AdminRestaurantOrderDateFilterPreset =
   | "yesterday"
   | "last7Days"
   | "last30Days"
+  | "last90Days"
   | "thisWeek"
   | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
   | "custom"
 
 export type AdminCustomerSummary = {
@@ -1532,6 +2138,17 @@ export type AdminCustomerSummary = {
   liveOrders: number
   deliveredOrders: number
   deliveredSpend: number
+  lastOrderAt: string | null
+}
+
+export type AdminCustomerGroup = {
+  id: string
+  name: string
+  description: string
+  memberCount: number
+  sourceFilter: Record<string, unknown>
+  createdAt: string | null
+  updatedAt: string | null
 }
 
 export type AdminCustomerDetails = {
@@ -1838,6 +2455,7 @@ export type AdminOrdersListResponse = AdminListResponse<AdminOrderListItem> & {
     onlineRiders?: number
     unassignedReadyOrders?: number
     staleTracking?: number
+    delayedRiderOrders?: number
   }
 }
 
@@ -1890,7 +2508,10 @@ export type AdminPaymentsResponse = AdminListResponse<AdminPaymentTransaction> &
     deliveryCost: number
     payoutReadyAmount: number
     payoutPendingAmount: number
+    payoutRequestedAmount: number
+    payoutReservedAmount: number
     paidOutAmount: number
+    payoutFailedAmount: number
     riderPayrollBaseSalary: number
     riderPayrollBonus: number
     riderPayrollPenalties: number
@@ -1984,9 +2605,13 @@ export type AdminDispatchSettings = {
   staleLocationCutoffMinutes: number
   assignmentTimeoutMinutes: number
   prepStartGraceMinutes: number
+  preparationMaxExtraMinutes: number
   prepLateGraceMinutes: number
   pickupLateGraceMinutes: number
   deliveryLateGraceMinutes: number
+  deliveryWatchAfterPickupMinutes: number
+  deliveryLateAfterPickupMinutes: number
+  deliveryCriticalAfterPickupMinutes: number
   retryCooldownMinutes: number
   surgeReadyOrderThreshold: number
   surgeUnassignedOrderThreshold: number
@@ -2253,6 +2878,9 @@ export type PlatformContent = {
     }
   }
   operations: {
+    ownerApp: {
+      webDashboardUrl: string
+    }
     serviceArea: {
       name: string
       centerLatitude: number
@@ -2266,6 +2894,44 @@ export type PlatformContent = {
       surchargeStepMeters: number
       surchargeAmountTaka: number
     }
+    liveTracking: {
+      mode: "balanced" | "battery_saver" | "high_accuracy"
+      updateIntervalSeconds: number
+      distanceIntervalMeters: number
+      passiveHeartbeatSeconds: number
+    }
+    payments: {
+      cashOnDeliveryEnabled: boolean
+      bkashEnabled: boolean
+      bkashLabel: string
+      bkashSubtitle: string
+    }
+    finance: {
+      settlementDelayDays: number
+      minimumPayoutAmountTaka: number
+      oneActivePayoutRequest: boolean
+    }
+    adminNotifications: {
+      orderPlaced: boolean
+      customerOrderUpdates: boolean
+      orderDelays: boolean
+      preparationDelays: boolean
+      riderDelays: boolean
+      deliveryDelays: boolean
+      payoutRequests: boolean
+      support: boolean
+      security: boolean
+      campaigns: boolean
+    }
+    referrals: {
+      enabled: boolean
+      rewardAmountTaka: number
+      minimumOrderAmountTaka: number
+      voucherExpiryDays: number
+      monthlyRewardCapPerCustomer: number
+      shareLinkTemplate: string
+      shareMessageTemplate: string
+    }
     dispatch: {
       autoAssignmentEnabled: boolean
       autoReassignTimedOutOrders: boolean
@@ -2278,15 +2944,26 @@ export type PlatformContent = {
       staleLocationCutoffMinutes: number
       assignmentTimeoutMinutes: number
       prepStartGraceMinutes: number
+      preparationMaxExtraMinutes: number
       prepLateGraceMinutes: number
       pickupLateGraceMinutes: number
       deliveryLateGraceMinutes: number
+      deliveryWatchAfterPickupMinutes: number
+      deliveryLateAfterPickupMinutes: number
+      deliveryCriticalAfterPickupMinutes: number
       retryCooldownMinutes: number
       surgeReadyOrderThreshold: number
       surgeUnassignedOrderThreshold: number
       autoCancelUnacceptedOrdersEnabled: boolean
       autoCancelAfterMinutes: number
       autoCancelNotifyBeforeMinutes: number
+    }
+  }
+  auth: {
+    otp: {
+      expiresInSeconds: number
+      resendCooldownSeconds: number
+      messageTemplate: string
     }
   }
   supportContact: {
@@ -2394,6 +3071,8 @@ export type AdminNotificationCenterItem = {
   recipientPhone: string
   restaurantName?: string
   path: string
+  ctaLabel?: string
+  ctaPath?: string
   recipientType?: string
   audience?: string
   sendMode?: "cms" | "instant" | "scheduled" | string
@@ -2475,6 +3154,8 @@ export type AdminNotificationSendPayload = {
   title: string
   body: string
   path?: string
+  ctaLabel?: string
+  ctaPath?: string
   type?: string
   contentType?: "text" | "image" | "image_text"
   imageUrl?: string
@@ -2588,7 +3269,6 @@ export async function bootstrapAdmin() {
 export async function signinAdmin(email: string, password: string) {
   const response = await adminRequest<{
     accessToken: string
-    refreshToken: string
     admin: {
       id: string
       fullName: string
@@ -2608,7 +3288,7 @@ export async function signinAdmin(email: string, password: string) {
   return response.data
 }
 
-export async function logoutAdmin(refreshToken: string) {
+export async function logoutAdmin() {
   const response = await adminRequest<{ revoked: boolean }>(
     "/admin/auth/logout",
     {
@@ -2617,11 +3297,214 @@ export async function logoutAdmin(refreshToken: string) {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify({ refreshToken }),
+      body: JSON.stringify({}),
     }
   )
 
   clearAdminSession()
+  return response.data
+}
+
+export type AdminSessionRole = "admin" | "owner" | "customer" | "rider"
+export type AdminSessionStatus = "active" | "revoked" | "expired"
+export type AdminSessionFilterStatus =
+  | "all"
+  | AdminSessionStatus
+  | "recent"
+  | "stale"
+
+export type AdminSessionItem = {
+  id: string
+  role: AdminSessionRole
+  status: AdminSessionStatus
+  actor: {
+    id: string
+    name: string
+    contact: string
+    status: string
+    lastLoginAt: string | null
+  }
+  tokenId: string
+  userAgent: string
+  ipAddress: string
+  createdAt: string | null
+  lastSeenAt: string | null
+  expiresAt: string | null
+  revokedAt: string | null
+}
+
+export type AdminSessionsResponse = {
+  items: AdminSessionItem[]
+  total: number
+  page: number
+  pageSize: number
+  summary: {
+    active: number
+    valid: number
+    revoked: number
+    expired: number
+    uniqueValidAccounts: number
+    recentlyActive: number
+    stale: number
+    recentWindowMinutes: number
+    staleAfterDays: number
+  }
+}
+
+export type AdminOtpSecurityResponse = {
+  timeframe: {
+    hours: number
+    since: string
+  }
+  summary: {
+    sent: number
+    reused: number
+    blocked: number
+    sendFailed: number
+    verifyFailed: number
+    verifyBlocked: number
+    uniquePhones: number
+    uniqueIps: number
+    lockedSessions: number
+    activeBlocks: number
+  }
+  blocks: Array<{
+    id: string
+    targetType: "phone" | "ip" | "device" | string
+    targetValue: string
+    displayValue: string
+    reason: string
+    isPermanent: boolean
+    isActive: boolean
+    lockedUntilAt: string | null
+    liftedAt: string | null
+    createdByAdminId: string
+    updatedByAdminId: string
+    liftedByAdminId: string
+    createdAt: string | null
+    updatedAt: string | null
+  }>
+  phones: Array<{
+    phone: string
+    sent: number
+    reused: number
+    blocked: number
+    verifyFailed: number
+    verifyBlocked: number
+    purposes: string[]
+    ipAddresses: string[]
+    lastSeenAt: string | null
+  }>
+  items: Array<{
+    id: string
+    phone: string
+    purpose: string
+    referenceId: string
+    verificationSessionId: string
+    event: string
+    blockReason: string
+    ipAddress: string
+    userAgent: string
+    metadata: Record<string, unknown>
+    createdAt: string | null
+  }>
+  total: number
+  page: number
+  pageSize: number
+}
+
+export async function upsertAdminOtpBlock(params: {
+  targetType: "phone" | "ip" | "device"
+  targetValue: string
+  durationMinutes?: number
+  permanent?: boolean
+  reason?: string
+}) {
+  const response = await adminRequest<AdminOtpSecurityResponse["blocks"][number]>(
+    "/admin/otp-security/blocks",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(params),
+    }
+  )
+  return response.data
+}
+
+export async function deleteAdminOtpBlock(params: {
+  blockId: string
+  reason?: string
+}) {
+  const response = await adminRequest<AdminOtpSecurityResponse["blocks"][number]>(
+    `/admin/otp-security/blocks/${params.blockId}`,
+    {
+      method: "DELETE",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ reason: params.reason ?? "" }),
+    }
+  )
+  return response.data
+}
+
+export async function getAdminOtpSecurity(params?: {
+  phone?: string
+  hours?: number
+  page?: number
+  pageSize?: number
+}) {
+  const search = new URLSearchParams()
+  if (params?.phone) search.set("phone", params.phone)
+  if (params?.hours) search.set("hours", String(params.hours))
+  if (params?.page) search.set("page", String(params.page))
+  if (params?.pageSize) search.set("pageSize", String(params.pageSize))
+  const query = search.toString() ? `?${search.toString()}` : ""
+  const response = await adminRequest<AdminOtpSecurityResponse>(
+    `/admin/otp-security${query}`
+  )
+  return response.data
+}
+
+export async function listAdminSessions(params?: {
+  role?: AdminSessionRole | "all"
+  status?: AdminSessionFilterStatus
+  page?: number
+  pageSize?: number
+}) {
+  const search = new URLSearchParams()
+  if (params?.role) search.set("role", params.role)
+  if (params?.status) search.set("status", params.status)
+  if (params?.page) search.set("page", String(params.page))
+  if (params?.pageSize) search.set("pageSize", String(params.pageSize))
+  const query = search.toString() ? `?${search.toString()}` : ""
+  const response = await adminRequest<AdminSessionsResponse>(
+    `/admin/sessions${query}`
+  )
+  return response.data
+}
+
+export async function revokeAdminSession(params: {
+  role: AdminSessionRole
+  sessionId: string
+}) {
+  const response = await adminRequest<{ revoked: boolean }>(
+    `/admin/sessions/${params.role}/${params.sessionId}/revoke`,
+    { method: "POST" }
+  )
+  return response.data
+}
+
+export async function revokeAdminActorSessions(params: {
+  role: AdminSessionRole
+  actorId: string
+}) {
+  const response = await adminRequest<{ revoked: number }>(
+    `/admin/sessions/${params.role}/users/${params.actorId}/revoke`,
+    { method: "POST" }
+  )
   return response.data
 }
 
@@ -2794,6 +3677,50 @@ export async function getAdminReports(params?: {
   if (params?.to) searchParams.set("to", params.to)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminReportsResponse>(`/admin/reports${query}`)
+  return response.data
+}
+
+export async function getAdminCustomerAnalytics(params?: {
+  preset?: AdminCustomerAnalyticsPreset
+  from?: string
+  to?: string
+  limit?: number
+  detail?: "summary" | "full"
+  section?: AdminCustomerAnalyticsSection
+}) {
+  const searchParams = new URLSearchParams()
+  if (params?.preset) searchParams.set("preset", params.preset)
+  if (params?.from) searchParams.set("from", params.from)
+  if (params?.to) searchParams.set("to", params.to)
+  if (params?.limit) searchParams.set("limit", String(params.limit))
+  if (params?.detail) searchParams.set("detail", params.detail)
+  if (params?.section) searchParams.set("section", params.section)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
+  const response = await adminRequest<AdminCustomerAnalyticsResponse>(
+    `/admin/customer-analytics${query}`
+  )
+  return response.data
+}
+
+export async function getAdminCustomerAnalyticsActorDetail(params: {
+  preset?: AdminCustomerAnalyticsPreset
+  from?: string
+  to?: string
+  limit?: number
+  customerId?: string
+  anonymousId?: string
+}) {
+  const searchParams = new URLSearchParams()
+  if (params.preset) searchParams.set("preset", params.preset)
+  if (params.from) searchParams.set("from", params.from)
+  if (params.to) searchParams.set("to", params.to)
+  if (params.limit) searchParams.set("limit", String(params.limit))
+  if (params.customerId) searchParams.set("customerId", params.customerId)
+  if (params.anonymousId) searchParams.set("anonymousId", params.anonymousId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
+  const response = await adminRequest<AdminCustomerAnalyticsActorDetail>(
+    `/admin/customer-analytics/actor-detail${query}`
+  )
   return response.data
 }
 
@@ -3135,6 +4062,7 @@ export async function listAdminCustomers(params?: {
     | "reviewed"
     | "completed"
     | "none"
+  customerGroupKey?: string
   sortBy?: "newest" | "recentLogin" | "mostOrders" | "highestSpend"
   page?: number
   pageSize?: number
@@ -3146,12 +4074,137 @@ export async function listAdminCustomers(params?: {
   if (params?.requestStatus && params.requestStatus !== "all") {
     searchParams.set("requestStatus", params.requestStatus)
   }
+  if (params?.customerGroupKey) {
+    searchParams.set("customerGroupKey", params.customerGroupKey)
+  }
   if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
   if (params?.page) searchParams.set("page", `${params.page}`)
   if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminListResponse<AdminCustomerSummary>>(
     `/admin/customers${query}`
+  )
+  return response.data
+}
+
+export async function listAdminCustomerGroups() {
+  const response = await adminRequest<{
+    items: AdminCustomerGroup[]
+    total: number
+  }>("/admin/customer-groups")
+  return response.data
+}
+
+export async function createAdminCustomerGroup(payload: {
+  name: string
+  description?: string
+  sourceFilter?: {
+    search?: string
+    status?: "all" | "active" | "suspended" | "locked"
+    requestStatus?:
+      | "all"
+      | "pending"
+      | "cancelled"
+      | "reviewed"
+      | "completed"
+      | "none"
+    customerGroupKey?: string
+    sortBy?: "newest" | "recentLogin" | "mostOrders" | "highestSpend"
+  }
+  customerIds?: string[]
+}) {
+  const response = await adminRequest<AdminCustomerGroup>("/admin/customer-groups", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  return response.data
+}
+
+export async function updateAdminCustomerGroup(
+  groupId: string,
+  payload: {
+    name?: string
+    description?: string
+  }
+) {
+  const response = await adminRequest<AdminCustomerGroup>(
+    `/admin/customer-groups/${groupId}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  )
+  return response.data
+}
+
+export async function deleteAdminCustomerGroup(groupId: string) {
+  const response = await adminRequest<{
+    deleted: boolean
+    group: AdminCustomerGroup
+  }>(`/admin/customer-groups/${groupId}`, {
+    method: "DELETE",
+  })
+  return response.data
+}
+
+export async function addAdminCustomerGroupMembers(params: {
+  groupId: string
+  customerIds: string[]
+}) {
+  const response = await adminRequest<AdminCustomerGroup>(
+    `/admin/customer-groups/${params.groupId}/members`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ customerIds: params.customerIds }),
+    }
+  )
+  return response.data
+}
+
+export async function removeAdminCustomerGroupMember(params: {
+  groupId: string
+  customerId: string
+}) {
+  const response = await adminRequest<AdminCustomerGroup>(
+    `/admin/customer-groups/${params.groupId}/members/${params.customerId}`,
+    { method: "DELETE" }
+  )
+  return response.data
+}
+
+export async function listAdminReferrals(params?: {
+  search?: string
+  status?: "all" | AdminReferralStatus
+  preset?: "today" | "yesterday" | "last7Days" | "last30Days" | "last90Days" | "thisMonth" | "lastMonth" | "lifetime" | "custom"
+  from?: string
+  to?: string
+  sortBy?: "newest" | "oldest" | "rewardedAt" | "risk"
+  page?: number
+  pageSize?: number
+}) {
+  const searchParams = new URLSearchParams()
+  if (params?.search) searchParams.set("search", params.search)
+  if (params?.status && params.status !== "all")
+    searchParams.set("status", params.status)
+  if (params?.preset) searchParams.set("preset", params.preset)
+  if (params?.from) searchParams.set("from", params.from)
+  if (params?.to) searchParams.set("to", params.to)
+  if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
+  if (params?.page) searchParams.set("page", `${params.page}`)
+  if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
+  const response = await adminRequest<AdminReferralListResponse>(
+    `/admin/referrals${query}`
+  )
+  return response.data
+}
+
+export async function getAdminReferral(referralId: string) {
+  const response = await adminRequest<AdminReferralRow>(
+    `/admin/referrals/${referralId}`
   )
   return response.data
 }
@@ -3229,6 +4282,7 @@ export async function listAdminOrders(params?: {
   paymentMethod?: "all" | "Cash" | "Bkash"
   paymentStatus?: "all" | "pending" | "paid" | "refund_pending" | "refunded"
   assignment?: "all" | "assigned" | "unassigned" | "stale"
+  attention?: "all" | "riderDelay"
   sortBy?: "newest" | "oldest" | "highestValue" | "recentlyUpdated"
   page?: number
   pageSize?: number
@@ -3248,6 +4302,9 @@ export async function listAdminOrders(params?: {
   }
   if (params?.assignment && params.assignment !== "all") {
     searchParams.set("assignment", params.assignment)
+  }
+  if (params?.attention && params.attention !== "all") {
+    searchParams.set("attention", params.attention)
   }
   if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
   if (params?.page) searchParams.set("page", `${params.page}`)
@@ -3734,6 +4791,53 @@ export async function reconcileAdminRestaurantFinance(restaurantId: string) {
       method: "POST",
     }
   )
+  return response.data
+}
+
+export async function updateAdminRestaurantPayoutStatus(params: {
+  restaurantId: string
+  payoutId: string
+  status: "processing" | "completed" | "failed"
+  expectedStatus?: string
+  failureReason?: string
+  providerReference?: string
+  providerPayoutId?: string
+  providerTransactionId?: string
+  paymentProofUrl?: string
+  processingNote?: string
+}) {
+  const response = await adminRequest<{
+    id: string
+    amount: number
+    status: string
+    batchReference: string
+    provider: string
+    providerReference: string
+    providerPayoutId: string
+    providerTransactionId: string
+    paymentProofUrl: string
+    processingNote: string
+    failureReason: string
+    requestedAt: string | null
+    approvedAt: string | null
+    processedAt: string | null
+    updatedAt: string | null
+  }>(`/admin/restaurants/${params.restaurantId}/payouts/${params.payoutId}/status`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      status: params.status,
+      expectedStatus: params.expectedStatus,
+      failureReason: params.failureReason,
+      providerReference: params.providerReference,
+      providerPayoutId: params.providerPayoutId,
+      providerTransactionId: params.providerTransactionId,
+      paymentProofUrl: params.paymentProofUrl,
+      processingNote: params.processingNote,
+    }),
+  })
   return response.data
 }
 
@@ -4265,7 +5369,66 @@ export async function rollbackPlatformContent(updatedAt: string) {
   return response.data
 }
 
-export async function uploadAdminMedia(file: File, folder = "foodbela/admin/home-cms") {
+export type AdminMediaAsset = {
+  id: string
+  url: string
+  publicId: string
+  folder: string
+  resourceType: string
+  context: string
+  uploadedByRole: string
+  uploadedById: string
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export async function listAdminMediaAssets(params?: {
+  context?: string
+  page?: number
+  pageSize?: number
+}) {
+  const searchParams = new URLSearchParams()
+  if (params?.context) searchParams.set("context", params.context)
+  if (params?.page) searchParams.set("page", `${params.page}`)
+  if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
+  const response = await adminRequest<AdminListResponse<AdminMediaAsset>>(
+    `/media/assets${query}`
+  )
+  return response.data
+}
+
+async function recordAdminMediaAsset(params: {
+  url: string
+  publicId: string
+  folder: string
+  resourceType: string
+  context: string
+}) {
+  const response = await adminRequest<AdminMediaAsset>("/media/assets", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(params),
+  })
+  return response.data
+}
+
+export async function deleteAdminMediaAsset(assetId: string) {
+  const response = await adminRequest<{
+    deleted: boolean
+    cloudinaryDeleted: boolean
+    asset: AdminMediaAsset
+  }>(`/media/assets/${assetId}`, {
+    method: "DELETE",
+  })
+  return response.data
+}
+
+export async function uploadAdminMedia(
+  file: File,
+  folder = "foodbela/admin/home-cms",
+  context = "admin_media",
+) {
   const signatureResponse = await adminRequest<{
     cloudName: string
     folder: string
@@ -4297,7 +5460,15 @@ export async function uploadAdminMedia(file: File, folder = "foodbela/admin/home
   if (!response.ok || !payload.secure_url) {
     throw new Error(payload.error?.message ?? "Image upload failed")
   }
-  return { url: payload.secure_url, publicId: payload.public_id ?? "" }
+  const asset = {
+    url: payload.secure_url,
+    publicId: payload.public_id ?? "",
+    folder,
+    resourceType: signature.resourceType,
+    context,
+  }
+  await recordAdminMediaAsset(asset).catch(() => undefined)
+  return { url: asset.url, publicId: asset.publicId }
 }
 
 export async function deleteAdminMedia(publicId: string) {

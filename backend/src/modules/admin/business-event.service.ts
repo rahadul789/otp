@@ -1,8 +1,14 @@
 import { logger } from "../../config/logger";
 import { getRequestMonitorSnapshot } from "../../common/middleware/request-monitor";
+import {
+  TRACKING_STALE_AFTER_MS,
+  decorateTrackingSnapshot,
+} from "../../common/utils/tracking-freshness";
+import { getSocketConnectionSnapshot } from "../../config/socket";
 import mongoose from "mongoose";
 import { AdminOperationalAlertModel } from "./admin-alert.model";
 import { AdminBusinessEventModel } from "./business-event.model";
+import { OrderModel } from "../owner/operational.model";
 
 type BusinessEventCategory =
   | "orders"
@@ -84,6 +90,121 @@ function serializeBusinessEvent(row: Record<string, any>) {
     actorName: String(row.actorName ?? ""),
     metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
     createdAt: serializeDate(row.createdAt),
+  };
+}
+
+function stringValue(value: unknown, fallback = "") {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return fallback;
+  return String(value);
+}
+
+function numberValue(value: unknown, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function serializeTrackingLocation(tracking: Record<string, any>) {
+  const location = tracking.currentLocation;
+  if (!location || typeof location !== "object") return null;
+
+  const latitude = numberValue(location.latitude, Number.NaN);
+  const longitude = numberValue(location.longitude, Number.NaN);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+
+  return {
+    latitude,
+    longitude,
+    heading: Number.isFinite(Number(location.heading)) ? Number(location.heading) : null,
+    accuracyMeters: Number.isFinite(Number(location.accuracyMeters))
+      ? Number(location.accuracyMeters)
+      : null,
+  };
+}
+
+function serializeLiveLocationOrder(order: Record<string, any>) {
+  const tracking = decorateTrackingSnapshot(
+    (order.riderTracking ?? {}) as Record<string, any>,
+    stringValue(order.status),
+  ) as Record<string, any>;
+  const freshness = (tracking.freshness ?? {}) as Record<string, any>;
+
+  return {
+    id: String(order._id ?? order.id ?? ""),
+    orderNumber: stringValue(order.orderNumber, "Order"),
+    status: stringValue(order.status),
+    restaurantId: String(order.restaurantId ?? ""),
+    customerId: stringValue(order.customerId),
+    riderId: stringValue(order.riderId),
+    customerName: stringValue(
+      order.customerSnapshot?.fullName ?? order.customerSnapshot?.name,
+      "Customer",
+    ),
+    customerPhone: stringValue(order.customerSnapshot?.phone),
+    riderName: stringValue(order.riderSnapshot?.name, "Rider"),
+    riderPhone: stringValue(order.riderSnapshot?.phone),
+    deliveryAddress: stringValue(order.customerSnapshot?.deliveryAddress?.addressLine),
+    isFocused: Boolean(tracking.isFocused),
+    isNearCustomer: Boolean(tracking.isNearCustomer),
+    startedAt: serializeDate(tracking.startedAt),
+    lastUpdatedAt: serializeDate(tracking.lastUpdatedAt),
+    freshness: {
+      state: stringValue(freshness.state, "unavailable"),
+      ageSeconds:
+        typeof freshness.ageSeconds === "number" ? freshness.ageSeconds : null,
+      isFresh: Boolean(freshness.isFresh),
+      isStale: Boolean(freshness.isStale),
+    },
+    remainingDistanceKm: numberValue(tracking.remainingDistanceKm),
+    directDistanceKm: numberValue(tracking.directDistanceKm),
+    remainingDurationMinutes: numberValue(tracking.remainingDurationMinutes),
+    speedKmph: numberValue(tracking.speedKmph),
+    currentLocation: serializeTrackingLocation(tracking),
+    createdAt: serializeDate(order.createdAt),
+    updatedAt: serializeDate(order.updatedAt),
+  };
+}
+
+async function getRealtimeOperationsSnapshot() {
+  const liveTrackingQuery = {
+    status: "PickedUp",
+    "riderTracking.isActive": true,
+  };
+  const staleCutoff = new Date(Date.now() - TRACKING_STALE_AFTER_MS);
+  const [activeShares, focusedShares, liveShares, staleShares, liveOrders] = await Promise.all([
+    OrderModel.countDocuments(liveTrackingQuery),
+    OrderModel.countDocuments({
+      ...liveTrackingQuery,
+      "riderTracking.isFocused": true,
+    }),
+    OrderModel.countDocuments({
+      ...liveTrackingQuery,
+      "riderTracking.lastUpdatedAt": { $gte: staleCutoff },
+    }),
+    OrderModel.countDocuments({
+      ...liveTrackingQuery,
+      "riderTracking.lastUpdatedAt": { $lt: staleCutoff },
+    }),
+    OrderModel.find(liveTrackingQuery)
+      .sort({ "riderTracking.lastUpdatedAt": -1, updatedAt: -1 })
+      .limit(100)
+      .lean(),
+  ]);
+  const orders = liveOrders.map((order) =>
+    serializeLiveLocationOrder(order as Record<string, any>),
+  );
+
+  return {
+    socket: getSocketConnectionSnapshot(),
+    liveLocation: {
+      activeShares,
+      focusedShares,
+      liveShares,
+      staleShares,
+      visibleLimit: 100,
+      sampleSize: orders.length,
+      orders,
+    },
   };
 }
 
@@ -248,5 +369,6 @@ export async function getAdminOperationalHealthSnapshot() {
       snoozedUntil: serializeDate(alert.snoozedUntil),
     })),
     schedules: [],
+    realtime: await getRealtimeOperationsSnapshot(),
   };
 }

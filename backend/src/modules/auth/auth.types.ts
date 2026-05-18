@@ -12,4 +12,6 @@ export type SendOtpParams = {
   purpose: OtpPurpose
   referenceId: string
   ownerId?: string
+  ipAddress?: string
+  userAgent?: string
 }

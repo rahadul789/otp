@@ -20,13 +20,30 @@ import {
   useAcceptOrderMutation,
   useActivateTrackingMutation,
   useDeliverOrderMutation,
+  useRiderDeliveryThresholdsQuery,
   usePickupOrderMutation,
+  useRiderLiveTrackingPolicyQuery,
   useRiderOrderDetailsQuery,
+  useRiderSupportContactQuery,
   useUpdateRiderLocationMutation,
 } from "@/src/hooks/use-rider-api";
 import { useNetworkStatus } from "@/src/hooks/use-network-status";
 import { isBangla, useDeliveryCopy } from "@/src/lib/copy";
-import { formatDateTime } from "@/src/lib/date-time";
+import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
+import { normalizeRiderLiveTrackingPolicy } from "@/src/lib/live-tracking-policy";
+import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
+import {
+  setRiderBackgroundTrackingOrderId,
+  startRiderBackgroundLocationAsync,
+  stopRiderBackgroundLocationAsync,
+} from "@/src/lib/rider-background-location";
+import {
+  getBestAvailableRiderLocationPayload,
+  getRiderLocationPayload,
+  openRiderLocationSettings,
+  requestRiderForegroundPermission,
+  type RiderLocationPayload,
+} from "@/src/lib/rider-location-permissions";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 
@@ -34,6 +51,12 @@ type Coordinate = { latitude: number; longitude: number };
 type FocusMode = "customer" | "restaurant" | "rider" | "overview";
 
 const HOLD_DURATION_MS = 1200;
+const MAX_QUEUED_LOCATION_UPDATES = 20;
+const DEFAULT_DELIVERY_THRESHOLDS = {
+  deliveryWatchAfterPickupMinutes: 20,
+  deliveryLateAfterPickupMinutes: 25,
+  deliveryCriticalAfterPickupMinutes: 30,
+};
 
 function toRadians(value: number) {
   return (value * Math.PI) / 180;
@@ -70,6 +93,13 @@ function formatEtaLabel(minutes?: number | null) {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = Math.round(minutes % 60);
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function getElapsedMinutes(value?: string | null, nowMs = Date.now()) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.floor((nowMs - timestamp) / 60000));
 }
 
 function buildCurvedPolyline(start: Coordinate, end: Coordinate) {
@@ -182,7 +212,7 @@ const RiderMarkerContent = memo(function RiderMarkerContent() {
   return (
     <View collapsable={false} style={styles.markerRoot}>
       <View style={styles.riderMarkerPin}>
-        <Ionicons name="bicycle-outline" size={13} color={palette.foreground} />
+        <Ionicons name="bicycle-outline" size={13} color="#fff" />
       </View>
     </View>
   );
@@ -295,18 +325,11 @@ export default function RiderOrderDetailsScreen() {
   const [holdProgress, setHoldProgress] = useState(0);
   const [activeHoldAction, setActiveHoldAction] = useState<"pickup" | "deliver" | null>(null);
   const [shouldTrackMarkerViews, setShouldTrackMarkerViews] = useState(true);
+  const [nowMs, setNowMs] = useState(Date.now());
   const lastLocationSentAtRef = useRef(0);
   const isCompletingDeliveryRef = useRef(false);
   const isLocationMutationPendingRef = useRef(false);
-  const queuedLocationsRef = useRef<
-    {
-      latitude: number;
-      longitude: number;
-      heading?: number;
-      accuracyMeters?: number;
-      speedKmph?: number;
-    }[]
-  >([]);
+  const queuedLocationsRef = useRef<RiderLocationPayload[]>([]);
   const isFlushingQueueRef = useRef(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttemptRef = useRef(0);
@@ -317,6 +340,10 @@ export default function RiderOrderDetailsScreen() {
   const mapRef = useRef<MapView | null>(null);
   const mapReadyRef = useRef(false);
   const orderQuery = useRiderOrderDetailsQuery(orderId);
+  const trackingPolicyQuery = useRiderLiveTrackingPolicyQuery();
+  const deliveryThresholdsQuery = useRiderDeliveryThresholdsQuery();
+  const supportContactQuery = useRiderSupportContactQuery();
+  const trackingPolicy = normalizeRiderLiveTrackingPolicy(trackingPolicyQuery.data);
   const acceptMutation = useAcceptOrderMutation();
   const activateTrackingMutation = useActivateTrackingMutation();
   const pickupMutation = usePickupOrderMutation();
@@ -329,6 +356,9 @@ export default function RiderOrderDetailsScreen() {
   }, [locationMutation.isPending]);
 
   const order = orderQuery.data;
+  const supportPhone = supportContactQuery.data?.phone;
+  const backgroundTrackingStatus = order?.status;
+  const backgroundTrackingEnabled = order?.status === "PickedUp";
   const isAssignmentsPaused = rider?.isAvailableForAssignments === false;
   const trackingLocation = order?.riderTracking?.currentLocation;
   const lastKnownRiderLocation = rider?.lastKnownLocation;
@@ -376,6 +406,76 @@ export default function RiderOrderDetailsScreen() {
   );
 
   const isPickedUp = order?.status === "PickedUp";
+  const deliveryThresholds = deliveryThresholdsQuery.data ?? DEFAULT_DELIVERY_THRESHOLDS;
+
+  useEffect(() => {
+    if (!isPickedUp) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 30_000);
+
+    return () => clearInterval(timer);
+  }, [isPickedUp]);
+
+  const pickedUpAt = order?.timestamps?.PickedUp ?? order?.timestamps?.pickedUpAt ?? null;
+  const pickedUpElapsedMinutes = isPickedUp
+    ? getElapsedMinutes(pickedUpAt, nowMs)
+    : null;
+  const deliveryDelayState = useMemo(() => {
+    if (!isPickedUp || pickedUpElapsedMinutes === null) return null;
+
+    if (
+      pickedUpElapsedMinutes >=
+      deliveryThresholds.deliveryCriticalAfterPickupMinutes
+    ) {
+      return {
+        level: "critical" as const,
+        title: "Critical delivery delay",
+        message: "Admin can now follow up. Keep location on and call support if blocked.",
+        icon: "alert-circle-outline" as const,
+      };
+    }
+
+    if (
+      pickedUpElapsedMinutes >= deliveryThresholds.deliveryLateAfterPickupMinutes
+    ) {
+      return {
+        level: "late" as const,
+        title: "Delivery is running late",
+        message: "Customer ETA may be affected. Move to the drop point or contact support.",
+        icon: "time-outline" as const,
+      };
+    }
+
+    if (
+      pickedUpElapsedMinutes >= deliveryThresholds.deliveryWatchAfterPickupMinutes
+    ) {
+      return {
+        level: "watch" as const,
+        title: "Delivery watch",
+        message: "You are close to the delivery target. Keep the live trip moving.",
+        icon: "timer-outline" as const,
+      };
+    }
+
+    return null;
+  }, [
+    deliveryThresholds.deliveryCriticalAfterPickupMinutes,
+    deliveryThresholds.deliveryLateAfterPickupMinutes,
+    deliveryThresholds.deliveryWatchAfterPickupMinutes,
+    isPickedUp,
+    pickedUpElapsedMinutes,
+  ]);
+  const deliveryDelayProgress = pickedUpElapsedMinutes === null
+    ? 0
+    : clamp(
+        pickedUpElapsedMinutes /
+          deliveryThresholds.deliveryCriticalAfterPickupMinutes,
+        0,
+        1
+      );
+  const isFocusedLiveTrip = Boolean(order?.isFocusedLiveTrip);
   const isAssignedPrePickup =
     order?.status === "ReadyForPickup" && order?.assignmentState === "assigned_to_you";
   const isAcceptStep = order?.status === "ReadyForPickup" && order?.assignmentState === "unassigned";
@@ -383,11 +483,11 @@ export default function RiderOrderDetailsScreen() {
   const hasAnotherActiveLiveTrip =
     Boolean(rider?.activeTrackingOrderId) && rider?.activeTrackingOrderId !== order?.id;
   const isPreviewOnlyRoute =
-    (isAssignedPrePickup || isPickedUp) &&
+    isAssignedPrePickup &&
     !order?.isTrackingActiveForRider &&
     hasAnotherActiveLiveTrip;
   const shouldShowCurrentApproachLeg =
-    isPickedUp ? Boolean(order?.isTrackingActiveForRider) : isAssignedPrePickup && !isPreviewOnlyRoute;
+    isPickedUp ? true : isAssignedPrePickup && !isPreviewOnlyRoute;
   const statusLabel = !isNetworkOnline
     ? copy.common.offline
     : isAssignmentsPaused
@@ -485,6 +585,8 @@ export default function RiderOrderDetailsScreen() {
     }
     return currentLegEtaMinutes ?? nextLegEtaMinutes ?? null;
   }, [currentLegEtaMinutes, isPickedUp, nextLegEtaMinutes]);
+
+  const activeLegLabel = isPickedUp ? "To customer" : "To restaurant";
 
   const availableFocusModes = useMemo(() => {
     const modes: FocusMode[] = [];
@@ -589,40 +691,7 @@ export default function RiderOrderDetailsScreen() {
   const timelineRows = useMemo(() => order?.history ?? [], [order?.history]);
   const itemRows = useMemo(() => order?.items ?? [], [order?.items]);
 
-  const routeSummary = useMemo(() => {
-    if (isPreviewOnlyRoute) return copy.orderDetails.previewText;
-    if (isPickedUp) return copy.orderDetails.routeHintPickedUp;
-    if (order?.assignmentState === "assigned_to_you") return copy.orderDetails.routeHintAssigned;
-    if (order?.assignmentState === "unassigned") return copy.orderDetails.routeHintDefault;
-    return copy.orderDetails.routeHintPreview;
-  }, [
-    copy.orderDetails.previewText,
-    copy.orderDetails.routeHintAssigned,
-    copy.orderDetails.routeHintDefault,
-    copy.orderDetails.routeHintPickedUp,
-    copy.orderDetails.routeHintPreview,
-    isPickedUp,
-    isPreviewOnlyRoute,
-    order?.assignmentState,
-  ]);
-
   const shouldShowTripSyncStatus = isAssignedPrePickup || isPickedUp;
-
-  const riderToRestaurantDistanceKm = useMemo(
-    () =>
-      riderCoordinate && restaurantCoordinate
-        ? calculateDistanceKm(riderCoordinate, restaurantCoordinate)
-        : null,
-    [restaurantCoordinate, riderCoordinate]
-  );
-
-  const riderToCustomerDistanceKm = useMemo(
-    () =>
-      riderCoordinate && customerCoordinate
-        ? calculateDistanceKm(riderCoordinate, customerCoordinate)
-        : null,
-    [customerCoordinate, riderCoordinate]
-  );
 
   const openInNativeMaps = useCallback(() => {
     const destination = isPickedUp
@@ -685,7 +754,6 @@ export default function RiderOrderDetailsScreen() {
       isFlushingQueueRef.current ||
       !orderId ||
       order?.status !== "PickedUp" ||
-      !order?.isTrackingActiveForRider ||
       queuedLocationsRef.current.length === 0 ||
       isCompletingDeliveryRef.current
     ) {
@@ -719,7 +787,6 @@ export default function RiderOrderDetailsScreen() {
   }, [
     copy.orderDetails.trackingWeakConnection,
     mutateRiderLocation,
-    order?.isTrackingActiveForRider,
     order?.status,
     orderId,
     scheduleQueueRetry,
@@ -730,14 +797,14 @@ export default function RiderOrderDetailsScreen() {
   }, [flushLocationQueue]);
 
   const enqueueLocationUpdate = useCallback(
-    (payload: {
-      latitude: number;
-      longitude: number;
-      heading?: number;
-      accuracyMeters?: number;
-      speedKmph?: number;
-    }) => {
+    (payload: RiderLocationPayload) => {
       queuedLocationsRef.current.push(payload);
+      if (queuedLocationsRef.current.length > MAX_QUEUED_LOCATION_UPDATES) {
+        queuedLocationsRef.current.splice(
+          0,
+          queuedLocationsRef.current.length - MAX_QUEUED_LOCATION_UPDATES,
+        );
+      }
       setQueuedLocationCount(queuedLocationsRef.current.length);
       setSyncState(queuedLocationsRef.current.length > 1 ? "offline" : "syncing");
       void flushLocationQueue();
@@ -746,7 +813,7 @@ export default function RiderOrderDetailsScreen() {
   );
 
   useEffect(() => {
-    if (order?.status !== "PickedUp" || !orderId || !order?.isTrackingActiveForRider) {
+    if (order?.status !== "PickedUp" || !orderId) {
       return;
     }
 
@@ -769,22 +836,7 @@ export default function RiderOrderDetailsScreen() {
 
         if (isMounted && !isCompletingDeliveryRef.current) {
           lastLocationSentAtRef.current = Date.now();
-          enqueueLocationUpdate({
-            latitude: currentPosition.coords.latitude,
-            longitude: currentPosition.coords.longitude,
-            heading:
-              typeof currentPosition.coords.heading === "number"
-                ? currentPosition.coords.heading
-                : undefined,
-            accuracyMeters:
-              typeof currentPosition.coords.accuracy === "number"
-                ? currentPosition.coords.accuracy
-                : undefined,
-            speedKmph:
-              typeof currentPosition.coords.speed === "number" && currentPosition.coords.speed > 0
-                ? currentPosition.coords.speed * 3.6
-                : undefined,
-          });
+          enqueueLocationUpdate(getRiderLocationPayload(currentPosition));
         }
       } catch {
         if (isMounted) {
@@ -795,8 +847,8 @@ export default function RiderOrderDetailsScreen() {
       subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
-          timeInterval: 15000,
-          distanceInterval: 60,
+          timeInterval: trackingPolicy.updateIntervalSeconds * 1000,
+          distanceInterval: trackingPolicy.distanceIntervalMeters,
         },
         (position) => {
           if (isCompletingDeliveryRef.current || isLocationMutationPendingRef.current) {
@@ -804,23 +856,12 @@ export default function RiderOrderDetailsScreen() {
           }
 
           const now = Date.now();
-          if (now - lastLocationSentAtRef.current < 15000) {
+          if (now - lastLocationSentAtRef.current < trackingPolicy.updateIntervalSeconds * 1000) {
             return;
           }
 
           lastLocationSentAtRef.current = now;
-          enqueueLocationUpdate({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            heading:
-              typeof position.coords.heading === "number" ? position.coords.heading : undefined,
-            accuracyMeters:
-              typeof position.coords.accuracy === "number" ? position.coords.accuracy : undefined,
-            speedKmph:
-              typeof position.coords.speed === "number" && position.coords.speed > 0
-                ? position.coords.speed * 3.6
-                : undefined,
-          });
+          enqueueLocationUpdate(getRiderLocationPayload(position));
         }
       );
     };
@@ -844,13 +885,44 @@ export default function RiderOrderDetailsScreen() {
     copy.orderDetails.trackingStartError,
     copy.orderDetails.trackingWaitingFirstLocation,
     enqueueLocationUpdate,
-    order?.isTrackingActiveForRider,
     order?.status,
     orderId,
+    trackingPolicy.distanceIntervalMeters,
+    trackingPolicy.updateIntervalSeconds,
   ]);
 
   useEffect(() => {
-    if (order?.status !== "PickedUp" || !order?.isTrackingActiveForRider) {
+    const shouldTrackInBackground =
+      backgroundTrackingStatus === "PickedUp" &&
+      Boolean(orderId) &&
+      backgroundTrackingEnabled;
+
+    if (!shouldTrackInBackground || !orderId) {
+      if (
+        backgroundTrackingStatus &&
+        (backgroundTrackingStatus !== "PickedUp" || !backgroundTrackingEnabled)
+      ) {
+        void stopRiderBackgroundLocationAsync();
+      }
+      return;
+    }
+
+    void setRiderBackgroundTrackingOrderId(null);
+    void startRiderBackgroundLocationAsync({
+      timeIntervalMs: trackingPolicy.updateIntervalSeconds * 1000,
+      distanceIntervalMeters: trackingPolicy.distanceIntervalMeters,
+      notificationBody: "Foodbela is sharing your live delivery location.",
+    });
+  }, [
+    backgroundTrackingEnabled,
+    backgroundTrackingStatus,
+    orderId,
+    trackingPolicy.distanceIntervalMeters,
+    trackingPolicy.updateIntervalSeconds,
+  ]);
+
+  useEffect(() => {
+    if (order?.status !== "PickedUp") {
       queuedLocationsRef.current = [];
       setQueuedLocationCount(0);
       setSyncState("live");
@@ -860,7 +932,7 @@ export default function RiderOrderDetailsScreen() {
         retryTimeoutRef.current = null;
       }
     }
-  }, [order?.isTrackingActiveForRider, order?.status]);
+  }, [order?.status]);
 
   const handleAccept = async () => {
     if (!order) return;
@@ -890,37 +962,70 @@ export default function RiderOrderDetailsScreen() {
       return;
     }
 
+    const permission = await requestRiderForegroundPermission();
+    if (permission.status !== "granted") {
+      resetHoldState();
+      Alert.alert(
+        copy.profile.locationPermissionTitle,
+        copy.profile.locationPermissionText,
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Settings",
+            onPress: () => {
+              void openRiderLocationSettings();
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    let pickupLocationPayload: RiderLocationPayload;
+    try {
+      pickupLocationPayload = await getBestAvailableRiderLocationPayload();
+    } catch {
+      resetHoldState();
+      Alert.alert(
+        copy.profile.locationPermissionTitle,
+        "We could not read this device location. Please turn on GPS and try again.",
+        [
+          { text: "Try again", style: "cancel" },
+          {
+            text: "Settings",
+            onPress: () => {
+              void openRiderLocationSettings();
+            },
+          },
+        ],
+      );
+      return;
+    }
+
     try {
       const pickedUpOrder = await pickupMutation.mutateAsync(order!.id);
       resetHoldState();
 
-      try {
-        const permission = await Location.getForegroundPermissionsAsync();
-        if (permission.status === "granted" && pickedUpOrder.isTrackingActiveForRider) {
-          const currentPosition = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
+      if (pickedUpOrder.status === "PickedUp") {
+        lastLocationSentAtRef.current = Date.now();
 
-          lastLocationSentAtRef.current = Date.now();
-          enqueueLocationUpdate({
-            latitude: currentPosition.coords.latitude,
-            longitude: currentPosition.coords.longitude,
-            heading:
-              typeof currentPosition.coords.heading === "number"
-                ? currentPosition.coords.heading
-                : undefined,
-            accuracyMeters:
-              typeof currentPosition.coords.accuracy === "number"
-                ? currentPosition.coords.accuracy
-                : undefined,
-            speedKmph:
-              typeof currentPosition.coords.speed === "number" && currentPosition.coords.speed > 0
-                ? currentPosition.coords.speed * 3.6
-                : undefined,
-          });
+        try {
+          const updatedOrder = await mutateRiderLocation(pickupLocationPayload);
+          setLastSuccessfulSyncAt(
+            updatedOrder.riderTracking?.lastUpdatedAt ?? new Date().toISOString(),
+          );
+          setSyncState("live");
+          setTrackingError("");
+        } catch {
+          enqueueLocationUpdate(pickupLocationPayload);
+          setTrackingError(copy.orderDetails.pickupSavedWaiting);
         }
-      } catch {
-        setTrackingError(copy.orderDetails.pickupSavedWaiting);
+
+        void startRiderBackgroundLocationAsync({
+          timeIntervalMs: trackingPolicy.updateIntervalSeconds * 1000,
+          distanceIntervalMeters: trackingPolicy.distanceIntervalMeters,
+          notificationBody: "Foodbela is sharing your live delivery location.",
+        });
       }
     } catch (error) {
       resetHoldState();
@@ -934,25 +1039,27 @@ export default function RiderOrderDetailsScreen() {
     copy.orderDetails.pickupFailed,
     copy.orderDetails.pickupFailedText,
     copy.orderDetails.pickupSavedWaiting,
+    copy.profile.locationPermissionText,
+    copy.profile.locationPermissionTitle,
     reconnectDeliveryLabel,
     enqueueLocationUpdate,
     isNetworkOnline,
+    mutateRiderLocation,
     order,
     pickupMutation,
     resetHoldState,
+    trackingPolicy.distanceIntervalMeters,
+    trackingPolicy.updateIntervalSeconds,
   ]);
 
-  const handleDeliver = useCallback(async () => {
-    if (!isNetworkOnline) {
-      Alert.alert(copy.common.offline, reconnectDeliveryLabel);
-      resetHoldState();
-      return;
-    }
+  const completeDelivery = useCallback(async () => {
+    if (!order) return;
 
     isCompletingDeliveryRef.current = true;
 
     try {
-      await deliverMutation.mutateAsync(order!.id);
+      await deliverMutation.mutateAsync(order.id);
+      await stopRiderBackgroundLocationAsync();
       router.replace("/(app)/history");
     } catch (error) {
       isCompletingDeliveryRef.current = false;
@@ -963,11 +1070,45 @@ export default function RiderOrderDetailsScreen() {
       );
     }
   }, [
-    copy.common.offline,
     copy.orderDetails.deliverFailed,
     copy.orderDetails.deliverFailedText,
-    reconnectDeliveryLabel,
     deliverMutation,
+    order,
+    resetHoldState,
+  ]);
+
+  const handleDeliver = useCallback(async () => {
+    if (!order) return;
+    if (!isNetworkOnline) {
+      Alert.alert(copy.common.offline, reconnectDeliveryLabel);
+      resetHoldState();
+      return;
+    }
+
+    if (order.riderTracking?.isNearCustomer === false) {
+      resetHoldState();
+      Alert.alert(
+        "Confirm customer location",
+        "You do not look close to the customer yet. Mark delivered only if the order is handed over.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Mark delivered",
+            style: "destructive",
+            onPress: () => {
+              void completeDelivery();
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    await completeDelivery();
+  }, [
+    copy.common.offline,
+    completeDelivery,
+    reconnectDeliveryLabel,
     isNetworkOnline,
     order,
     resetHoldState,
@@ -1050,6 +1191,9 @@ export default function RiderOrderDetailsScreen() {
     );
   }
 
+  const orderStatusBadge = getOrderStatusBadge(order.status);
+  const orderTimingInfo = getOrderTimingInfo(order);
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -1065,11 +1209,27 @@ export default function RiderOrderDetailsScreen() {
         <View style={styles.topRow}>
           <View style={styles.topIdentityRow}>
             <Pressable style={styles.backButton} onPress={() => router.back()}>
-              <Ionicons name="arrow-back" size={20} color={palette.primaryStrong} />
+              <Ionicons name="arrow-back" size={20} color={palette.foreground} />
             </Pressable>
             <View style={styles.orderHeadingWrap}>
               <Text style={styles.topOrderId}>{order.orderNumber}</Text>
-              <Text style={styles.topOrderStatus}>{order.status}</Text>
+              <View
+                style={[
+                  styles.orderStatusPill,
+                  {
+                    backgroundColor: orderStatusBadge.backgroundColor,
+                    borderColor: orderStatusBadge.borderColor,
+                  },
+                ]}
+              >
+                <Text style={[styles.orderStatusPillText, { color: orderStatusBadge.color }]}>
+                  {orderStatusBadge.label}
+                </Text>
+              </View>
+              <Text style={styles.topOrderTime} numberOfLines={1}>
+                {orderTimingInfo.label}: {formatDateTime(orderTimingInfo.value)}
+                {orderTimingInfo.value ? ` - ${formatRelativeTime(orderTimingInfo.value)}` : ""}
+              </Text>
             </View>
           </View>
           <View
@@ -1098,44 +1258,67 @@ export default function RiderOrderDetailsScreen() {
             <View style={styles.infoHeaderRow}>
               <View style={styles.infoHeaderMain}>
                 <View style={[styles.infoIcon, styles.infoIconRestaurant]}>
-                  <Ionicons name="storefront-outline" size={18} color={palette.primaryStrong} />
+                  <Ionicons name="storefront-outline" size={18} color={palette.foreground} />
                 </View>
-                <Text style={styles.sectionTitle}>{copy.orderDetails.restaurantTitle}</Text>
+                <Text style={styles.infoSectionLabel} numberOfLines={1}>
+                  {copy.orderDetails.restaurantTitle}
+                </Text>
               </View>
               {order.restaurant?.phone ? (
                 <Pressable
                   style={styles.cardActionButton}
                   onPress={() => Linking.openURL(`tel:${order.restaurant?.phone}`)}
                 >
-                  <Ionicons name="call" size={15} color={palette.primaryStrong} />
+                  <Ionicons name="call" size={15} color={palette.foreground} />
                 </Pressable>
               ) : null}
             </View>
-            <Text style={styles.infoTitle}>{order.restaurant?.name ?? copy.common.restaurant}</Text>
-            <Text style={styles.infoText}>{order.restaurant?.address ?? "--"}</Text>
-            <Text style={styles.infoText}>{order.restaurant?.phone ?? "--"}</Text>
+            <Text style={styles.infoTitle} numberOfLines={1}>
+              {order.restaurant?.name ?? copy.common.restaurant}
+            </Text>
+            <Text style={styles.infoText} numberOfLines={2}>
+              {order.restaurant?.address ?? "--"}
+            </Text>
+            <Text style={styles.infoText} numberOfLines={1}>
+              {order.restaurant?.phone ?? "--"}
+            </Text>
           </View>
 
           <View style={[styles.infoCardHalf, styles.infoCardCustomer]}>
             <View style={styles.infoHeaderRow}>
               <View style={styles.infoHeaderMain}>
                 <View style={[styles.infoIcon, styles.infoIconCustomer]}>
-                  <Ionicons name="person-outline" size={18} color={palette.primaryStrong} />
+                  <Ionicons name="person-outline" size={18} color={palette.foreground} />
                 </View>
-                <Text style={styles.sectionTitle}>{copy.orderDetails.customerTitle}</Text>
+                <Text style={styles.infoSectionLabel} numberOfLines={1}>
+                  {copy.orderDetails.customerTitle}
+                </Text>
               </View>
               {order.customer?.phone ? (
                 <Pressable
                   style={styles.cardActionButton}
                   onPress={() => Linking.openURL(`tel:${order.customer?.phone}`)}
                 >
-                  <Ionicons name="call" size={15} color={palette.primaryStrong} />
+                  <Ionicons name="call" size={15} color={palette.foreground} />
                 </Pressable>
               ) : null}
             </View>
-            <Text style={styles.infoTitle}>{order.customer?.name ?? copy.common.customer}</Text>
-            <Text style={styles.infoText}>{order.customer?.deliveryAddress?.label ?? "--"}</Text>
-            <Text style={styles.infoText}>{order.customer?.phone ?? "--"}</Text>
+            <Text style={styles.infoTitle} numberOfLines={1}>
+              {order.customer?.name ?? copy.common.customer}
+            </Text>
+            <Text style={styles.infoText} numberOfLines={2}>
+              {order.customer?.deliveryAddress?.addressLine ??
+                order.customer?.deliveryAddress?.label ??
+                "--"}
+            </Text>
+            {order.customer?.deliveryAddress?.addressDetails ? (
+              <Text style={styles.infoText} numberOfLines={2}>
+                {order.customer.deliveryAddress.addressDetails}
+              </Text>
+            ) : null}
+            <Text style={styles.infoText} numberOfLines={1}>
+              {order.customer?.phone ?? "--"}
+            </Text>
           </View>
         </View>
 
@@ -1241,54 +1424,45 @@ export default function RiderOrderDetailsScreen() {
           <View style={styles.mapLegendRow}>
             <View style={styles.legendChip}>
               <View style={styles.legendPrimaryLine} />
-              <Text style={styles.legendText}>
-                {isPickedUp ? copy.orderDetails.currentDeliveryLeg : copy.orderDetails.currentPickupLeg}
+              <Text style={styles.legendText} numberOfLines={1}>
+                {isPickedUp ? "Current delivery" : "Current pickup"}
               </Text>
             </View>
             <View style={styles.legendChip}>
               <View style={styles.legendSecondaryLine} />
-              <Text style={styles.legendText}>
-                {isPickedUp ? copy.orderDetails.routeContext : copy.orderDetails.nextDeliveryLeg}
+              <Text style={styles.legendText} numberOfLines={1}>
+                {isPickedUp ? "Order route" : "Next delivery"}
               </Text>
             </View>
           </View>
 
           <View style={styles.metricsRow}>
             <View style={[styles.metricCard, styles.metricRose]}>
-              <Text style={styles.metricLabel}>
-                {isPickedUp ? detailCopy.riderToCustomer : detailCopy.riderToRestaurant}
-              </Text>
-              <Text style={styles.metricValue}>
-                {formatDistanceLabel(isPickedUp ? riderToCustomerDistanceKm : riderToRestaurantDistanceKm)}
-              </Text>
+              <Text style={styles.metricLabel}>{activeLegLabel}</Text>
+              <Text style={styles.metricValue}>{formatDistanceLabel(currentLegDistanceKm)}</Text>
             </View>
             <View style={[styles.metricCard, styles.metricSky]}>
-              <Text style={styles.metricLabel}>
-                {isPickedUp ? detailCopy.restaurantToCustomer : detailCopy.riderToCustomer}
-              </Text>
-              <Text style={styles.metricValue}>
-                {formatDistanceLabel(isPickedUp ? nextLegDistanceKm : riderToCustomerDistanceKm)}
-              </Text>
+              <Text style={styles.metricLabel}>ETA</Text>
+              <Text style={styles.metricValue}>{formatEtaLabel(fullTripEtaMinutes)}</Text>
             </View>
             <View style={[styles.metricCard, styles.metricAmber]}>
-              <Text style={styles.metricLabel}>
-                {isPickedUp ? detailCopy.etaLabel : detailCopy.restaurantToCustomer}
-              </Text>
-              <Text style={styles.metricValue}>
-                {isPickedUp ? formatEtaLabel(fullTripEtaMinutes) : formatDistanceLabel(nextLegDistanceKm)}
-              </Text>
+              <Text style={styles.metricLabel}>Sync</Text>
+              <View style={styles.syncSignalWrap}>
+                <View
+                  style={[
+                    styles.syncSignalDot,
+                    syncState === "live"
+                      ? styles.syncSignalLive
+                      : syncState === "syncing"
+                        ? styles.syncSignalSyncing
+                        : styles.syncSignalOffline,
+                  ]}
+                />
+              </View>
             </View>
           </View>
 
-          <View style={styles.etaCard}>
-            <Text style={styles.etaLabel}>{detailCopy.liveEstimate}</Text>
-            <Text style={styles.etaValue}>{formatEtaLabel(fullTripEtaMinutes)}</Text>
-            <Text style={styles.etaMeta}>
-              {isPreviewOnlyRoute ? copy.orderDetails.activateToSeeLiveApproach : routeSummary}
-            </Text>
-          </View>
-
-          {shouldShowTripSyncStatus ? (
+          {shouldShowTripSyncStatus && (syncState !== "live" || Boolean(trackingError) || queuedLocationCount > 0) ? (
             <View style={styles.syncCard}>
               <View style={styles.syncHeaderRow}>
                 <Text style={styles.syncTitle}>{detailCopy.currentSync}</Text>
@@ -1345,32 +1519,150 @@ export default function RiderOrderDetailsScreen() {
           </View>
         ) : null}
 
+        {deliveryDelayState ? (
+          <View
+            style={[
+              styles.deliveryDelayCard,
+              deliveryDelayState.level === "critical"
+                ? styles.deliveryDelayCritical
+                : deliveryDelayState.level === "late"
+                  ? styles.deliveryDelayLate
+                  : styles.deliveryDelayWatch,
+            ]}
+          >
+            <View style={styles.deliveryDelayHeader}>
+              <View style={styles.deliveryDelayTitleRow}>
+                <Ionicons
+                  name={deliveryDelayState.icon}
+                  size={18}
+                  color={
+                    deliveryDelayState.level === "critical"
+                      ? palette.danger
+                      : deliveryDelayState.level === "late"
+                        ? palette.secondary
+                        : palette.warning
+                  }
+                />
+                <Text
+                  style={[
+                    styles.deliveryDelayTitle,
+                    deliveryDelayState.level === "critical"
+                      ? styles.deliveryDelayCriticalText
+                      : deliveryDelayState.level === "late"
+                        ? styles.deliveryDelayLateText
+                        : styles.deliveryDelayWatchText,
+                  ]}
+                >
+                  {deliveryDelayState.title}
+                </Text>
+              </View>
+              <Text style={styles.deliveryDelayTime}>
+                {pickedUpElapsedMinutes ?? 0} min out
+              </Text>
+            </View>
+            <View style={styles.deliveryDelayTrack}>
+              <View
+                style={[
+                  styles.deliveryDelayFill,
+                  {
+                    width: `${deliveryDelayProgress * 100}%`,
+                    backgroundColor:
+                      deliveryDelayState.level === "critical"
+                        ? palette.danger
+                        : deliveryDelayState.level === "late"
+                          ? palette.secondary
+                          : palette.amber,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={styles.deliveryDelayText}>{deliveryDelayState.message}</Text>
+            {deliveryDelayState.level !== "watch" && (order.customer?.phone || supportPhone) ? (
+              <View style={styles.deliveryDelayActions}>
+                {order.customer?.phone ? (
+                  <Pressable
+                    style={[styles.deliveryDelayAction, styles.deliveryDelayActionPrimary]}
+                    onPress={() => Linking.openURL(`tel:${order.customer?.phone}`)}
+                  >
+                    <Ionicons name="call-outline" size={15} color="#fff" />
+                    <Text style={styles.deliveryDelayActionPrimaryText}>Call customer</Text>
+                  </Pressable>
+                ) : null}
+                {supportPhone ? (
+                  <Pressable
+                    style={styles.deliveryDelayAction}
+                    onPress={() => Linking.openURL(`tel:${supportPhone}`)}
+                  >
+                    <Ionicons name="headset-outline" size={15} color={palette.foreground} />
+                    <Text style={styles.deliveryDelayActionText}>Support</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+
         <View style={styles.sectionCard}>
-          <View style={styles.sectionHeaderRow}>
+          <View style={styles.cardSectionHeader}>
             <Text style={styles.sectionTitle}>{copy.orderDetails.itemsTitle}</Text>
+            <View style={styles.sectionCountBadge}>
+              <Text style={styles.sectionCountText}>{itemRows.length}</Text>
+            </View>
           </View>
           <View style={styles.itemList}>
-            {itemRows.map((item: { name?: string; quantity?: number }, index: number) => (
+            {itemRows.map((item: { name?: string; quantity?: number; totalPrice?: number }, index: number) => (
               <View key={`${item.name}-${index}`} style={styles.itemRow}>
-                <Text style={styles.itemQuantity}>{item.quantity}x</Text>
-                <Text style={styles.itemName}>{item.name}</Text>
+                <View style={styles.itemQuantityPill}>
+                  <Text style={styles.itemQuantity}>{item.quantity ?? 1}x</Text>
+                </View>
+                <Text style={styles.itemName} numberOfLines={2}>{item.name}</Text>
+                {typeof item.totalPrice === "number" ? (
+                  <Text style={styles.itemPrice}>Tk {Math.round(item.totalPrice)}</Text>
+                ) : null}
               </View>
             ))}
           </View>
         </View>
 
         <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>{copy.orderDetails.timelineTitle}</Text>
+          <View style={styles.cardSectionHeader}>
+            <Text style={styles.sectionTitle}>{copy.orderDetails.timelineTitle}</Text>
+            <View style={styles.sectionCountBadge}>
+              <Text style={styles.sectionCountText}>{timelineRows.length}</Text>
+            </View>
+          </View>
           <View style={styles.timelineList}>
-            {timelineRows.map((entry: { status: string; createdAt: string | null }, index: number) => (
-              <View key={`${entry.status}-${index}`} style={styles.timelineRow}>
-                <View style={styles.timelineDot} />
-                <View style={styles.timelineCopyWrap}>
-                  <Text style={styles.timelineStatus}>{entry.status}</Text>
-                  <Text style={styles.timelineMeta}>{formatDateTime(entry.createdAt)}</Text>
+            {timelineRows.map((entry: { status: string; createdAt: string | null }, index: number) => {
+              const timelineBadge = getOrderStatusBadge(entry.status);
+              const isLast = index === timelineRows.length - 1;
+              return (
+                <View key={`${entry.status}-${index}`} style={styles.timelineRow}>
+                  <View style={styles.timelineMarkerWrap}>
+                    <View style={[styles.timelineDot, { backgroundColor: timelineBadge.color }]} />
+                    {!isLast ? <View style={styles.timelineLine} /> : null}
+                  </View>
+                  <View style={styles.timelineCopyWrap}>
+                    <View
+                      style={[
+                        styles.timelineStatusChip,
+                        {
+                          backgroundColor: timelineBadge.backgroundColor,
+                          borderColor: timelineBadge.borderColor,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.timelineStatus, { color: timelineBadge.color }]}>
+                        {timelineBadge.label}
+                      </Text>
+                    </View>
+                    <Text style={styles.timelineMeta}>
+                      {formatDateTime(entry.createdAt)}
+                      {entry.createdAt ? ` - ${formatRelativeTime(entry.createdAt)}` : ""}
+                    </Text>
+                  </View>
                 </View>
-              </View>
-            ))}
+              );
+            })}
           </View>
         </View>
 
@@ -1417,7 +1709,7 @@ export default function RiderOrderDetailsScreen() {
           </View>
         ) : null}
 
-        {order.status === "PickedUp" && !order.isTrackingActiveForRider ? (
+        {order.status === "PickedUp" && !isFocusedLiveTrip ? (
           <Pressable
             style={[styles.secondaryAction, isTrackingActivationDisabled && styles.buttonDisabled]}
             onPress={handleActivateTracking}
@@ -1472,7 +1764,7 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
     paddingBottom: 32,
-    gap: 16,
+    gap: 14,
   },
   centered: {
     flex: 1,
@@ -1490,8 +1782,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 12,
   },
   topIdentityRow: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
@@ -1499,7 +1793,7 @@ const styles = StyleSheet.create({
   backButton: {
     width: 44,
     height: 44,
-    borderRadius: 16,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: palette.surface,
@@ -1507,6 +1801,7 @@ const styles = StyleSheet.create({
     borderColor: palette.border,
   },
   orderHeadingWrap: {
+    flex: 1,
     gap: 2,
   },
   topOrderId: {
@@ -1514,10 +1809,22 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: palette.foreground,
   },
-  topOrderStatus: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: palette.secondary,
+  orderStatusPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderWidth: 1,
+  },
+  orderStatusPillText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "800",
+  },
+  topOrderTime: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: palette.mutedForeground,
   },
   topStatusBadge: {
     borderRadius: 999,
@@ -1526,8 +1833,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   topStatusBadgeOnline: {
-    backgroundColor: palette.successSurface,
-    borderColor: "#B7E8D1",
+    backgroundColor: palette.successSoft,
+    borderColor: "#BFE6D1",
   },
   topStatusBadgeOffline: {
     backgroundColor: "#F4EDE6",
@@ -1538,14 +1845,14 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   topStatusBadgeTextOnline: {
-    color: palette.successText,
+    color: palette.success,
   },
   topStatusBadgeTextOffline: {
     color: palette.mutedForeground,
   },
   mapCard: {
     backgroundColor: palette.surface,
-    borderRadius: 28,
+    borderRadius: 18,
     paddingTop: 16,
     paddingBottom: 16,
     gap: 14,
@@ -1560,8 +1867,30 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 16,
   },
+  cardSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
   sectionTitle: {
     fontSize: 15,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  sectionCountBadge: {
+    minWidth: 28,
+    height: 28,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.surfaceMuted,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  sectionCountText: {
+    fontSize: 12,
     fontWeight: "800",
     color: palette.foreground,
   },
@@ -1623,7 +1952,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: palette.primary,
+    backgroundColor: "#FF7A59",
     borderWidth: 2,
     borderColor: palette.surface,
     shadowColor: palette.shadow,
@@ -1638,7 +1967,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: palette.amber,
+    backgroundColor: palette.foreground,
     borderWidth: 2,
     borderColor: palette.surface,
     shadowColor: palette.shadow,
@@ -1658,7 +1987,7 @@ const styles = StyleSheet.create({
     minHeight: 34,
     paddingHorizontal: 10,
     borderRadius: 999,
-    backgroundColor: palette.secondary,
+    backgroundColor: palette.foreground,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
@@ -1670,36 +1999,38 @@ const styles = StyleSheet.create({
   },
   mapLegendRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: 8,
     paddingHorizontal: 16,
   },
   legendChip: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    gap: 7,
+    minHeight: 32,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: palette.surfaceMuted,
   },
   legendPrimaryLine: {
-    width: 24,
+    width: 18,
     height: 0,
-    borderTopWidth: 3,
+    borderTopWidth: 4,
     borderStyle: "dashed",
     borderColor: palette.secondary,
   },
   legendSecondaryLine: {
-    width: 24,
+    width: 18,
     height: 0,
-    borderTopWidth: 3,
+    borderTopWidth: 4,
     borderStyle: "dashed",
     borderColor: palette.amber,
   },
   legendText: {
-    fontSize: 12,
+    flex: 1,
+    fontSize: 10,
+    lineHeight: 13,
     fontWeight: "700",
     color: palette.foreground,
   },
@@ -1709,43 +2040,74 @@ const styles = StyleSheet.create({
   },
   metricsRow: {
     flexDirection: "row",
-    gap: 12,
+    gap: 8,
     paddingHorizontal: 16,
   },
   metricCard: {
     flex: 1,
-    borderRadius: 22,
-    padding: 12,
-    gap: 4,
+    minHeight: 58,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 3,
+    backgroundColor: palette.surfaceMuted,
+    borderWidth: 1,
+    borderColor: palette.border,
   },
   metricRose: {
-    backgroundColor: "#FFE8F0",
+    backgroundColor: "#FFF0F6",
+    borderColor: "#FFCEE0",
   },
   metricSky: {
-    backgroundColor: "#EAF1FF",
+    backgroundColor: "#FFF9E6",
+    borderColor: "#FDE68A",
   },
   metricAmber: {
-    backgroundColor: "#FFF1D9",
+    backgroundColor: palette.infoSoft,
+    borderColor: "#C8D4FF",
   },
   metricLabel: {
-    fontSize: 11,
+    fontSize: 10,
+    lineHeight: 13,
     fontWeight: "800",
     color: palette.mutedForeground,
     textTransform: "uppercase",
   },
   metricValue: {
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: "800",
     color: palette.foreground,
   },
-  metricMeta: {
-    fontSize: 12,
-    color: palette.mutedForeground,
-    lineHeight: 18,
+  syncSignalWrap: {
+    height: 20,
+    alignItems: "flex-start",
+    justifyContent: "center",
+  },
+  syncSignalDot: {
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    borderWidth: 3,
+    borderColor: palette.surface,
+    shadowColor: palette.shadow,
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  syncSignalLive: {
+    backgroundColor: palette.success,
+  },
+  syncSignalSyncing: {
+    backgroundColor: palette.amber,
+  },
+  syncSignalOffline: {
+    backgroundColor: palette.danger,
   },
   etaCard: {
     marginHorizontal: 16,
-    borderRadius: 22,
+    borderRadius: 16,
     padding: 14,
     gap: 4,
     backgroundColor: palette.surfaceMuted,
@@ -1768,7 +2130,7 @@ const styles = StyleSheet.create({
   },
   syncCard: {
     marginHorizontal: 16,
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 14,
     gap: 6,
     backgroundColor: palette.surfaceMuted,
@@ -1836,72 +2198,182 @@ const styles = StyleSheet.create({
     color: palette.warningText,
     fontWeight: "700",
   },
+  deliveryDelayCard: {
+    borderRadius: 18,
+    padding: 14,
+    gap: 10,
+    borderWidth: 1,
+  },
+  deliveryDelayWatch: {
+    backgroundColor: palette.warningSurface,
+    borderColor: "#FDE68A",
+  },
+  deliveryDelayLate: {
+    backgroundColor: "#FFF0F6",
+    borderColor: "#FFCEE0",
+  },
+  deliveryDelayCritical: {
+    backgroundColor: palette.dangerSoft,
+    borderColor: "#FECACA",
+  },
+  deliveryDelayHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  deliveryDelayTitleRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  deliveryDelayTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  deliveryDelayWatchText: {
+    color: palette.warningText,
+  },
+  deliveryDelayLateText: {
+    color: palette.secondary,
+  },
+  deliveryDelayCriticalText: {
+    color: palette.danger,
+  },
+  deliveryDelayTime: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  deliveryDelayTrack: {
+    height: 6,
+    overflow: "hidden",
+    borderRadius: 999,
+    backgroundColor: "rgba(33,26,29,0.08)",
+  },
+  deliveryDelayFill: {
+    height: "100%",
+    borderRadius: 999,
+  },
+  deliveryDelayText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: palette.mutedForeground,
+    fontWeight: "700",
+  },
+  deliveryDelayActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  deliveryDelayAction: {
+    minHeight: 38,
+    borderRadius: 999,
+    paddingHorizontal: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(33,26,29,0.08)",
+  },
+  deliveryDelayActionPrimary: {
+    backgroundColor: palette.foreground,
+    borderColor: palette.foreground,
+  },
+  deliveryDelayActionText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  deliveryDelayActionPrimaryText: {
+    fontSize: 12,
+    fontWeight: "900",
+    color: "#fff",
+  },
   dualCardRow: {
     flexDirection: "row",
     gap: 12,
   },
   infoCardHalf: {
     flex: 1,
-    borderRadius: 24,
-    padding: 16,
-    gap: 10,
+    minWidth: 0,
+    borderRadius: 18,
+    padding: 12,
+    gap: 8,
     borderWidth: 1,
+    backgroundColor: palette.surface,
+    borderColor: palette.border,
   },
   infoCardRestaurant: {
-    backgroundColor: "#FFF1EA",
-    borderColor: "#F7C9B5",
+    backgroundColor: palette.surface,
+    borderColor: palette.border,
   },
   infoCardCustomer: {
-    backgroundColor: "#EEF4FF",
-    borderColor: "#CCD9FF",
+    backgroundColor: palette.surface,
+    borderColor: palette.border,
   },
   infoHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 8,
   },
   infoHeaderMain: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 7,
+    minWidth: 0,
   },
   infoIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: palette.surfaceMuted,
   },
   infoIconRestaurant: {
-    backgroundColor: "#FFDCCB",
+    backgroundColor: palette.primarySoft,
   },
   infoIconCustomer: {
-    backgroundColor: "#DCE8FF",
+    backgroundColor: palette.infoSoft,
   },
   infoTitle: {
-    fontSize: 16,
+    fontSize: 14,
+    lineHeight: 19,
     fontWeight: "800",
     color: palette.foreground,
   },
   infoText: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 12,
+    lineHeight: 17,
     color: palette.mutedForeground,
   },
   cardActionButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 14,
+    width: 30,
+    height: 30,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.78)",
+    backgroundColor: palette.surfaceMuted,
+  },
+  infoSectionLabel: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+    color: palette.foreground,
   },
   sectionCard: {
     backgroundColor: palette.surface,
-    borderRadius: 24,
+    borderRadius: 18,
     padding: 16,
     gap: 12,
     borderWidth: 1,
@@ -1910,53 +2382,95 @@ const styles = StyleSheet.create({
   sectionBadge: {
     fontSize: 12,
     fontWeight: "700",
-    color: palette.secondary,
+    color: palette.primary,
   },
   itemList: {
-    gap: 10,
+    gap: 8,
   },
   itemRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    minHeight: 48,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: palette.surfaceMuted,
+  },
+  itemQuantityPill: {
+    minWidth: 38,
+    height: 30,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFEAF2",
+    borderWidth: 1,
+    borderColor: "#FFCEE0",
   },
   itemQuantity: {
-    minWidth: 36,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
     color: palette.secondary,
   },
   itemName: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
     color: palette.foreground,
   },
+  itemPrice: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: palette.mutedForeground,
+  },
   timelineList: {
-    gap: 12,
+    gap: 0,
   },
   timelineRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 10,
+    gap: 12,
+  },
+  timelineMarkerWrap: {
+    width: 16,
+    minHeight: 54,
+    alignItems: "center",
   },
   timelineDot: {
-    width: 10,
-    height: 10,
+    width: 11,
+    height: 11,
     borderRadius: 999,
     marginTop: 5,
-    backgroundColor: palette.secondary,
+    borderWidth: 2,
+    borderColor: palette.surface,
+  },
+  timelineLine: {
+    flex: 1,
+    width: 2,
+    marginTop: 4,
+    backgroundColor: palette.border,
   },
   timelineCopyWrap: {
     flex: 1,
-    gap: 2,
+    gap: 6,
+    paddingBottom: 14,
+  },
+  timelineStatusChip: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
   },
   timelineStatus: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: palette.foreground,
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: "800",
   },
   timelineMeta: {
     fontSize: 12,
+    lineHeight: 16,
     color: palette.mutedForeground,
   },
   primaryAction: {

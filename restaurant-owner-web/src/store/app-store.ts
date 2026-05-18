@@ -69,6 +69,7 @@ export type PasswordResetState = {
   verificationSessionId: string | null
   otpVerified: boolean
   requestedAt: string | null
+  resendAvailableInSeconds?: number
 }
 
 export type VerificationRequest = {
@@ -81,6 +82,7 @@ export type VerificationRequest = {
   phone: string
   referenceId: string | null
   pendingPassword: string
+  resendAvailableInSeconds?: number
 }
 
 type AppStore = {
@@ -149,6 +151,7 @@ export const useAppStore = create<AppStore>((set) => ({
         phone: "",
         referenceId: null,
         pendingPassword: "",
+        resendAvailableInSeconds: undefined,
       },
       ownerAccount: { ...APP_FALLBACK_STATE.ownerAccount },
       restaurantLifecycleStatus: APP_FALLBACK_STATE.restaurantLifecycleStatus,
@@ -178,6 +181,7 @@ export const useAppStore = create<AppStore>((set) => ({
     phone: "",
     referenceId: null,
     pendingPassword: "",
+    resendAvailableInSeconds: undefined,
   },
   setVerificationRequest: (value) =>
     set((state) => ({

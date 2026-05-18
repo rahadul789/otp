@@ -11,32 +11,70 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Screen } from "@/src/components/screen";
+import { resolveCustomerRoute } from "@/src/lib/customer-routes";
 import { palette } from "@/src/theme/palette";
+
+const quickTopics = [
+  {
+    id: "orders",
+    title: "Order help",
+    subtitle: "Tracking, delays, missing items",
+    icon: "receipt-outline" as const,
+    route: "/order-help",
+    tint: "#FFF1E8",
+  },
+  {
+    id: "payments",
+    title: "Payment & refunds",
+    subtitle: "bKash, COD, failed payments",
+    icon: "wallet-outline" as const,
+    route: "/payment-refunds",
+    tint: "#EEF5FF",
+  },
+  {
+    id: "vouchers",
+    title: "Offers & vouchers",
+    subtitle: "Deals, codes, and discounts",
+    icon: "pricetag-outline" as const,
+    route: "/voucher-help",
+    tint: "#FFF7D6",
+  },
+];
 
 const faqItems = [
   {
     id: "refund",
-    question: "How do refunds work for cancelled orders?",
+    question: "How do refunds work?",
     answer:
-      "If an online payment already went through, the refund usually returns to the same wallet after processing. Cash on delivery orders do not need a refund step.",
+      "Online payments are reviewed and returned to the original wallet after processing. COD orders do not need a refund step.",
   },
   {
     id: "late",
-    question: "What if my order is running late?",
+    question: "What if my order is late?",
     answer:
-      "Open the latest order first and check the status. If the rider is delayed for too long, you can continue from support chat with the order details.",
+      "Open the order first to check the latest status. If it has not moved for a while, start a support chat with the order details.",
   },
   {
     id: "wrong-item",
-    question: "I received a wrong or missing item",
+    question: "Wrong or missing item?",
     answer:
-      "Take a quick photo if possible and send it in chat. This helps support review the issue faster and guide the next step clearly.",
+      "Send the issue in chat with a quick photo if possible. It helps support review the order clearly.",
   },
 ];
 
 export default function SupportScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+
+  const openEmailSupport = () => {
+    const subject = encodeURIComponent("Customer support request");
+    const body = encodeURIComponent(
+      "Hi Foodbela support,\n\nI need help with an order / delivery / payment issue.\n\nOrder details:\nIssue summary:\n",
+    );
+    void Linking.openURL(
+      `mailto:support@foodbela.app?subject=${subject}&body=${body}`,
+    );
+  };
 
   return (
     <Screen>
@@ -48,155 +86,101 @@ export default function SupportScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.topBar}>
-          <Pressable style={styles.backButton} onPress={() => router.back()}>
+          <Pressable style={styles.iconButton} onPress={() => router.back()}>
             <Ionicons
               name="chevron-back"
               size={20}
               color={palette.foreground}
             />
           </Pressable>
-        </View>
-
-        <View style={styles.hero}>
-          <View style={styles.heroGlowPrimary} />
-          <View style={styles.heroGlowSecondary} />
-          <Text style={styles.kicker}>Support</Text>
-          <Text style={styles.title}>Help that feels clear and quick</Text>
-          <Text style={styles.subtitle}>
-            Delivery issues, payment questions, refunds, and order help stay in
-            one calmer place.
-          </Text>
-        </View>
-
-        <View style={styles.cardStack}>
+          <Text style={styles.topTitle}>Help center</Text>
           <Pressable
-            style={styles.actionCard}
+            style={styles.iconButton}
             onPress={() => router.push("/support-chat")}
           >
-            <View
-              style={[styles.actionIconWrap, { backgroundColor: "#FFE7F1" }]}
-            >
-              <Ionicons
-                name="chatbubble-ellipses-outline"
-                size={18}
-                color={palette.secondary}
-              />
-            </View>
-            <View style={styles.actionCopy}>
-              <Text style={styles.actionTitle}>Live chat</Text>
-              <Text style={styles.actionSubtitle}>
-                Fastest for delivery, payment, and order questions
-              </Text>
-            </View>
             <Ionicons
-              name="chevron-forward"
+              name="chatbubble-ellipses-outline"
               size={18}
-              color={palette.mutedForeground}
+              color={palette.foreground}
             />
           </Pressable>
+        </View>
 
-          <Pressable
-            style={styles.actionCard}
-            onPress={() => {
-              const subject = encodeURIComponent("Customer support request");
-              const body = encodeURIComponent(
-                "Hi support team,\n\nI need help with an order / delivery / payment issue.\n\nOrder details:\nIssue summary:\n",
-              );
-              void Linking.openURL(
-                `mailto:support@foodbela.app?subject=${subject}&body=${body}`,
-              );
-            }}
-          >
-            <View
-              style={[styles.actionIconWrap, { backgroundColor: "#EAF2FF" }]}
-            >
-              <Ionicons name="mail-outline" size={18} color={palette.sky} />
-            </View>
-            <View style={styles.actionCopy}>
-              <Text style={styles.actionTitle}>Email support</Text>
-              <Text style={styles.actionSubtitle}>
-                Best when you want a written trail with your details
-              </Text>
-            </View>
+        <View style={styles.assistPanel}>
+          <View style={styles.assistIcon}>
             <Ionicons
-              name="chevron-forward"
-              size={18}
-              color={palette.mutedForeground}
+              name="headset-outline"
+              size={24}
+              color={palette.secondary}
             />
-          </Pressable>
+          </View>
+          <Text style={styles.assistTitle}>Get support faster</Text>
+          <Text style={styles.assistText}>
+            Choose chat for live order issues, or email when you want to share
+            longer details.
+          </Text>
+
+          <View style={styles.contactRow}>
+            <Pressable
+              style={styles.primaryContact}
+              onPress={() => router.push("/support-chat")}
+            >
+              <Ionicons name="chatbubble-outline" size={17} color="#fff" />
+              <Text style={styles.primaryContactText}>Chat now</Text>
+            </Pressable>
+            <Pressable style={styles.secondaryContact} onPress={openEmailSupport}>
+              <Ionicons
+                name="mail-outline"
+                size={17}
+                color={palette.foreground}
+              />
+              <Text style={styles.secondaryContactText}>Email</Text>
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Popular help topics</Text>
-          <Text style={styles.sectionSubtitle}>
-            Answers people usually look for first.
-          </Text>
-          <View style={styles.faqStack}>
-            <Pressable
-              style={styles.topicCard}
-              onPress={() => router.push("/order-help")}
-            >
-              <Ionicons
-                name="receipt-outline"
-                size={18}
-                color={palette.foreground}
-              />
-              <View style={styles.topicCopy}>
-                <Text style={styles.topicTitle}>Order help</Text>
-                <Text style={styles.topicSubtitle}>
-                  Delays, missing items, tracking, and refund basics
-                </Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={palette.mutedForeground}
-              />
-            </Pressable>
-            <Pressable
-              style={styles.topicCard}
-              onPress={() => router.push("/payment-refunds")}
-            >
-              <Ionicons
-                name="wallet-outline"
-                size={18}
-                color={palette.foreground}
-              />
-              <View style={styles.topicCopy}>
-                <Text style={styles.topicTitle}>Payment & refunds</Text>
-                <Text style={styles.topicSubtitle}>
-                  bKash, COD, failed charge, and refund timing
-                </Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={palette.mutedForeground}
-              />
-            </Pressable>
-            <Pressable
-              style={styles.topicCard}
-              onPress={() => router.push("/voucher-help")}
-            >
-              <Ionicons
-                name="pricetag-outline"
-                size={18}
-                color={palette.foreground}
-              />
-              <View style={styles.topicCopy}>
-                <Text style={styles.topicTitle}>Offers & vouchers</Text>
-                <Text style={styles.topicSubtitle}>
-                  Why a deal applied or why it did not
-                </Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={18}
-                color={palette.mutedForeground}
-              />
-            </Pressable>
+          <Text style={styles.sectionTitle}>Quick help</Text>
+          <View style={styles.list}>
+            {quickTopics.map((topic, index) => (
+              <Pressable
+                key={topic.id}
+                style={[
+                  styles.topicRow,
+                  index === quickTopics.length - 1 ? styles.topicRowLast : null,
+                ]}
+                onPress={() =>
+                  router.push(resolveCustomerRoute(topic.route, "/support") as never)
+                }
+              >
+                <View
+                  style={[styles.topicIcon, { backgroundColor: topic.tint }]}
+                >
+                  <Ionicons
+                    name={topic.icon}
+                    size={18}
+                    color={palette.foreground}
+                  />
+                </View>
+                <View style={styles.topicCopy}>
+                  <Text style={styles.topicTitle}>{topic.title}</Text>
+                  <Text style={styles.topicSubtitle}>{topic.subtitle}</Text>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={palette.mutedForeground}
+                />
+              </Pressable>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Common questions</Text>
+          <View style={styles.faqList}>
             {faqItems.map((item) => (
-              <View key={item.id} style={styles.faqCard}>
+              <View key={item.id} style={styles.faqItem}>
                 <Text style={styles.faqQuestion}>{item.question}</Text>
                 <Text style={styles.faqAnswer}>{item.answer}</Text>
               </View>
@@ -216,8 +200,15 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
   },
-  backButton: {
+  topTitle: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  iconButton: {
     width: 42,
     height: 42,
     borderRadius: 21,
@@ -227,86 +218,78 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  hero: {
-    overflow: "hidden",
-    borderRadius: 30,
+  assistPanel: {
+    borderRadius: 28,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
-    padding: 22,
-    gap: 10,
-  },
-  heroGlowPrimary: {
-    position: "absolute",
-    top: -26,
-    right: -16,
-    width: 128,
-    height: 128,
-    borderRadius: 64,
-    backgroundColor: "#FFE7F1",
-  },
-  heroGlowSecondary: {
-    position: "absolute",
-    bottom: -28,
-    left: -18,
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "#FFF0C8",
-  },
-  kicker: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    color: palette.secondary,
-  },
-  title: {
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: palette.mutedForeground,
-  },
-  cardStack: {
+    padding: 20,
     gap: 12,
+    shadowColor: palette.shadow,
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
   },
-  actionCard: {
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "center",
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    padding: 14,
-  },
-  actionIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  assistIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "#FFE7F1",
   },
-  actionCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  actionTitle: {
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: "800",
+  assistTitle: {
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: "900",
     color: palette.foreground,
   },
-  actionSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
+  assistText: {
+    fontSize: 14,
+    lineHeight: 22,
+    fontWeight: "500",
     color: palette.mutedForeground,
+  },
+  contactRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 2,
+  },
+  primaryContact: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 20,
+    backgroundColor: palette.secondary,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  primaryContactText: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: "#fff",
+  },
+  secondaryContact: {
+    minWidth: 104,
+    minHeight: 50,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.background,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+  secondaryContactText: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: palette.foreground,
   },
   section: {
     gap: 10,
@@ -314,30 +297,37 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     lineHeight: 24,
-    fontWeight: "800",
+    fontWeight: "900",
     color: palette.foreground,
   },
-  sectionSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: palette.mutedForeground,
-  },
-  faqStack: {
-    gap: 10,
-  },
-  topicCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderRadius: 24,
+  list: {
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
+    overflow: "hidden",
+  },
+  topicRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
     padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+  },
+  topicRowLast: {
+    borderBottomWidth: 0,
+  },
+  topicIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
   },
   topicCopy: {
     flex: 1,
-    gap: 3,
+    gap: 2,
   },
   topicTitle: {
     fontSize: 14,
@@ -346,16 +336,20 @@ const styles = StyleSheet.create({
     color: palette.foreground,
   },
   topicSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
     color: palette.mutedForeground,
   },
-  faqCard: {
+  faqList: {
+    gap: 10,
+  },
+  faqItem: {
     borderRadius: 22,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
-    padding: 14,
+    padding: 15,
     gap: 6,
   },
   faqQuestion: {
@@ -366,7 +360,8 @@ const styles = StyleSheet.create({
   },
   faqAnswer: {
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
+    fontWeight: "500",
     color: palette.mutedForeground,
   },
 });

@@ -25,8 +25,10 @@ export function getOwnerSocket() {
   return ownerSocket
 }
 
-export function connectOwnerSocket(ownerId: string) {
+export function connectOwnerSocket(ownerId: string, accessToken: string) {
   const socket = getOwnerSocket()
+  socket.auth = { token: accessToken }
+
   if (!socket.connected) {
     socket.connect()
   }
@@ -40,4 +42,3 @@ export function disconnectOwnerSocket() {
     ownerSocket.disconnect()
   }
 }
-

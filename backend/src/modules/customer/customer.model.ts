@@ -4,6 +4,7 @@ const customerSavedLocationSchema = new Schema(
   {
     label: { type: String, required: true, trim: true },
     address: { type: String, required: true, trim: true },
+    addressDetails: { type: String, default: "", trim: true },
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
     source: { type: String, enum: ["gps", "manual", "saved"], default: "saved" },
@@ -41,6 +42,8 @@ const customerNotificationSchema = new Schema(
     path: { type: String, default: "", trim: true },
     campaignId: { type: String, default: "", trim: true },
     campaignVariant: { type: String, default: "", trim: true },
+    ctaLabel: { type: String, default: "", trim: true },
+    ctaPath: { type: String, default: "", trim: true },
     contentType: { type: String, enum: ["text", "image", "image_text"], default: "text" },
     imageUrl: { type: String, default: "", trim: true },
     isRead: { type: Boolean, default: false },
@@ -121,6 +124,25 @@ const customerSchema = new Schema(
       default: "active"
     },
     lastLoginAt: { type: Date, default: null },
+    lastKnownDeviceId: { type: String, default: "", trim: true },
+    lastKnownIpAddress: { type: String, default: "", trim: true },
+    lastKnownUserAgent: { type: String, default: "", trim: true },
+    referralCode: { type: String, unique: true, sparse: true, trim: true, uppercase: true },
+    referredByCustomerId: { type: Schema.Types.ObjectId, ref: "Customer", default: null },
+    referredAt: { type: Date, default: null },
+    referralSignupDeviceId: { type: String, default: "", trim: true },
+    referralSignupIpAddress: { type: String, default: "", trim: true },
+    referralSignupUserAgent: { type: String, default: "", trim: true },
+    referralRewardedAt: { type: Date, default: null },
+    referralRewardOrderId: { type: Schema.Types.ObjectId, ref: "Order", default: null },
+    referralRewardVoucherId: { type: Schema.Types.ObjectId, ref: "Voucher", default: null },
+    referralRewardStatus: {
+      type: String,
+      enum: ["pending", "rewarded", "capped", "disabled", "under_review", "rejected"],
+      default: "pending"
+    },
+    referralRewardSkippedAt: { type: Date, default: null },
+    referralRewardSkippedReason: { type: String, default: "" },
     previousPhones: { type: [customerPhoneHistorySchema], default: [] },
     notificationSettings: {
       type: customerNotificationSettingsSchema,
@@ -142,6 +164,9 @@ customerSchema.index(
   { pendingPhone: 1 },
   { unique: true, partialFilterExpression: { pendingPhone: { $type: "string" } } }
 )
+customerSchema.index({ referredByCustomerId: 1, createdAt: -1 })
+customerSchema.index({ referralSignupDeviceId: 1, createdAt: -1 })
+customerSchema.index({ referralSignupIpAddress: 1, createdAt: -1 })
 
 const customerRefreshTokenSessionSchema = new Schema(
   {
@@ -173,6 +198,7 @@ const bkashSandboxPaymentSessionSchema = new Schema(
     orderId: { type: Schema.Types.ObjectId, ref: "Order", default: null },
     usedAt: { type: Date, default: null },
     transactionId: { type: String, default: "" },
+    checkoutSnapshot: { type: Schema.Types.Mixed, default: {} },
     expiresAt: { type: Date, required: true },
     confirmedAt: { type: Date, default: null }
   },
@@ -314,6 +340,9 @@ voucherSchema.index(
   { restaurantId: 1, code: 1 },
   { unique: true, partialFilterExpression: { code: { $type: "string", $ne: "" } } }
 )
+voucherSchema.index({ status: 1, archivedAt: 1, startsAt: 1, endsAt: 1, restaurantId: 1 })
+voucherSchema.index({ status: 1, archivedAt: 1, startsAt: 1, endsAt: 1, scopeType: 1 })
+voucherSchema.index({ selectedRestaurantIds: 1, status: 1, archivedAt: 1 })
 
 const voucherAuditSchema = new Schema(
   {
@@ -364,10 +393,16 @@ const voucherRedemptionSchema = new Schema(
     voucherId: { type: Schema.Types.ObjectId, ref: "Voucher", required: true },
     voucherSnapshot: { type: Schema.Types.Mixed, required: true },
     discountBreakdown: { type: Schema.Types.Mixed, default: {} },
-    appliedAt: { type: Date, default: Date.now }
+    appliedAt: { type: Date, default: Date.now },
+    releasedAt: { type: Date, default: null },
+    releaseReason: { type: String, default: "" }
   },
   { timestamps: true }
 )
+
+voucherRedemptionSchema.index({ voucherId: 1, releasedAt: 1 })
+voucherRedemptionSchema.index({ "voucherSnapshot.customerId": 1, voucherId: 1, releasedAt: 1 })
+voucherRedemptionSchema.index({ orderId: 1, voucherId: 1 }, { unique: true })
 
 export const CustomerModel = mongoose.model("Customer", customerSchema)
 export const CustomerRefreshTokenSessionModel = mongoose.model(

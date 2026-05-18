@@ -16,6 +16,8 @@ const adminNotificationScheduleSchema = new Schema(
     title: { type: String, required: true, trim: true },
     body: { type: String, required: true, trim: true },
     path: { type: String, default: "", trim: true },
+    ctaLabel: { type: String, default: "", trim: true },
+    ctaPath: { type: String, default: "", trim: true },
     notificationType: { type: String, default: "system", trim: true },
     contentType: {
       type: String,

@@ -1,3 +1,5 @@
+import * as React from "react"
+
 import { format } from "date-fns"
 import { CalendarClock, ReceiptText, Wallet, X } from "lucide-react"
 
@@ -36,12 +38,20 @@ export function TransactionDetailsDrawer({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
+  const [now, setNow] = React.useState(() => Date.now())
+
+  React.useEffect(() => {
+    if (open) {
+      setNow(Date.now())
+    }
+  }, [open, transaction?.id])
+
   if (!transaction) return null
 
   const settlementDeltaDays = Math.max(
     0,
     Math.ceil(
-      (new Date(transaction.settlementAvailableAt).getTime() - Date.now()) /
+      (new Date(transaction.settlementAvailableAt).getTime() - now) /
         (1000 * 60 * 60 * 24)
     )
   )
@@ -88,11 +98,11 @@ export function TransactionDetailsDrawer({
 
           <div className="grid gap-4 md:grid-cols-2">
             <Card className="rounded-2xl shadow-none">
-              <CardHeader><CardTitle className="text-base">Gross Amount</CardTitle></CardHeader>
+              <CardHeader><CardTitle className="text-base">Food Sales</CardTitle></CardHeader>
               <CardContent><p className="text-lg font-semibold">{formatPayoutMoney(transaction.grossAmount)}</p></CardContent>
             </Card>
             <Card className="rounded-2xl shadow-none">
-              <CardHeader><CardTitle className="text-base">Net Amount</CardTitle></CardHeader>
+              <CardHeader><CardTitle className="text-base">Owner Earning</CardTitle></CardHeader>
               <CardContent>
                 <p className={`text-lg font-semibold ${transaction.netAmount >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
                   {transaction.netAmount >= 0 ? "+" : ""}
@@ -105,7 +115,7 @@ export function TransactionDetailsDrawer({
               <CardContent><p className="text-sm">-{formatPayoutMoney(transaction.commission)}</p></CardContent>
             </Card>
             <Card className="rounded-2xl shadow-none">
-              <CardHeader><CardTitle className="text-base">Discount Cost</CardTitle></CardHeader>
+              <CardHeader><CardTitle className="text-base">Owner Discount</CardTitle></CardHeader>
               <CardContent><p className="text-sm">-{formatPayoutMoney(transaction.discountCost)}</p></CardContent>
             </Card>
             <Card className="rounded-2xl shadow-none">

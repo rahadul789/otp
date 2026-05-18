@@ -122,8 +122,8 @@ export const historyOrderStatuses: OrderStatus[] = [
 
 export const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
   New: ["Accepted", "Rejected"],
-  Accepted: ["Preparing"],
-  Preparing: ["ReadyForPickup"],
+  Accepted: ["Preparing", "Cancelled"],
+  Preparing: ["ReadyForPickup", "Cancelled"],
   ReadyForPickup: ["PickedUp"],
   PickedUp: ["Delivered"],
   Delivered: [],
@@ -143,8 +143,8 @@ export const actorAllowedTransitions: Record<
 > = {
   owner: {
     New: ["Accepted", "Rejected"],
-    Accepted: ["Preparing"],
-    Preparing: ["ReadyForPickup"],
+    Accepted: ["Preparing", "Cancelled"],
+    Preparing: ["ReadyForPickup", "Cancelled"],
   },
   rider: {
     ReadyForPickup: ["PickedUp"],
@@ -193,7 +193,7 @@ export const orderStatusTimestampKey: Record<OrderStatus, OrderTimestampKey> = {
 }
 
 export function formatOrderMoney(amount: number) {
-  return `${amount}tk`
+  return `${Math.round(amount).toLocaleString()}tk`
 }
 
 export function getOrderItemsCount(order: Order) {

@@ -1,15 +1,29 @@
 import * as Location from "expo-location";
 import { PropsWithChildren, useEffect, useRef } from "react";
 
-import { useUpdateRiderProfileLocationMutation } from "@/src/hooks/use-rider-api";
+import {
+  useRiderLiveTrackingPolicyQuery,
+  useRiderOrdersQuery,
+  useUpdateRiderProfileLocationMutation,
+} from "@/src/hooks/use-rider-api";
+import { normalizeRiderLiveTrackingPolicy } from "@/src/lib/live-tracking-policy";
+import {
+  setRiderBackgroundTrackingOrderId,
+  startRiderBackgroundLocationAsync,
+  stopRiderBackgroundLocationAsync,
+} from "@/src/lib/rider-background-location";
 import { useRiderAuthStore } from "@/src/store/auth-store";
-
-const HEARTBEAT_INTERVAL_MS = 60000;
 
 export function RiderLocationBridge({ children }: PropsWithChildren) {
   const rider = useRiderAuthStore((state) => state.rider);
+  const activeOrdersQuery = useRiderOrdersQuery("active");
+  const trackingPolicyQuery = useRiderLiveTrackingPolicyQuery();
+  const trackingPolicy = normalizeRiderLiveTrackingPolicy(trackingPolicyQuery.data);
   const updateLocationMutation = useUpdateRiderProfileLocationMutation();
   const mutateProfileLocation = updateLocationMutation.mutate;
+  const hasPickedUpOrder = Boolean(
+    activeOrdersQuery.data?.some((order) => order.status === "PickedUp"),
+  );
   const isLocationMutationPendingRef = useRef(false);
   const lastSentAtRef = useRef(0);
 
@@ -18,9 +32,22 @@ export function RiderLocationBridge({ children }: PropsWithChildren) {
   }, [updateLocationMutation.isPending]);
 
   useEffect(() => {
-    if (!rider?.id || rider.isAvailableForAssignments === false || rider.activeTrackingOrderId) {
+    if (!rider?.id || rider.isAvailableForAssignments === false) {
+      void stopRiderBackgroundLocationAsync();
       return;
     }
+
+    if (hasPickedUpOrder) {
+      void setRiderBackgroundTrackingOrderId(null);
+      void startRiderBackgroundLocationAsync({
+        timeIntervalMs: trackingPolicy.updateIntervalSeconds * 1000,
+        distanceIntervalMeters: trackingPolicy.distanceIntervalMeters,
+        notificationBody: "Foodbela is sharing your live delivery location.",
+      });
+      return;
+    }
+
+    void setRiderBackgroundTrackingOrderId(null);
 
     let subscription: Location.LocationSubscription | null = null;
     let isMounted = true;
@@ -34,8 +61,8 @@ export function RiderLocationBridge({ children }: PropsWithChildren) {
       subscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
-          timeInterval: HEARTBEAT_INTERVAL_MS,
-          distanceInterval: 80,
+          timeInterval: trackingPolicy.passiveHeartbeatSeconds * 1000,
+          distanceInterval: Math.max(80, trackingPolicy.distanceIntervalMeters),
         },
         (position) => {
           if (!isMounted || isLocationMutationPendingRef.current) {
@@ -43,7 +70,7 @@ export function RiderLocationBridge({ children }: PropsWithChildren) {
           }
 
           const now = Date.now();
-          if (now - lastSentAtRef.current < HEARTBEAT_INTERVAL_MS) {
+          if (now - lastSentAtRef.current < trackingPolicy.passiveHeartbeatSeconds * 1000) {
             return;
           }
 
@@ -70,10 +97,13 @@ export function RiderLocationBridge({ children }: PropsWithChildren) {
       subscription?.remove();
     };
   }, [
-    rider?.activeTrackingOrderId,
     rider?.id,
     rider?.isAvailableForAssignments,
+    hasPickedUpOrder,
     mutateProfileLocation,
+    trackingPolicy.distanceIntervalMeters,
+    trackingPolicy.passiveHeartbeatSeconds,
+    trackingPolicy.updateIntervalSeconds,
   ]);
 
   return children;

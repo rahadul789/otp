@@ -7,6 +7,7 @@ export type AppBanner = {
   title: string;
   description: string;
   tone: AppBannerTone;
+  emoji?: string;
   path?: string;
   actionLabel?: string;
 };
@@ -17,8 +18,17 @@ type AppBannerStore = {
   dismissBanner: () => void;
 };
 
-export const useAppBannerStore = create<AppBannerStore>(() => ({
+const createBannerId = () =>
+  `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+export const useAppBannerStore = create<AppBannerStore>((set) => ({
   banner: null,
-  showBanner: () => undefined,
-  dismissBanner: () => undefined,
+  showBanner: (banner) =>
+    set({
+      banner: {
+        id: createBannerId(),
+        ...banner,
+      },
+    }),
+  dismissBanner: () => set({ banner: null }),
 }));

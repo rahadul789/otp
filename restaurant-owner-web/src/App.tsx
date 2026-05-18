@@ -19,6 +19,7 @@ import { OrdersProvider } from "@/components/orders/orders-context"
 import { PayoutsProvider } from "@/components/payouts/payouts-context"
 import { PromotionsProvider } from "@/components/promotions/promotions-context"
 import { ReviewsProvider } from "@/components/reviews/reviews-context"
+import { DataActivityIndicator } from "@/components/data-activity-indicator"
 import {
   RestaurantStatusProvider,
   useRestaurantStatus,
@@ -358,6 +359,7 @@ function AppLayout() {
               </div>
             </div>
           </header>
+          <DataActivityIndicator />
           <section className="flex-1 overflow-auto py-4">
             <Outlet />
           </section>
@@ -377,11 +379,7 @@ function SignInRoute() {
   const authBootstrapped = useAppStore((state) => state.authBootstrapped)
 
   if (!authBootstrapped) {
-    return (
-      <PublicPageLayout>
-        <DataPageSkeleton />
-      </PublicPageLayout>
-    )
+    return <div className="min-h-screen bg-background" />
   }
 
   if (ownerAccount.isAuthenticated) {
@@ -408,11 +406,7 @@ function SignUpRoute() {
   const authBootstrapped = useAppStore((state) => state.authBootstrapped)
 
   if (!authBootstrapped) {
-    return (
-      <PublicPageLayout>
-        <DataPageSkeleton />
-      </PublicPageLayout>
-    )
+    return <div className="min-h-screen bg-background" />
   }
 
   if (ownerAccount.isAuthenticated) {
@@ -439,11 +433,7 @@ function VerificationRoute() {
   const authBootstrapped = useAppStore((state) => state.authBootstrapped)
 
   if (!authBootstrapped) {
-    return (
-      <PublicPageLayout>
-        <DataPageSkeleton />
-      </PublicPageLayout>
-    )
+    return <div className="min-h-screen bg-background" />
   }
 
   if (!ownerAccount.isAuthenticated) {
@@ -510,11 +500,7 @@ function OnboardingRoute() {
   const authBootstrapped = useAppStore((state) => state.authBootstrapped)
 
   if (!authBootstrapped) {
-    return (
-      <PublicPageLayout>
-        <DataPageSkeleton />
-      </PublicPageLayout>
-    )
+    return <div className="min-h-screen bg-background" />
   }
 
   if (!ownerAccount.isAuthenticated) {
@@ -685,11 +671,7 @@ function DashboardRoot() {
   const authBootstrapped = useAppStore((state) => state.authBootstrapped)
 
   if (!authBootstrapped) {
-    return (
-      <PublicPageLayout>
-        <DataPageSkeleton />
-      </PublicPageLayout>
-    )
+    return <div className="min-h-screen bg-background" />
   }
 
   if (restaurantLifecycleStatus !== "approved") {

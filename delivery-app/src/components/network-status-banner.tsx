@@ -1,0 +1,76 @@
+import { Ionicons } from "@expo/vector-icons";
+import { StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { useNetworkStore } from "@/src/store/network-store";
+import { palette } from "@/src/theme/palette";
+
+export function NetworkStatusBanner() {
+  const status = useNetworkStore((state) => state.status);
+  const message = useNetworkStore((state) => state.message);
+
+  if (status === "online") return null;
+
+  const isOffline = status === "offline";
+
+  return (
+    <SafeAreaView pointerEvents="none" edges={["top"]} style={styles.safeArea}>
+      <View style={[styles.banner, isOffline ? styles.offline : styles.slow]}>
+        <Ionicons
+          name={isOffline ? "cloud-offline-outline" : "cellular-outline"}
+          size={17}
+          color={isOffline ? "#B42318" : palette.warningText}
+        />
+        <Text style={[styles.text, isOffline ? styles.offlineText : styles.slowText]}>
+          {message}
+        </Text>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 60,
+  },
+  banner: {
+    marginHorizontal: 14,
+    marginTop: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    shadowColor: palette.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
+  },
+  offline: {
+    backgroundColor: "#FFE8E5",
+    borderColor: "#FFC6BE",
+  },
+  slow: {
+    backgroundColor: palette.warningSurface,
+    borderColor: "#FAD99B",
+  },
+  text: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+  },
+  offlineText: {
+    color: "#B42318",
+  },
+  slowText: {
+    color: palette.warningText,
+  },
+});

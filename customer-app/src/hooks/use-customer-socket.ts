@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { connectCustomerSocket, disconnectCustomerSocket, getCustomerSocket } from "@/src/lib/socket-client";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
+import { useAppBannerStore } from "@/src/store/app-banner-store";
 
 type CustomerOrderPayload = {
   _id: string;
@@ -20,6 +21,7 @@ type CustomerOrderPayload = {
     deliveryAddress?: {
       label?: string;
       addressLine?: string;
+      addressDetails?: string;
       latitude?: number | null;
       longitude?: number | null;
     };
@@ -116,6 +118,20 @@ type CustomerSupportPayload = {
   }[];
 };
 
+const LIVE_ORDER_STATUSES = [
+  "New",
+  "Accepted",
+  "Preparing",
+  "ReadyForPickup",
+  "PickedUp",
+];
+
+const HISTORY_ORDER_STATUSES = ["Delivered", "Rejected", "Cancelled"];
+
+function isLiveOrderStatus(status: string) {
+  return LIVE_ORDER_STATUSES.includes(status);
+}
+
 function upsertOrderList(
   current: CustomerOrderPayload[] | undefined,
   nextOrder: CustomerOrderPayload
@@ -133,6 +149,80 @@ function upsertOrderList(
   );
 }
 
+function upsertLiveOrderList(
+  current: CustomerOrderPayload[] | undefined,
+  nextOrder: CustomerOrderPayload
+) {
+  if (!isLiveOrderStatus(nextOrder.status)) {
+    return (current ?? []).filter((order) => order._id !== nextOrder._id);
+  }
+
+  return upsertOrderList(current, nextOrder);
+}
+
+function getOrderBanner(status: string) {
+  switch (status) {
+    case "New":
+      return {
+        tone: "info" as const,
+        emoji: "🧾",
+        title: "Order placed",
+        description: "Your order has been placed successfully.",
+      };
+    case "Accepted":
+      return {
+        tone: "success" as const,
+        emoji: "✅",
+        title: "Order accepted",
+        description: "The restaurant has accepted your order.",
+      };
+    case "Preparing":
+      return {
+        tone: "info" as const,
+        emoji: "👨‍🍳",
+        title: "Food is preparing",
+        description: "Your food is being prepared now.",
+      };
+    case "ReadyForPickup":
+      return {
+        tone: "info" as const,
+        emoji: "🛍️",
+        title: "Ready for pickup",
+        description: "Your order is packed and waiting for the rider.",
+      };
+    case "PickedUp":
+      return {
+        tone: "info" as const,
+        emoji: "🛵",
+        title: "On the way",
+        description: "Your rider picked up the order and is heading to you.",
+      };
+    case "Delivered":
+      return {
+        tone: "success" as const,
+        emoji: "🎉",
+        title: "Delivered",
+        description: "Your food has arrived. Tap to rate your order.",
+      };
+    case "Rejected":
+      return {
+        tone: "warning" as const,
+        emoji: "😕",
+        title: "Order not accepted",
+        description: "The restaurant could not accept your order. Please try another restaurant.",
+      };
+    case "Cancelled":
+      return {
+        tone: "warning" as const,
+        emoji: "⚠️",
+        title: "Order cancelled",
+        description: "Your order was cancelled.",
+      };
+    default:
+      return null;
+  }
+}
+
 function extractOrderIdFromPath(path?: string) {
   if (!path) return null;
   const match = path.match(/\/orders\/([^/?#]+)/);
@@ -142,18 +232,20 @@ function extractOrderIdFromPath(path?: string) {
 export function useCustomerSocketBridge() {
   const queryClient = useQueryClient();
   const customer = useCustomerAuthStore((state) => state.customer);
+  const accessToken = useCustomerAuthStore((state) => state.accessToken);
+  const showBanner = useAppBannerStore((state) => state.showBanner);
   const joinedRef = React.useRef<string | null>(null);
   const appStateRef = React.useRef(AppState.currentState);
 
   React.useEffect(() => {
-    if (!customer?.id) {
+    if (!customer?.id || !accessToken) {
       joinedRef.current = null;
       disconnectCustomerSocket();
       return;
     }
 
-    if (appStateRef.current === "active" && joinedRef.current !== customer.id) {
-      connectCustomerSocket(customer.id);
+    if (appStateRef.current === "active") {
+      connectCustomerSocket(customer.id, accessToken);
       joinedRef.current = customer.id;
     }
 
@@ -164,7 +256,31 @@ export function useCustomerSocketBridge() {
       queryClient.setQueryData<CustomerOrderPayload[]>(["customer", "orders"], (current) =>
         upsertOrderList(current, payload)
       );
+      queryClient.setQueryData<CustomerOrderPayload[]>(["customer", "orders", "live"], (current) =>
+        upsertLiveOrderList(current, payload)
+      );
       queryClient.setQueryData(["customer", "orders", payload._id], payload);
+      queryClient.setQueryData<CustomerOrderPayload | null>(
+        ["customer", "orders", "active"],
+        (current) =>
+          isLiveOrderStatus(payload.status)
+            ? payload
+            : current?._id === payload._id
+              ? null
+              : current ?? null,
+      );
+      if (HISTORY_ORDER_STATUSES.includes(payload.status)) {
+        queryClient.invalidateQueries({ queryKey: ["customer", "orders", "history"] });
+      }
+
+      const banner = getOrderBanner(payload.status);
+      if (banner) {
+        showBanner({
+          ...banner,
+          path: `/orders/${payload._id}/tracking`,
+          actionLabel: payload.status === "Delivered" ? "Rate order" : "View order",
+        });
+      }
     };
 
     const handleNotificationCreated = (notification?: CustomerNotificationPayload) => {
@@ -174,7 +290,8 @@ export function useCustomerSocketBridge() {
       const orderId = extractOrderIdFromPath(notification?.path);
       if (orderId) {
         queryClient.invalidateQueries({ queryKey: ["customer", "orders", orderId] });
-        queryClient.invalidateQueries({ queryKey: ["customer", "orders"] });
+        queryClient.invalidateQueries({ queryKey: ["customer", "orders", "active"] });
+        queryClient.invalidateQueries({ queryKey: ["customer", "orders", "live"] });
       }
 
       if (typeof notification?.path === "string" && notification.path.includes("/support-chat")) {
@@ -191,9 +308,10 @@ export function useCustomerSocketBridge() {
       appStateRef.current = nextState;
 
       if (nextState === "active") {
-        connectCustomerSocket(customer.id);
+        connectCustomerSocket(customer.id, accessToken);
         joinedRef.current = customer.id;
         ensureJoined();
+        queryClient.invalidateQueries({ queryKey: ["customer", "orders"] });
         queryClient.invalidateQueries({ queryKey: ["customer", "support-case"] });
         return;
       }
@@ -217,5 +335,5 @@ export function useCustomerSocketBridge() {
       socket.off("customer.notification.created", handleNotificationCreated);
       socket.off("customer.support.updated", handleSupportUpdated);
     };
-  }, [customer?.id, queryClient]);
+  }, [accessToken, customer?.id, queryClient, showBanner]);
 }

@@ -25,7 +25,7 @@ export function TermsAndConditionsPage() {
                 </div>
                 <div>
                   <p className="text-lg font-semibold">
-                    {branding?.platformName ?? "Foodex"}
+                    {branding?.platformName ?? "Foodbela"}
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {branding?.tagline ?? "Eat & Smile"}

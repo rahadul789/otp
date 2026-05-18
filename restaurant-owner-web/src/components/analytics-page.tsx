@@ -1,15 +1,9 @@
 import * as React from "react"
 
 import {
-  endOfDay,
-  endOfMonth,
   format,
   isWithinInterval,
-  startOfDay,
-  startOfMonth,
   startOfWeek,
-  subDays,
-  subMilliseconds,
 } from "date-fns"
 import {
   Area,
@@ -29,6 +23,7 @@ import {
   BadgeDollarSign,
   BarChart3,
   CreditCard,
+  LoaderCircle,
   RotateCcw,
   Repeat2,
   ShoppingBag,
@@ -53,6 +48,8 @@ import { useCategories } from "@/components/categories/categories-context"
 import { useMenuItems } from "@/components/menu/menu-items-context"
 import {
   defaultOrderDateFilter,
+  getOrderDateFilterInterval,
+  getPreviousOrderDateFilterInterval,
   OrderDateFilter,
   type OrderDateFilterValue,
 } from "@/components/orders/order-date-filter"
@@ -75,12 +72,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { calculateEarningsSummary } from "@/domain/financials"
 import { formatHourLabel12 } from "@/lib/time"
-import {
-  mapOwnerOrder,
-  type OwnerListResponse,
-  type OwnerOrderResponse,
-} from "@/lib/backend-mappers"
-import { useOwnerAnalyticsOrdersQuery } from "@/hooks/use-owner-api"
+import { useOwnerAnalyticsOverviewQuery } from "@/hooks/use-owner-api"
 import { useAppStore } from "@/store/app-store"
 import {
   Table,
@@ -121,50 +113,6 @@ function AnalyticsSkeleton() {
   )
 }
 
-function getDateInterval(filter: OrderDateFilterValue) {
-  const now = new Date()
-
-  switch (filter.preset) {
-    case "today":
-      return { start: startOfDay(now), end: endOfDay(now) }
-    case "yesterday": {
-      const yesterday = subDays(now, 1)
-      return { start: startOfDay(yesterday), end: endOfDay(yesterday) }
-    }
-    case "last7Days":
-      return { start: startOfDay(subDays(now, 6)), end: endOfDay(now) }
-    case "last30Days":
-      return { start: startOfDay(subDays(now, 29)), end: endOfDay(now) }
-    case "thisWeek":
-      return {
-        start: startOfWeek(now, { weekStartsOn: 1 }),
-        end: endOfDay(now),
-      }
-    case "thisMonth":
-      return {
-        start: startOfMonth(now),
-        end: endOfMonth(now),
-      }
-    case "custom":
-      return {
-        start: startOfDay(filter.range?.from ?? now),
-        end: endOfDay(filter.range?.to ?? filter.range?.from ?? now),
-      }
-    default:
-      return { start: startOfDay(now), end: endOfDay(now) }
-  }
-}
-
-function getPreviousInterval(filter: OrderDateFilterValue) {
-  const current = getDateInterval(filter)
-  const duration = current.end.getTime() - current.start.getTime()
-
-  return {
-    start: new Date(current.start.getTime() - duration - 1),
-    end: subMilliseconds(current.start, 1),
-  }
-}
-
 function toPercent(current: number, previous: number) {
   if (previous === 0) return current === 0 ? null : 100
   return Number((((current - previous) / previous) * 100).toFixed(1))
@@ -176,11 +124,7 @@ function getTrendDirection(percent: number | null): "up" | "down" | "flat" {
 }
 
 function formatCompactMoney(amount: number) {
-  if (amount >= 1000) {
-    return `${(amount / 1000).toFixed(amount >= 10000 ? 0 : 1)}k tk`
-  }
-
-  return `${amount} tk`
+  return `${Math.round(amount).toLocaleString()} tk`
 }
 
 function formatMetricValue(key: AnalyticsKpi["key"], value: number) {
@@ -189,7 +133,7 @@ function formatMetricValue(key: AnalyticsKpi["key"], value: number) {
   }
 
   if (key === "aov") {
-    return `${Math.round(value)} tk`
+    return `${Math.round(value).toLocaleString()} tk`
   }
 
   return formatCompactMoney(value)
@@ -353,7 +297,6 @@ export function AnalyticsPage() {
   const { reviews } = useReviews()
   const { payouts, payoutTransactions } = usePayouts()
 
-  const [isLoading, setIsLoading] = React.useState(true)
   const [dateFilter, setDateFilter] = React.useState<OrderDateFilterValue>({
     ...defaultOrderDateFilter,
     preset: "last7Days",
@@ -373,34 +316,43 @@ export function AnalyticsPage() {
     paymentFilter === "all" &&
     categoryFilter === "all" &&
     orderTypeFilter === "all"
-  const analyticsOrderQueryParams = React.useMemo(
+  const currentInterval = React.useMemo(
+    () => getOrderDateFilterInterval(dateFilter),
+    [dateFilter]
+  )
+  const previousInterval = React.useMemo(
+    () => getPreviousOrderDateFilterInterval(dateFilter),
+    [dateFilter]
+  )
+  const analyticsOverviewQueryParams = React.useMemo(
     () => ({
       paymentMethod: paymentFilter !== "all" ? paymentFilter : undefined,
-      preset: dateFilter.preset,
-      from: dateFilter.preset === "custom" ? dateFilter.range?.from?.toISOString() : undefined,
-      to: dateFilter.preset === "custom" ? dateFilter.range?.to?.toISOString() : undefined,
+      orderType: orderTypeFilter !== "all" ? orderTypeFilter : undefined,
+      categoryId: categoryFilter !== "all" ? categoryFilter : undefined,
+      preset: "custom",
+      from: format(currentInterval.start, "yyyy-MM-dd"),
+      to: format(currentInterval.end, "yyyy-MM-dd"),
     }),
-    [dateFilter, paymentFilter]
+    [
+      categoryFilter,
+      currentInterval.end,
+      currentInterval.start,
+      orderTypeFilter,
+      paymentFilter,
+    ]
   )
-  const ordersQuery = useOwnerAnalyticsOrdersQuery(
+  const analyticsOverviewQuery = useOwnerAnalyticsOverviewQuery(
     ownerAccount.isAuthenticated,
-    analyticsOrderQueryParams
+    analyticsOverviewQueryParams
   )
-  const combinedLoading = isLoading || ordersQuery.isPending
+  const analyticsOverview = analyticsOverviewQuery.data
+  const initialLoading =
+    analyticsOverviewQuery.isPending && !analyticsOverview
+  const isRefreshing = analyticsOverviewQuery.isFetching && !initialLoading
 
-  React.useEffect(() => {
-    const timeout = window.setTimeout(() => setIsLoading(false), 350)
-    return () => window.clearTimeout(timeout)
-  }, [])
-
-  const orders = React.useMemo(() => {
-    if (ordersQuery.data) {
-      return (
-        ordersQuery.data as OwnerListResponse<OwnerOrderResponse>
-      ).items.map(mapOwnerOrder)
-    }
-    return storeOrders
-  }, [ordersQuery.data, storeOrders])
+  const orders = storeOrders
+  const analyticsPayouts = payouts
+  const analyticsPayoutTransactions = payoutTransactions
 
   const menuItemByName = React.useMemo(
     () => new Map(menuItems.map((item) => [item.name, item])),
@@ -410,15 +362,6 @@ export function AnalyticsPage() {
   const orderById = React.useMemo(
     () => new Map(orders.map((order) => [order.id, order])),
     [orders]
-  )
-
-  const currentInterval = React.useMemo(
-    () => getDateInterval(dateFilter),
-    [dateFilter]
-  )
-  const previousInterval = React.useMemo(
-    () => getPreviousInterval(dateFilter),
-    [dateFilter]
   )
 
   const matchesOrderFiltersWithoutDate = React.useCallback(
@@ -461,7 +404,10 @@ export function AnalyticsPage() {
 
   const matchesDeliveredFilters = React.useCallback(
     (order: Order, interval = currentInterval) => {
-      if (order.currentStatus !== "Delivered" || !order.timestamps.deliveredAt) {
+      if (
+        order.currentStatus !== "Delivered" ||
+        !order.timestamps.deliveredAt
+      ) {
         return false
       }
 
@@ -492,7 +438,9 @@ export function AnalyticsPage() {
 
   const previousDeliveredOrders = React.useMemo(
     () =>
-      orders.filter((order) => matchesDeliveredFilters(order, previousInterval)),
+      orders.filter((order) =>
+        matchesDeliveredFilters(order, previousInterval)
+      ),
     [matchesDeliveredFilters, orders, previousInterval]
   )
   const orderAggregate = React.useMemo(() => {
@@ -521,53 +469,57 @@ export function AnalyticsPage() {
       menuMap: new Map(orderAggregate.menuMap),
     }
 
-    return filteredDeliveredOrders.reduce<OrderAggregate>((aggregate, order) => {
-      aggregate.deliveredCount += 1
-      aggregate.deliveredRevenue += order.total
+    return filteredDeliveredOrders.reduce<OrderAggregate>(
+      (aggregate, order) => {
+        aggregate.deliveredCount += 1
+        aggregate.deliveredRevenue += order.total
 
-      const existingCustomer = aggregate.customerMap.get(order.customer.phone)
-      if (existingCustomer) {
-        existingCustomer.orders += 1
-        existingCustomer.revenue += order.total
-      } else {
-        aggregate.customerMap.set(order.customer.phone, {
-          name: order.customer.name,
-          orders: 1,
-          revenue: order.total,
-        })
-      }
-
-      if (order.discount > 0) {
-        aggregate.discountedOrdersCount += 1
-        aggregate.discountedRevenue += order.total
-        aggregate.discountGiven += order.discount
-      }
-
-      order.items.forEach((item) => {
-        const menuItem = menuItemByName.get(item.name)
-        const key = menuItem?.id ?? item.name
-        const existingMenuItem = aggregate.menuMap.get(key)
-        const row =
-          existingMenuItem ??
-          ({
-            name: item.name,
-            categoryName: menuItem?.categoryName ?? "Unassigned",
-            quantitySold: 0,
-            revenue: 0,
-          } satisfies MenuPerformanceRow)
-
-        row.quantitySold += item.quantity
-        row.revenue +=
-          item.quantity *
-          (item.unitPrice + item.addOns.reduce((sum, addOn) => sum + addOn.price, 0))
-
-        if (!existingMenuItem) {
-          aggregate.menuMap.set(key, row)
+        const existingCustomer = aggregate.customerMap.get(order.customer.phone)
+        if (existingCustomer) {
+          existingCustomer.orders += 1
+          existingCustomer.revenue += order.total
+        } else {
+          aggregate.customerMap.set(order.customer.phone, {
+            name: order.customer.name,
+            orders: 1,
+            revenue: order.total,
+          })
         }
-      })
 
-      return aggregate
-    }, aggregateSeed)
+        if (order.discount > 0) {
+          aggregate.discountedOrdersCount += 1
+          aggregate.discountedRevenue += order.total
+          aggregate.discountGiven += order.discount
+        }
+
+        order.items.forEach((item) => {
+          const menuItem = menuItemByName.get(item.name)
+          const key = menuItem?.id ?? item.name
+          const existingMenuItem = aggregate.menuMap.get(key)
+          const row =
+            existingMenuItem ??
+            ({
+              name: item.name,
+              categoryName: menuItem?.categoryName ?? "Unassigned",
+              quantitySold: 0,
+              revenue: 0,
+            } satisfies MenuPerformanceRow)
+
+          row.quantitySold += item.quantity
+          row.revenue +=
+            item.quantity *
+            (item.unitPrice +
+              item.addOns.reduce((sum, addOn) => sum + addOn.price, 0))
+
+          if (!existingMenuItem) {
+            aggregate.menuMap.set(key, row)
+          }
+        })
+
+        return aggregate
+      },
+      aggregateSeed
+    )
   }, [filteredDeliveredOrders, menuItemByName, orderAggregate])
 
   const previousOrderAggregate = React.useMemo(() => {
@@ -587,44 +539,47 @@ export function AnalyticsPage() {
       menuMap: new Map(previousOrderAggregate.menuMap),
     }
 
-    return previousDeliveredOrders.reduce<OrderAggregate>((aggregate, order) => {
-      aggregate.deliveredCount += 1
-      aggregate.deliveredRevenue += order.total
+    return previousDeliveredOrders.reduce<OrderAggregate>(
+      (aggregate, order) => {
+        aggregate.deliveredCount += 1
+        aggregate.deliveredRevenue += order.total
 
-      const existingCustomer = aggregate.customerMap.get(order.customer.phone)
-      if (existingCustomer) {
-        existingCustomer.orders += 1
-        existingCustomer.revenue += order.total
-      } else {
-        aggregate.customerMap.set(order.customer.phone, {
-          name: order.customer.name,
-          orders: 1,
-          revenue: order.total,
-        })
-      }
+        const existingCustomer = aggregate.customerMap.get(order.customer.phone)
+        if (existingCustomer) {
+          existingCustomer.orders += 1
+          existingCustomer.revenue += order.total
+        } else {
+          aggregate.customerMap.set(order.customer.phone, {
+            name: order.customer.name,
+            orders: 1,
+            revenue: order.total,
+          })
+        }
 
-      return aggregate
-    }, aggregateSeed)
+        return aggregate
+      },
+      aggregateSeed
+    )
   }, [previousDeliveredOrders, previousOrderAggregate])
 
   const filteredTransactions = React.useMemo(
     () =>
-      payoutTransactions.filter((transaction) => {
+      analyticsPayoutTransactions.filter((transaction) => {
         const order = orderById.get(transaction.orderId)
         if (transaction.type !== "earning" || !order) return false
         return matchesDeliveredFilters(order)
       }),
-    [matchesDeliveredFilters, orderById, payoutTransactions]
+    [analyticsPayoutTransactions, matchesDeliveredFilters, orderById]
   )
 
   const previousTransactions = React.useMemo(
     () =>
-      payoutTransactions.filter((transaction) => {
+      analyticsPayoutTransactions.filter((transaction) => {
         const order = orderById.get(transaction.orderId)
         if (transaction.type !== "earning" || !order) return false
         return matchesDeliveredFilters(order, previousInterval)
       }),
-    [matchesDeliveredFilters, orderById, payoutTransactions, previousInterval]
+    [analyticsPayoutTransactions, matchesDeliveredFilters, orderById, previousInterval]
   )
 
   const filteredReviews = React.useMemo(
@@ -661,7 +616,8 @@ export function AnalyticsPage() {
     return filteredReviews.reduce<ReviewAggregate>((aggregate, review) => {
       aggregate.total += 1
       aggregate.ratingSum += review.rating
-      aggregate.counts[review.rating] = (aggregate.counts[review.rating] ?? 0) + 1
+      aggregate.counts[review.rating] =
+        (aggregate.counts[review.rating] ?? 0) + 1
       if (review.rating >= 4) aggregate.positive += 1
       if (review.rating <= 2) aggregate.negative += 1
       return aggregate
@@ -670,10 +626,10 @@ export function AnalyticsPage() {
 
   const filteredPayouts = React.useMemo(
     () =>
-      payouts.filter((payout) =>
+      analyticsPayouts.filter((payout) =>
         isWithinInterval(new Date(payout.createdAt), currentInterval)
       ),
-    [currentInterval, payouts]
+    [analyticsPayouts, currentInterval]
   )
 
   const customerRows = React.useMemo(
@@ -711,25 +667,47 @@ export function AnalyticsPage() {
   )
 
   const stats = React.useMemo(() => {
-    const totalOrders = orderAggregate.totalOrders
-    const totalRevenue = enrichedOrderAggregate.deliveredRevenue
-    const netEarnings = filteredTransactions.reduce(
-      (sum, transaction) =>
-        transaction.type === "payout" ? sum : sum + transaction.netAmount,
-      0
-    )
+    const totalOrders =
+      analyticsOverview?.metrics.totalOrders ?? orderAggregate.totalOrders
+    const totalRevenue =
+      analyticsOverview?.metrics.deliveredRevenue ??
+      enrichedOrderAggregate.deliveredRevenue
+    const netEarnings =
+      analyticsOverview?.metrics.netEarnings ??
+      filteredTransactions.reduce(
+        (sum, transaction) =>
+          transaction.type === "payout" ? sum : sum + transaction.netAmount,
+        0
+      )
     const avgOrderValue =
-      enrichedOrderAggregate.deliveredCount > 0
+      analyticsOverview?.metrics.averageOrderValue ??
+      (enrichedOrderAggregate.deliveredCount > 0
         ? totalRevenue / enrichedOrderAggregate.deliveredCount
-        : 0
+        : 0)
 
-    const previousTotalOrders = previousOrderAggregate.totalOrders
-    const previousRevenue = enrichedPreviousOrderAggregate.deliveredRevenue
-    const previousNet = previousTransactions.reduce(
-      (sum, transaction) =>
-        transaction.type === "payout" ? sum : sum + transaction.netAmount,
-      0
-    )
+    const previousTotalOrders =
+      analyticsOverview?.metrics.previousTotalOrders ??
+      previousOrderAggregate.totalOrders
+    const previousRevenue =
+      analyticsOverview?.metrics.previousDeliveredRevenue ??
+      enrichedPreviousOrderAggregate.deliveredRevenue
+    const previousNet =
+      analyticsOverview?.metrics.previousNetEarnings ??
+      previousTransactions.reduce(
+        (sum, transaction) =>
+          transaction.type === "payout" ? sum : sum + transaction.netAmount,
+        0
+      )
+    const uniqueCustomers =
+      analyticsOverview?.metrics.uniqueCustomers ?? customerRows.length
+    const previousUniqueCustomers =
+      analyticsOverview?.metrics.previousUniqueCustomers ??
+      previousCustomerRows.length
+    const repeatCustomers =
+      analyticsOverview?.metrics.repeatCustomers ?? repeatCustomerCount
+    const previousRepeatCustomers =
+      analyticsOverview?.metrics.previousRepeatCustomers ??
+      previousRepeatCustomerCount
 
     const metricConfig = [
       {
@@ -762,14 +740,14 @@ export function AnalyticsPage() {
       {
         key: "customers",
         label: "Total Customers",
-        current: customerRows.length,
-        previous: previousCustomerRows.length,
+        current: uniqueCustomers,
+        previous: previousUniqueCustomers,
       },
       {
         key: "repeat",
         label: "Repeat Customers",
-        current: repeatCustomerCount,
-        previous: previousRepeatCustomerCount,
+        current: repeatCustomers,
+        previous: previousRepeatCustomers,
       },
     ] as const
 
@@ -785,6 +763,7 @@ export function AnalyticsPage() {
       } satisfies AnalyticsKpi
     })
   }, [
+    analyticsOverview,
     customerRows.length,
     enrichedOrderAggregate,
     enrichedPreviousOrderAggregate,
@@ -798,8 +777,27 @@ export function AnalyticsPage() {
   ])
 
   const orderSeries = React.useMemo<OrderSeriesPoint[]>(
-    () =>
-      groupBySeries(
+    () => {
+      if (analyticsOverview) {
+        if (granularity === "daily") {
+          return analyticsOverview.orderSeries.map((point) => ({
+            label: point.label,
+            orders: point.orders,
+          }))
+        }
+
+        return groupBySeries(
+          analyticsOverview.orderSeries,
+          granularity,
+          (point) => new Date(`${point.date}T00:00:00+06:00`),
+          () => ({ orders: 0 }),
+          (seed, point) => {
+            seed.orders += point.orders
+          }
+        )
+      }
+
+      return groupBySeries(
         filteredOrders,
         granularity,
         (order) => new Date(order.timestamps.placedAt),
@@ -807,19 +805,23 @@ export function AnalyticsPage() {
         (seed) => {
           seed.orders += 1
         }
-      ),
-    [filteredOrders, granularity]
+      )
+    },
+    [analyticsOverview, filteredOrders, granularity]
   )
 
   const peakHours = React.useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, hour) => {
+    () => {
+      if (analyticsOverview) return analyticsOverview.peakHours
+
+      return Array.from({ length: 24 }, (_, hour) => {
         const count = orderAggregate.hourCounts[hour] ?? 0
         return { label: formatHourLabel12(hour), orders: count }
       })
         .filter((entry) => entry.orders > 0)
-        .sort((a, b) => b.orders - a.orders),
-    [orderAggregate.hourCounts]
+        .sort((a, b) => b.orders - a.orders)
+    },
+    [analyticsOverview, orderAggregate.hourCounts]
   )
 
   const statusPerformance = React.useMemo(() => {
@@ -837,7 +839,10 @@ export function AnalyticsPage() {
     const rows = Object.entries(orderStatusLabels).map(([status, label]) => ({
       status,
       label,
-      count: orderAggregate.statusCounts[status] ?? 0,
+      count:
+        analyticsOverview?.statusCounts[status] ??
+        orderAggregate.statusCounts[status] ??
+        0,
       color: statusColors[status] ?? "#64748b",
     }))
 
@@ -847,17 +852,21 @@ export function AnalyticsPage() {
       rows,
       max,
     }
-  }, [orderAggregate.statusCounts])
+  }, [analyticsOverview, orderAggregate.statusCounts])
 
   const weekdayOrders = React.useMemo(() => {
+    if (analyticsOverview) return analyticsOverview.weekdayOrders
+
     const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     return labels.map((label, index) => ({
       label,
       orders: orderAggregate.weekdayCounts[index] ?? 0,
     }))
-  }, [orderAggregate.weekdayCounts])
+  }, [analyticsOverview, orderAggregate.weekdayCounts])
 
   const customerInsights = React.useMemo(() => {
+    if (analyticsOverview) return analyticsOverview.customerInsights
+
     return {
       unique: customerRows.length,
       repeat: repeatCustomerCount,
@@ -875,9 +884,11 @@ export function AnalyticsPage() {
         { name: "Repeat", value: repeatCustomerCount, color: "#10b981" },
       ],
     }
-  }, [customerRows, repeatCustomerCount])
+  }, [analyticsOverview, customerRows, repeatCustomerCount])
 
   const menuPerformance = React.useMemo(() => {
+    if (analyticsOverview) return analyticsOverview.menuPerformance
+
     const lowPerformers = [...menuRows]
       .sort((a, b) => a.quantitySold - b.quantitySold)
       .slice(0, 3)
@@ -898,7 +909,7 @@ export function AnalyticsPage() {
     ).sort((a, b) => b.revenue - a.revenue)
 
     return { rows: menuRows, lowPerformers, categories }
-  }, [menuRows])
+  }, [analyticsOverview, menuRows])
 
   const voucherImpact = React.useMemo(() => {
     const activeVouchers = vouchers.filter((voucher) => {
@@ -908,18 +919,33 @@ export function AnalyticsPage() {
     }).length
 
     return {
-      ordersUsingVouchers: enrichedOrderAggregate.discountedOrdersCount,
-      discountGiven: enrichedOrderAggregate.discountGiven,
-      revenueFromDiscounted: enrichedOrderAggregate.discountedRevenue,
+      ordersUsingVouchers:
+        analyticsOverview?.metrics.discountedOrdersCount ??
+        enrichedOrderAggregate.discountedOrdersCount,
+      discountGiven:
+        analyticsOverview?.metrics.discountGiven ??
+        enrichedOrderAggregate.discountGiven,
+      revenueFromDiscounted:
+        analyticsOverview?.metrics.discountedRevenue ??
+        enrichedOrderAggregate.discountedRevenue,
       activeVouchers,
       discountedRate:
-        enrichedOrderAggregate.deliveredCount > 0
-          ? (enrichedOrderAggregate.discountedOrdersCount /
-              enrichedOrderAggregate.deliveredCount) *
+        (analyticsOverview?.metrics.deliveredCount ??
+          enrichedOrderAggregate.deliveredCount) > 0
+          ? ((analyticsOverview?.metrics.discountedOrdersCount ??
+              enrichedOrderAggregate.discountedOrdersCount) /
+              (analyticsOverview?.metrics.deliveredCount ??
+                enrichedOrderAggregate.deliveredCount)) *
             100
           : 0,
     }
-  }, [currentInterval.end, currentInterval.start, enrichedOrderAggregate, vouchers])
+  }, [
+    analyticsOverview,
+    currentInterval.end,
+    currentInterval.start,
+    enrichedOrderAggregate,
+    vouchers,
+  ])
 
   const ratingInsights = React.useMemo(() => {
     const total = reviewAggregate.total
@@ -956,8 +982,9 @@ export function AnalyticsPage() {
   }, [filteredReviews, reviewAggregate])
 
   const payoutInsights = React.useMemo(() => {
+    if (analyticsOverview) return analyticsOverview.payoutInsights
     return calculateEarningsSummary(filteredTransactions, filteredPayouts)
-  }, [filteredPayouts, filteredTransactions])
+  }, [analyticsOverview, filteredPayouts, filteredTransactions])
 
   const safeMenuPageCount = Math.max(
     1,
@@ -987,7 +1014,7 @@ export function AnalyticsPage() {
     return { bestDay, topItem, peakHour }
   }, [menuPerformance.rows, peakHours, weekdayOrders])
 
-  if (combinedLoading) {
+  if (initialLoading) {
     return <AnalyticsSkeleton />
   }
 
@@ -1004,7 +1031,14 @@ export function AnalyticsPage() {
   >
 
   return (
-    <div className="space-y-4 px-4 lg:px-6">
+    <div className="relative space-y-4 px-4 lg:px-6">
+      {isRefreshing ? (
+        <div className="pointer-events-none fixed right-6 top-20 z-40 inline-flex items-center gap-2 rounded-full border bg-background/95 px-3 py-2 text-sm font-medium text-muted-foreground shadow-sm backdrop-blur">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+          Updating analytics
+        </div>
+      ) : null}
+
       <div className="rounded-2xl border bg-card p-4 shadow-sm">
         <div className="flex flex-col gap-3 xl:flex-row xl:flex-wrap">
           <OrderDateFilter value={dateFilter} onChange={setDateFilter} />

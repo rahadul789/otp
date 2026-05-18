@@ -1,9 +1,6 @@
 import { useRiderAuthStore, type RiderProfile } from "@/src/store/auth-store";
-import { setDeliveryNetworkOnline } from "@/src/store/network-store";
-
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:5000/api/v1";
+import { setDeliveryNetworkOnline, useNetworkStore } from "@/src/store/network-store";
+import { API_BASE_URL } from "@/src/config/api";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -76,7 +73,9 @@ async function refreshRiderSession() {
   }
 
   if (!response.ok) {
-    useRiderAuthStore.getState().clearSession();
+    if (response.status === 401 || response.status === 403) {
+      useRiderAuthStore.getState().clearSession();
+    }
     return false;
   }
 
@@ -98,6 +97,11 @@ async function refreshRiderSession() {
 async function apiRequest<T>(path: string, init?: RequestInit, allowRetry = true) {
   const { accessToken } = useRiderAuthStore.getState();
   const headers = new Headers(init?.headers ?? {});
+  let slowTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    useNetworkStore
+      .getState()
+      .markSlow("Connection is taking longer than usual. We are still trying.");
+  }, 6000);
 
   if (!headers.has("Content-Type") && init?.body) {
     headers.set("Content-Type", "application/json");
@@ -113,11 +117,20 @@ async function apiRequest<T>(path: string, init?: RequestInit, allowRetry = true
       ...init,
       headers,
     });
+    if (slowTimer) {
+      clearTimeout(slowTimer);
+      slowTimer = null;
+    }
     setDeliveryNetworkOnline(true);
   } catch (error) {
+    if (slowTimer) {
+      clearTimeout(slowTimer);
+      slowTimer = null;
+    }
     if (isLikelyNetworkError(error)) {
-      setDeliveryNetworkOnline(false);
-      throw new Error("You are offline. Reconnect and try again.");
+      const message = "You appear to be offline. Reconnect and try again.";
+      useNetworkStore.getState().markOffline(message);
+      throw new Error(message);
     }
     throw error;
   }

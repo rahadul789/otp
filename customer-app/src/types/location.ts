@@ -8,6 +8,7 @@ export type SavedLocation = {
   id: string;
   label: string;
   address: string;
+  addressDetails?: string;
   latitude: number;
   longitude: number;
   source: "gps" | "manual" | "saved";

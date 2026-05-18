@@ -55,7 +55,7 @@ export function AuthShell({
               <Store className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-lg font-semibold">Foodex</p>
+              <p className="text-lg font-semibold">Foodbela</p>
               <p className="text-sm text-muted-foreground">Eat & Smile</p>
             </div>
           </div>
@@ -110,7 +110,7 @@ export function AuthShell({
                 <Building2 className="h-5 w-5" />
               </div>
               <div>
-                <p className="text-lg font-semibold">Foodex</p>
+                <p className="text-lg font-semibold">Foodbela</p>
                 <p className="text-sm text-muted-foreground">Eat & Smile</p>
               </div>
             </Link>

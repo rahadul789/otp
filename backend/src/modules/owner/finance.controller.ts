@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from "../../common/middleware/auth"
 import { asyncHandler } from "../../common/utils/async-handler"
 import { sendSuccess } from "../../common/utils/api-response"
 import {
+  getAnalyticsOverview,
   getDashboardSummary,
   getPayoutSummary,
   listPayoutHistory,
@@ -31,15 +32,21 @@ const payoutMethodUpdateSchema = z.discriminatedUnion("type", [
 ])
 
 const payoutRequestSchema = z.object({
-  amount: z.number().positive()
+  amount: z.number().int().positive()
 })
 
 const dashboardSummaryQuerySchema = z.object({
   preset: z
-    .enum(["today", "yesterday", "last7Days", "last30Days", "thisWeek", "thisMonth", "custom"])
+    .enum(["today", "yesterday", "last7Days", "last30Days", "last90Days", "thisWeek", "thisMonth", "lastMonth", "lifetime", "custom"])
     .optional(),
   from: z.string().optional(),
   to: z.string().optional()
+})
+
+const analyticsOverviewQuerySchema = dashboardSummaryQuerySchema.extend({
+  paymentMethod: z.enum(["Cash", "Bkash"]).optional(),
+  orderType: z.enum(["delivery", "pickup"]).optional(),
+  categoryId: z.string().optional()
 })
 
 const payoutListQuerySchema = z.object({
@@ -51,7 +58,7 @@ const payoutListQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   page: z.coerce.number().int().min(1).optional(),
-  pageSize: z.coerce.number().int().min(1).max(100).optional()
+  pageSize: z.coerce.number().int().min(1).max(500).optional()
 })
 
 function getOwnerId(req: AuthenticatedRequest) {
@@ -155,6 +162,22 @@ export const getOwnerDashboardSummary = asyncHandler(
       preset: query.preset,
       from: query.from,
       to: query.to
+    })
+    return sendSuccess(res, { data })
+  }
+)
+
+export const getOwnerAnalyticsOverview = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const query = analyticsOverviewQuerySchema.parse(req.query)
+    const data = await getAnalyticsOverview({
+      ownerId: getOwnerId(req),
+      preset: query.preset,
+      from: query.from,
+      to: query.to,
+      paymentMethod: query.paymentMethod,
+      orderType: query.orderType,
+      categoryId: query.categoryId
     })
     return sendSuccess(res, { data })
   }

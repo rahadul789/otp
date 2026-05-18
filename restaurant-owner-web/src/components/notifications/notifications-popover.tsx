@@ -39,7 +39,7 @@ export function NotificationsPopover() {
 
     try {
       await markAllReadMutation.mutateAsync()
-    } catch (error) {
+    } catch {
       setNotifications(previous)
     }
   }
@@ -60,7 +60,7 @@ export function NotificationsPopover() {
 
     try {
       await markReadMutation.mutateAsync(id)
-    } catch (error) {
+    } catch {
       setNotifications(previous)
     } finally {
       setPendingNotificationId(null)

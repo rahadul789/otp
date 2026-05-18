@@ -17,7 +17,10 @@ import { attachAuthUser } from "./common/middleware/auth";
 import { requestMonitorMiddleware } from "./common/middleware/request-monitor";
 
 function isRoutineRequestLog(req: express.Request) {
-  if (req.method === "POST" && /^\/api\/v1\/rider\/orders\/[^/]+\/location$/.test(req.path)) {
+  if (
+    req.method === "POST" &&
+    /^\/api\/v1\/rider\/orders\/[^/]+\/location$/.test(req.path)
+  ) {
     return true;
   }
   if (req.method === "PATCH" && req.path === "/api/v1/rider/profile/location") {
@@ -43,6 +46,7 @@ export function createApp() {
         env.ADMIN_PANEL_ORIGIN,
         env.CUSTOMER_APP,
         env.DELIVERY_APP,
+        env.RESTAURANT_APP,
       ],
       credentials: true,
     }),
@@ -64,21 +68,23 @@ export function createApp() {
       },
     }),
   );
-  app.use(
-    rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: 300,
-      standardHeaders: true,
-      legacyHeaders: false,
-      skip: (req) =>
-        (req.method === "POST" &&
-          /^\/api\/v1\/rider\/orders\/[^/]+\/location$/.test(req.path)) ||
-        (req.method === "POST" &&
-          req.path === `${env.API_PREFIX}/customer/analytics/events`) ||
-        (req.method === "POST" &&
-          req.path === `${env.API_PREFIX}/media/upload-signature`),
-    }),
-  );
+  if (env.RATE_LIMIT_ENABLED) {
+    app.use(
+      rateLimit({
+        windowMs: env.RATE_LIMIT_WINDOW_MS,
+        limit: env.RATE_LIMIT_MAX,
+        standardHeaders: true,
+        legacyHeaders: false,
+        skip: (req) =>
+          (req.method === "POST" &&
+            /^\/api\/v1\/rider\/orders\/[^/]+\/location$/.test(req.path)) ||
+          (req.method === "POST" &&
+            req.path === `${env.API_PREFIX}/customer/analytics/events`) ||
+          (req.method === "POST" &&
+            req.path === `${env.API_PREFIX}/media/upload-signature`),
+      }),
+    );
+  }
   app.use(attachAuthUser);
 
   app.use(env.API_PREFIX, apiRouter);

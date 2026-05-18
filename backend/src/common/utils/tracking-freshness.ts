@@ -1,4 +1,4 @@
-const TRACKING_STALE_AFTER_MS = 2 * 60 * 1000
+export const TRACKING_STALE_AFTER_MS = 2 * 60 * 1000
 
 function isTrackingEligibleStatus(status?: string | null) {
   return status === "PickedUp"

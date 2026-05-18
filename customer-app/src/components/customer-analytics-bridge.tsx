@@ -6,9 +6,11 @@ import {
 import { useEffect, useMemo, useRef } from "react";
 
 import {
+  rememberCustomerAttribution,
   trackCustomerEvent,
   type AnalyticsMetadataValue,
   type AnalyticsMetadata,
+  type CustomerAnalyticsAttribution,
 } from "@/src/lib/analytics";
 
 const blockedParamFragments = [
@@ -71,6 +73,39 @@ function getRestaurantId(pathname: string) {
   return match?.[1];
 }
 
+function getParamString(params: AnalyticsMetadata, keys: string[]) {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === "string" && value && value !== "[redacted]") {
+      return value.slice(0, 120);
+    }
+  }
+
+  return "";
+}
+
+function getAttributionFromParams(
+  pathname: string,
+  params: AnalyticsMetadata,
+): CustomerAnalyticsAttribution | null {
+  const attribution = {
+    source: getParamString(params, ["utm_source", "source", "src"]),
+    medium: getParamString(params, ["utm_medium", "medium"]),
+    campaignId: getParamString(params, ["utm_campaign", "campaignId", "campaign"]),
+    voucherId: getParamString(params, ["voucherId", "voucher"]),
+    referrer: getParamString(params, ["ref", "referrer"]),
+    path: pathname,
+  };
+
+  return attribution.source ||
+    attribution.medium ||
+    attribution.campaignId ||
+    attribution.voucherId ||
+    attribution.referrer
+    ? attribution
+    : null;
+}
+
 export function CustomerAnalyticsBridge() {
   const pathname = usePathname();
   const segments = useSegments();
@@ -94,6 +129,11 @@ export function CustomerAnalyticsBridge() {
     }
     lastTrackedKeyRef.current = trackingKey;
 
+    const attribution = getAttributionFromParams(pathname, safeParams);
+    if (attribution) {
+      void rememberCustomerAttribution(attribution);
+    }
+
     void trackCustomerEvent({
       eventType: "page_view",
       path: pathname,
@@ -112,14 +152,6 @@ export function CustomerAnalyticsBridge() {
         screenName,
         entityType: "restaurant",
         entityId: restaurantId,
-      });
-    }
-
-    if (pathname === "/checkout") {
-      void trackCustomerEvent({
-        eventType: "checkout_start",
-        path: pathname,
-        screenName,
       });
     }
 

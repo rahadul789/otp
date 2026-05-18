@@ -3,10 +3,13 @@ import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import {
+  differenceInCalendarDays,
+  eachDayOfInterval,
   endOfDay,
   format,
   isWithinInterval,
   startOfDay,
+  startOfWeek,
   subDays,
 } from "date-fns"
 import {
@@ -21,11 +24,10 @@ import {
 import {
   ArrowRight,
   BadgeDollarSign,
+  Ban,
   CheckCircle2,
   Clock3,
-  CreditCard,
   ImageIcon,
-  LayoutGrid,
   LoaderCircle,
   Percent,
   ShoppingBag,
@@ -40,7 +42,10 @@ import { Link } from "react-router-dom"
 import { useOpeningHours } from "@/components/hours/opening-hours-context"
 import { useMenuItems } from "@/components/menu/menu-items-context"
 import {
+  buildOrderDateFilterQuery,
   defaultOrderDateFilter,
+  getOrderDateFilterInterval,
+  getPreviousOrderDateFilterInterval,
   OrderDateFilter,
   type OrderDateFilterValue,
 } from "@/components/orders/order-date-filter"
@@ -68,40 +73,13 @@ import {
   getStoreLogoSrc,
 } from "@/lib/store-profile"
 import { formatHourLabel12 } from "@/lib/time"
+import { cn } from "@/lib/utils"
 import { calculateEarningsSummary } from "@/domain/financials"
 import { getStoreOperationalStatus } from "@/domain/store-runtime"
 import { useAppStore } from "@/store/app-store"
 
 function formatCompactMoney(amount: number) {
-  if (amount >= 1000) return `${(amount / 1000).toFixed(amount >= 10000 ? 0 : 1)}k tk`
-  return `${amount} tk`
-}
-
-function getDateInterval(filter: OrderDateFilterValue) {
-  const now = new Date()
-  switch (filter.preset) {
-    case "today":
-      return { start: startOfDay(now), end: endOfDay(now) }
-    case "yesterday": {
-      const yesterday = subDays(now, 1)
-      return { start: startOfDay(yesterday), end: endOfDay(yesterday) }
-    }
-    case "last7Days":
-      return { start: startOfDay(subDays(now, 6)), end: endOfDay(now) }
-    case "last30Days":
-      return { start: startOfDay(subDays(now, 29)), end: endOfDay(now) }
-    case "thisWeek":
-      return { start: startOfDay(subDays(now, 6)), end: endOfDay(now) }
-    case "thisMonth":
-      return { start: startOfDay(subDays(now, 29)), end: endOfDay(now) }
-    case "custom":
-      return {
-        start: startOfDay(filter.range?.from ?? now),
-        end: endOfDay(filter.range?.to ?? filter.range?.from ?? now),
-      }
-    default:
-      return { start: startOfDay(now), end: endOfDay(now) }
-  }
+  return `${Math.round(amount).toLocaleString()} tk`
 }
 
 function toPercent(current: number, previous: number) {
@@ -110,15 +88,29 @@ function toPercent(current: number, previous: number) {
 }
 
 function getTrendLabel(current: number, previous: number) {
+  return getTrendMeta(current, previous).label
+}
+
+function getTrendMeta(current: number, previous: number) {
   const percent = toPercent(current, previous)
-  if (percent === null || percent === 0) return "No change"
-  return `${percent > 0 ? "+" : ""}${percent}% vs previous`
+  if (percent === null || percent === 0) {
+    return { label: "No change", tone: "flat" as const }
+  }
+  return {
+    label: `${percent > 0 ? "+" : ""}${percent}% vs previous`,
+    tone: percent > 0 ? ("positive" as const) : ("negative" as const),
+  }
+}
+
+function isDateInInterval(value: string | null | undefined, interval: { start: Date; end: Date }) {
+  if (!value) return false
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return false
+  return isWithinInterval(date, interval)
 }
 
 type DashboardOrderMetrics = {
   totalOrders: number
-  deliveredOrders: number
-  deliveredRevenue: number
   pendingOrders: number
   customerPhones: Set<string>
 }
@@ -126,10 +118,45 @@ type DashboardOrderMetrics = {
 function createDashboardOrderMetrics(): DashboardOrderMetrics {
   return {
     totalOrders: 0,
-    deliveredOrders: 0,
-    deliveredRevenue: 0,
     pendingOrders: 0,
     customerPhones: new Set<string>(),
+  }
+}
+
+function getDashboardTrendKey(date: Date, useWeeklyBuckets: boolean) {
+  const bucketDate = useWeeklyBuckets
+    ? startOfWeek(date, { weekStartsOn: 1 })
+    : date
+  return format(bucketDate, "yyyy-MM-dd")
+}
+
+function createDashboardTrendSeed(interval: { start: Date; end: Date }) {
+  const days = differenceInCalendarDays(interval.end, interval.start) + 1
+  const useWeeklyBuckets = days > 45
+  const trendByKey = new Map<
+    string,
+    { label: string; orders: number; revenue: number }
+  >()
+
+  eachDayOfInterval(interval).forEach((day) => {
+    const key = getDashboardTrendKey(day, useWeeklyBuckets)
+    if (!trendByKey.has(key)) {
+      const bucketDate = useWeeklyBuckets
+        ? startOfWeek(day, { weekStartsOn: 1 })
+        : day
+      trendByKey.set(key, {
+        label: useWeeklyBuckets
+          ? `Wk ${format(bucketDate, "dd MMM")}`
+          : format(day, "dd MMM"),
+        orders: 0,
+        revenue: 0,
+      })
+    }
+  })
+
+  return {
+    useWeeklyBuckets,
+    trendByKey,
   }
 }
 
@@ -137,8 +164,8 @@ function DashboardSkeleton() {
   return (
     <div className="space-y-4 px-4 lg:px-6">
       <Skeleton className="h-20 rounded-2xl" />
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-        {Array.from({ length: 6 }).map((_, index) => (
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, index) => (
           <Skeleton key={index} className="h-32 rounded-2xl" />
         ))}
       </div>
@@ -156,12 +183,11 @@ function DashboardSkeleton() {
 }
 
 const dashboardKpiLinks: Record<string, string> = {
-  orders: "/orders?tab=history",
-  revenue: "/analytics",
+  placed: "/orders?tab=history",
+  delivered: "/orders?tab=history&status=Delivered",
   net: "/payouts",
-  aov: "/analytics",
-  pending: "/orders?tab=live",
-  completed: "/orders?tab=history&status=Delivered",
+  active: "/orders?tab=live",
+  cancelled: "/orders?tab=history",
 }
 
 export function DashboardPage() {
@@ -176,7 +202,6 @@ export function DashboardPage() {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const queryClient = useQueryClient()
 
-  const [isLoading, setIsLoading] = React.useState(true)
   const [transitioningOrderId, setTransitioningOrderId] = React.useState<string | null>(null)
   const [dateFilter, setDateFilter] = React.useState<OrderDateFilterValue>({
     ...defaultOrderDateFilter,
@@ -185,11 +210,7 @@ export function DashboardPage() {
   const dashboardResetDisabled =
     dateFilter.preset === defaultOrderDateFilter.preset && !dateFilter.range
   const dashboardQueryParams = React.useMemo(
-    () => ({
-      preset: dateFilter.preset,
-      from: dateFilter.preset === "custom" ? dateFilter.range?.from?.toISOString() : undefined,
-      to: dateFilter.preset === "custom" ? dateFilter.range?.to?.toISOString() : undefined,
-    }),
+    () => buildOrderDateFilterQuery(dateFilter),
     [dateFilter]
   )
 
@@ -199,18 +220,13 @@ export function DashboardPage() {
   )
   const orderTransitionMutation = useOwnerOrderTransitionMutation()
 
-  React.useEffect(() => {
-    const timeout = window.setTimeout(() => setIsLoading(false), 300)
-    return () => window.clearTimeout(timeout)
-  }, [])
-
-  const currentInterval = React.useMemo(() => getDateInterval(dateFilter), [dateFilter])
+  const currentInterval = React.useMemo(
+    () => getOrderDateFilterInterval(dateFilter),
+    [dateFilter]
+  )
   const previousInterval = React.useMemo(
-    () => ({
-      start: subDays(currentInterval.start, 1),
-      end: subDays(currentInterval.end, 1),
-    }),
-    [currentInterval]
+    () => getPreviousOrderDateFilterInterval(dateFilter),
+    [dateFilter]
   )
 
   const filteredOrders = React.useMemo(
@@ -283,49 +299,36 @@ export function DashboardPage() {
     [filteredOrders]
   )
 
-  const previousOrderMetrics = React.useMemo(
-    () =>
-      previousOrders.reduce<DashboardOrderMetrics>((metrics, order) => {
-        metrics.totalOrders += 1
-        metrics.customerPhones.add(order.customer.phone)
-        if (liveOrderStatuses.includes(order.currentStatus)) {
-          metrics.pendingOrders += 1
-        }
-        return metrics
-      }, createDashboardOrderMetrics()),
-    [previousOrders]
-  )
-
   const todayAndTrendMetrics = React.useMemo(() => {
     const todayInterval = {
       start: startOfDay(new Date()),
       end: endOfDay(new Date()),
     }
-    const trendSeed = Array.from({ length: 7 }, (_, index) => {
-      const day = subDays(new Date(), 6 - index)
-      return {
-        key: format(day, "yyyy-MM-dd"),
-        label: format(day, "dd MMM"),
-        orders: 0,
-        revenue: 0,
-      }
-    })
-    const trendByKey = new Map(trendSeed.map((entry) => [entry.key, entry]))
+    const { trendByKey, useWeeklyBuckets } =
+      createDashboardTrendSeed(currentInterval)
     const todayHourCounts = Array.from({ length: 24 }, () => 0)
 
     orders.forEach((order) => {
       const placedAt = new Date(order.timestamps.placedAt)
 
-      const trendEntry = trendByKey.get(format(placedAt, "yyyy-MM-dd"))
-      if (trendEntry) {
-        trendEntry.orders += 1
+      if (isWithinInterval(placedAt, currentInterval)) {
+        const trendEntry = trendByKey.get(
+          getDashboardTrendKey(placedAt, useWeeklyBuckets)
+        )
+        if (trendEntry) {
+          trendEntry.orders += 1
+        }
       }
 
       if (order.currentStatus === "Delivered" && order.timestamps.deliveredAt) {
         const deliveredAt = new Date(order.timestamps.deliveredAt)
-        const deliveredTrendEntry = trendByKey.get(format(deliveredAt, "yyyy-MM-dd"))
-        if (deliveredTrendEntry) {
-          deliveredTrendEntry.revenue += order.total
+        if (isWithinInterval(deliveredAt, currentInterval)) {
+          const deliveredTrendEntry = trendByKey.get(
+            getDashboardTrendKey(deliveredAt, useWeeklyBuckets)
+          )
+          if (deliveredTrendEntry) {
+            deliveredTrendEntry.revenue += order.total
+          }
         }
       }
 
@@ -335,14 +338,14 @@ export function DashboardPage() {
     })
 
     return {
-      orderTrend: trendSeed.map(({ label, orders, revenue }) => ({
+      orderTrend: Array.from(trendByKey.values()).map(({ label, orders, revenue }) => ({
         label,
         orders,
         revenue,
       })),
       todayHourCounts,
     }
-  }, [orders])
+  }, [currentInterval, orders])
 
   const currentRevenue = deliveredOrdersInCurrentInterval.reduce(
     (sum, order) => sum + order.total,
@@ -379,56 +382,116 @@ export function DashboardPage() {
     )
     .reduce((sum, transaction) => sum + transaction.netAmount, 0)
   const currentCustomers = currentOrderMetrics.customerPhones.size
-  const currentCompleted = deliveredOrdersInCurrentInterval.length
-  const previousCompleted = deliveredOrdersInPreviousInterval.length
   const currentPending = currentOrderMetrics.pendingOrders
-  const previousPending = previousOrderMetrics.pendingOrders
+  const currentPlacedValue = filteredOrders
+    .filter(
+      (order) =>
+        order.currentStatus !== "Cancelled" &&
+        order.currentStatus !== "Rejected"
+    )
+    .reduce(
+      (sum, order) => sum + order.total,
+      0
+    )
+  const previousPlacedValue = previousOrders
+    .filter(
+      (order) =>
+        order.currentStatus !== "Cancelled" &&
+        order.currentStatus !== "Rejected"
+    )
+    .reduce(
+      (sum, order) => sum + order.total,
+      0
+    )
+  const currentCancelledOrders = orders.filter(
+    (order) =>
+      order.currentStatus === "Cancelled" &&
+      isDateInInterval(order.timestamps.cancelledAt, currentInterval)
+  )
+  const previousCancelledOrders = orders.filter(
+    (order) =>
+      order.currentStatus === "Cancelled" &&
+      isDateInInterval(order.timestamps.cancelledAt, previousInterval)
+  )
+  const currentRejectedOrders = orders.filter(
+    (order) =>
+      order.currentStatus === "Rejected" &&
+      isDateInInterval(order.timestamps.rejectedAt, currentInterval)
+  )
+  const previousRejectedOrders = orders.filter(
+    (order) =>
+      order.currentStatus === "Rejected" &&
+      isDateInInterval(order.timestamps.rejectedAt, previousInterval)
+  )
+  const currentCancelledValue = currentCancelledOrders.reduce(
+    (sum, order) => sum + order.total,
+    0
+  )
+  const currentRejectedValue = currentRejectedOrders.reduce(
+    (sum, order) => sum + order.total,
+    0
+  )
+  const currentFailedOrders = currentCancelledOrders.length + currentRejectedOrders.length
+  const previousFailedOrders =
+    previousCancelledOrders.length + previousRejectedOrders.length
+  const currentFailedValue = currentCancelledValue + currentRejectedValue
 
   const kpis = [
     {
-      key: "orders",
-      label: "Total Orders",
-      value: `${filteredOrders.length}`,
-      trend: getTrendLabel(currentOrderMetrics.totalOrders, previousOrderMetrics.totalOrders),
+      key: "placed",
+      label: "Placed order value",
+      value: formatCompactMoney(currentPlacedValue),
+      trend: getTrendLabel(currentPlacedValue, previousPlacedValue),
+      trendTone: getTrendMeta(currentPlacedValue, previousPlacedValue).tone,
       icon: ShoppingBag,
+      helper: "Excludes cancelled and rejected orders",
+      chartKey: "orders",
     },
     {
-      key: "revenue",
-      label: "Total Revenue",
+      key: "delivered",
+      label: "Delivered sales",
       value: formatCompactMoney(currentRevenue),
       trend: getTrendLabel(currentRevenue, previousRevenue),
+      trendTone: getTrendMeta(currentRevenue, previousRevenue).tone,
       icon: BadgeDollarSign,
+      helper: "Only successfully delivered orders",
+      chartKey: "revenue",
     },
     {
       key: "net",
       label: "Net Earnings",
       value: formatCompactMoney(currentNet),
       trend: getTrendLabel(currentNet, previousNet),
+      trendTone: getTrendMeta(currentNet, previousNet).tone,
       icon: Wallet,
+      helper: "After commission and owner discounts",
+      chartKey: "revenue",
     },
     {
-      key: "aov",
-      label: "Average Order Value",
-      value: `${Math.round(currentCompleted ? currentRevenue / currentCompleted : 0)} tk`,
-      trend: getTrendLabel(
-        currentCompleted ? currentRevenue / currentCompleted : 0,
-        previousCompleted ? previousRevenue / previousCompleted : 0
-      ),
-      icon: CreditCard,
-    },
-    {
-      key: "pending",
-      label: "Pending Orders",
+      key: "active",
+      label: "Active orders",
       value: `${currentPending}`,
-      trend: getTrendLabel(currentPending, previousPending),
+      trend: "Live right now",
+      trendTone: "flat" as const,
       icon: Clock3,
+      helper: "Needs kitchen or delivery attention",
+      chartKey: "orders",
     },
     {
-      key: "completed",
-      label: "Completed Orders",
-      value: `${currentCompleted}`,
-      trend: getTrendLabel(currentCompleted, previousCompleted),
-      icon: LayoutGrid,
+      key: "cancelled",
+      label: "Cancelled / rejected",
+      value: `${currentFailedOrders}`,
+      trend: getTrendLabel(
+        currentFailedOrders,
+        previousFailedOrders
+      ),
+      trendTone: getTrendMeta(
+        currentFailedOrders,
+        previousFailedOrders
+      ).tone,
+      icon: Ban,
+      helper: `${formatCompactMoney(currentFailedValue)} failed order value`,
+      chartKey: "orders",
     },
   ]
 
@@ -436,24 +499,36 @@ export function DashboardPage() {
   const kpisToRender = dashboardSummary
     ? [
         {
-          key: "orders",
-          label: "Total Orders",
-          value: `${dashboardSummary.metrics.totalOrders}`,
+          key: "placed",
+          label: "Placed order value",
+          value: formatCompactMoney(dashboardSummary.metrics.placedOrderValue),
           trend: getTrendLabel(
-            dashboardSummary.metrics.totalOrders,
-            dashboardSummary.metrics.previousTotalOrders
+            dashboardSummary.metrics.placedOrderValue,
+            dashboardSummary.metrics.previousPlacedOrderValue
           ),
+          trendTone: getTrendMeta(
+            dashboardSummary.metrics.placedOrderValue,
+            dashboardSummary.metrics.previousPlacedOrderValue
+          ).tone,
           icon: ShoppingBag,
+          helper: "Excludes cancelled and rejected orders",
+          chartKey: "orders",
         },
         {
-          key: "revenue",
-          label: "Total Revenue",
-          value: formatCompactMoney(dashboardSummary.metrics.totalRevenue),
+          key: "delivered",
+          label: "Delivered sales",
+          value: formatCompactMoney(dashboardSummary.metrics.deliveredOrderValue),
           trend: getTrendLabel(
-            dashboardSummary.metrics.totalRevenue,
-            dashboardSummary.metrics.previousTotalRevenue
+            dashboardSummary.metrics.deliveredOrderValue,
+            dashboardSummary.metrics.previousDeliveredOrderValue
           ),
+          trendTone: getTrendMeta(
+            dashboardSummary.metrics.deliveredOrderValue,
+            dashboardSummary.metrics.previousDeliveredOrderValue
+          ).tone,
           icon: BadgeDollarSign,
+          helper: "Only successfully delivered orders",
+          chartKey: "revenue",
         },
         {
           key: "net",
@@ -463,37 +538,49 @@ export function DashboardPage() {
             dashboardSummary.metrics.totalNetEarnings,
             dashboardSummary.metrics.previousTotalNetEarnings
           ),
+          trendTone: getTrendMeta(
+            dashboardSummary.metrics.totalNetEarnings,
+            dashboardSummary.metrics.previousTotalNetEarnings
+          ).tone,
           icon: Wallet,
+          helper: "After commission and owner discounts",
+          chartKey: "revenue",
         },
         {
-          key: "aov",
-          label: "Average Order Value",
-          value: `${Math.round(dashboardSummary.metrics.averageOrderValue)} tk`,
-          trend: getTrendLabel(
-            dashboardSummary.metrics.averageOrderValue,
-            dashboardSummary.metrics.previousAverageOrderValue
-          ),
-          icon: CreditCard,
-        },
-        {
-          key: "pending",
-          label: "Pending Orders",
+          key: "active",
+          label: "Active orders",
           value: `${dashboardSummary.metrics.pendingOrders}`,
-          trend: getTrendLabel(
-            dashboardSummary.metrics.pendingOrders,
-            dashboardSummary.metrics.previousPendingOrders
-          ),
+          trend: "Live right now",
+          trendTone: "flat" as const,
           icon: Clock3,
+          helper: "Needs kitchen or delivery attention",
+          chartKey: "orders",
         },
         {
-          key: "completed",
-          label: "Completed Orders",
-          value: `${dashboardSummary.metrics.completedOrders}`,
+          key: "cancelled",
+          label: "Cancelled / rejected",
+          value: `${
+            dashboardSummary.metrics.cancelledOrders +
+            dashboardSummary.metrics.rejectedOrders
+          }`,
           trend: getTrendLabel(
-            dashboardSummary.metrics.completedOrders,
-            dashboardSummary.metrics.previousCompletedOrders
+            dashboardSummary.metrics.cancelledOrders +
+              dashboardSummary.metrics.rejectedOrders,
+            dashboardSummary.metrics.previousCancelledOrders +
+              dashboardSummary.metrics.previousRejectedOrders
           ),
-          icon: LayoutGrid,
+          trendTone: getTrendMeta(
+            dashboardSummary.metrics.cancelledOrders +
+              dashboardSummary.metrics.rejectedOrders,
+            dashboardSummary.metrics.previousCancelledOrders +
+              dashboardSummary.metrics.previousRejectedOrders
+          ).tone,
+          icon: Ban,
+          helper: `${formatCompactMoney(
+            dashboardSummary.metrics.cancelledOrderValue +
+              (dashboardSummary.metrics.rejectedOrderValue ?? 0)
+          )} failed order value`,
+          chartKey: "orders",
         },
       ]
     : kpis
@@ -617,7 +704,7 @@ export function DashboardPage() {
     )
   }
 
-  if (isLoading || dashboardSummaryQuery.isPending) {
+  if (dashboardSummaryQuery.isPending && !dashboardSummaryQuery.data) {
     return <DashboardSkeleton />
   }
 
@@ -654,7 +741,7 @@ export function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         {kpisToRender.map((kpi) => (
           <Card key={kpi.key} className="rounded-2xl shadow-sm">
             <CardHeader className="flex flex-row items-start justify-between space-y-0">
@@ -669,13 +756,25 @@ export function DashboardPage() {
               </div>
             </CardHeader>
             <CardContent className="pt-0">
-              <div className="text-sm text-muted-foreground">{kpi.trend}</div>
+              <div
+                className={cn(
+                  "text-sm font-medium",
+                  kpi.trendTone === "positive" && "text-emerald-600",
+                  kpi.trendTone === "negative" && "text-rose-600",
+                  kpi.trendTone === "flat" && "text-muted-foreground"
+                )}
+              >
+                {kpi.trend}
+              </div>
+              <div className="mt-1 min-h-8 text-xs text-muted-foreground">
+                {kpi.helper}
+              </div>
               <div className="mt-3 h-10">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={orderTrend}>
                     <Area
                       type="monotone"
-                      dataKey={kpi.key === "revenue" || kpi.key === "net" || kpi.key === "aov" ? "revenue" : "orders"}
+                      dataKey={kpi.chartKey}
                       stroke="#0f766e"
                       fill="#ccfbf1"
                       strokeWidth={2}
@@ -703,7 +802,7 @@ export function DashboardPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <BadgeDollarSign className="size-4 text-muted-foreground" />
-              Revenue Overview
+              Delivered Sales Overview
             </CardTitle>
           </CardHeader>
           <CardContent>

@@ -6,12 +6,14 @@ import { connectOwnerSocket, disconnectOwnerSocket, getOwnerSocket } from "@/lib
 import {
   mapOwnerNotification,
   mapOwnerOrder,
+  type OwnerDashboardSummaryResponse,
   type OwnerListResponse,
   type OwnerNotificationResponse,
   type OwnerOrderResponse,
 } from "@/lib/backend-mappers"
 import { patchOwnerOrderQueryCaches } from "@/lib/owner-order-cache"
 import { useAppStore } from "@/store/app-store"
+import type { Order } from "@/components/orders/types"
 
 function decodeJwtPayload(token: string) {
   try {
@@ -25,11 +27,107 @@ function decodeJwtPayload(token: string) {
   }
 }
 
-function resolveOwnerId() {
+function resolveOwnerSession() {
   const session = getOwnerAuthSession()
   if (!session?.accessToken) return null
   const payload = decodeJwtPayload(session.accessToken)
-  return payload?.sub ?? null
+  if (!payload?.sub) return null
+  return {
+    ownerId: payload.sub,
+    accessToken: session.accessToken,
+  }
+}
+
+const activeOrderStatuses = new Set([
+  "New",
+  "Accepted",
+  "Preparing",
+  "ReadyForPickup",
+  "PickedUp",
+])
+
+function isValidPlacedOrder(order: Order) {
+  return order.currentStatus !== "Cancelled" && order.currentStatus !== "Rejected"
+}
+
+function isWithinSummaryRange(summary: OwnerDashboardSummaryResponse, isoDate?: string | null) {
+  if (!isoDate) return false
+  const value = new Date(isoDate).getTime()
+  const from = new Date(summary.filter.from).getTime()
+  const to = new Date(summary.filter.to).getTime()
+  return Number.isFinite(value) && value >= from && value <= to
+}
+
+function applyOrderDeltaToDashboardSummary(
+  summary: OwnerDashboardSummaryResponse,
+  order: Order,
+  direction: 1 | -1
+) {
+  const metrics = { ...summary.metrics }
+  const placedInRange = isWithinSummaryRange(summary, order.timestamps.placedAt)
+  const deliveredInRange = isWithinSummaryRange(summary, order.timestamps.deliveredAt)
+  const cancelledInRange = isWithinSummaryRange(summary, order.timestamps.cancelledAt)
+  const rejectedInRange = isWithinSummaryRange(summary, order.timestamps.rejectedAt)
+
+  if (placedInRange && isValidPlacedOrder(order)) {
+    metrics.totalOrders = Math.max(0, metrics.totalOrders + direction)
+    metrics.placedOrderValue = Math.max(
+      0,
+      metrics.placedOrderValue + direction * order.total
+    )
+  }
+
+  if (cancelledInRange && order.currentStatus === "Cancelled") {
+    metrics.cancelledOrders = Math.max(0, metrics.cancelledOrders + direction)
+    metrics.cancelledOrderValue = Math.max(
+      0,
+      metrics.cancelledOrderValue + direction * order.total
+    )
+  }
+
+  if (rejectedInRange && order.currentStatus === "Rejected") {
+    metrics.rejectedOrders = Math.max(0, metrics.rejectedOrders + direction)
+    metrics.rejectedOrderValue = Math.max(
+      0,
+      (metrics.rejectedOrderValue ?? 0) + direction * order.total
+    )
+  }
+
+  if (deliveredInRange && order.currentStatus === "Delivered") {
+    metrics.completedOrders = Math.max(0, metrics.completedOrders + direction)
+    metrics.deliveredOrderValue = Math.max(
+      0,
+      metrics.deliveredOrderValue + direction * order.total
+    )
+    metrics.totalRevenue = metrics.deliveredOrderValue
+  }
+
+  if (activeOrderStatuses.has(order.currentStatus)) {
+    metrics.pendingOrders = Math.max(0, metrics.pendingOrders + direction)
+  }
+
+  return {
+    ...summary,
+    metrics,
+  }
+}
+
+function patchDashboardSummaryForOrderChange(
+  summary: OwnerDashboardSummaryResponse,
+  previousOrder: Order | null,
+  nextOrder: Order
+) {
+  let nextSummary = summary
+
+  if (previousOrder) {
+    nextSummary = applyOrderDeltaToDashboardSummary(nextSummary, previousOrder, -1)
+  }
+
+  if (!previousOrder && nextOrder.currentStatus !== "New") {
+    return nextSummary
+  }
+
+  return applyOrderDeltaToDashboardSummary(nextSummary, nextOrder, 1)
 }
 
 export function useOwnerSocketBridge() {
@@ -46,11 +144,13 @@ export function useOwnerSocketBridge() {
       return
     }
 
-    const ownerId = resolveOwnerId()
-    if (!ownerId) return
+    const ownerSession = resolveOwnerSession()
+    if (!ownerSession) return
+
+    const { ownerId, accessToken } = ownerSession
 
     if (joinedRef.current !== ownerId) {
-      connectOwnerSocket(ownerId)
+      connectOwnerSocket(ownerId, accessToken)
       joinedRef.current = ownerId
     }
 
@@ -109,7 +209,9 @@ export function useOwnerSocketBridge() {
 
     const handleOrderUpdated = (payload: OwnerOrderResponse) => {
       const mapped = mapOwnerOrder(payload)
+      let previousOrder: Order | null = null
       setOrders((current) => {
+        previousOrder = current.find((order) => order.id === mapped.id) ?? null
         const exists = current.some((order) => order.id === mapped.id)
         return exists
           ? current.map((order) => (order.id === mapped.id ? mapped : order))
@@ -117,18 +219,42 @@ export function useOwnerSocketBridge() {
       })
 
       patchOwnerOrderQueryCaches(queryClient, payload)
+      queryClient.setQueriesData(
+        { queryKey: ["owner", "dashboard", "summary"] },
+        (current: unknown) => {
+          if (!current) return current
+          return patchDashboardSummaryForOrderChange(
+            current as OwnerDashboardSummaryResponse,
+            previousOrder,
+            mapped
+          )
+        }
+      )
       void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "transactions"] })
     }
 
+    const handleMenuUpdated = () => {
+      void queryClient.invalidateQueries({ queryKey: ["owner", "menu-items"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+    }
+    const handleStoreUpdated = () => {
+      void queryClient.invalidateQueries({ queryKey: ["owner", "store-settings"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+    }
+
     socket.on("notification.created", handleNotification)
     socket.on("order.updated", handleOrderUpdated)
+    socket.on("menu.updated", handleMenuUpdated)
+    socket.on("store.updated", handleStoreUpdated)
 
     return () => {
       socket.off("notification.created", handleNotification)
       socket.off("order.updated", handleOrderUpdated)
+      socket.off("menu.updated", handleMenuUpdated)
+      socket.off("store.updated", handleStoreUpdated)
       socket.off("connect", ensureJoined)
     }
   }, [ownerAccount.isAuthenticated, queryClient, setNotifications, setOrders])

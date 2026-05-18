@@ -18,6 +18,7 @@ import {
   updateAdminRestaurantCommission,
   updateAdminRestaurantDeliveryPricing,
   updateAdminRestaurantMerchandising,
+  updateAdminRestaurantPayoutStatus,
   updateAdminRestaurantVisibility,
 } from "./restaurants.service";
 
@@ -34,13 +35,14 @@ const listRestaurantsQuerySchema = z.object({
 
 const createRestaurantSchema = z.object({
   ownerFullName: z.string().min(2),
-  ownerPhone: z.string().min(5),
+  ownerPhone: z.string().regex(/^01\d{9}$/),
   ownerEmail: z.string().email().optional().or(z.literal("")),
   temporaryPassword: z.string().min(6),
   name: z.string().min(2),
   description: z.string().optional(),
-  phone: z.string().optional(),
+  phone: z.string().regex(/^01\d{9}$/).optional().or(z.literal("")),
   email: z.string().email().optional().or(z.literal("")),
+  payoutBkashNumber: z.string().regex(/^01\d{9}$/).optional().or(z.literal("")),
   cuisineTypes: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
   address: z.string().optional(),
@@ -87,6 +89,17 @@ const deliveryPricingSchema = z.object({
   surchargeStartsAfterKm: z.number().min(0).optional(),
   surchargeStepMeters: z.number().positive().optional(),
   surchargeAmountTaka: z.number().min(0).optional(),
+});
+
+const payoutStatusSchema = z.object({
+  status: z.enum(["processing", "completed", "failed"]),
+  expectedStatus: z.string().optional(),
+  failureReason: z.string().optional(),
+  providerReference: z.string().trim().max(120).optional(),
+  providerPayoutId: z.string().trim().max(120).optional(),
+  providerTransactionId: z.string().trim().max(120).optional(),
+  paymentProofUrl: z.string().trim().max(500).optional(),
+  processingNote: z.string().trim().max(500).optional(),
 });
 
 function getStringParam(value: unknown) {
@@ -265,6 +278,30 @@ export const postAdminRestaurantFinanceReconcile = asyncHandler(
 
     return sendSuccess(res, {
       message: "Restaurant finance reconciled",
+      data,
+    });
+  },
+);
+
+export const patchAdminRestaurantPayoutStatus = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const payload = payoutStatusSchema.parse(req.body);
+    const data = await updateAdminRestaurantPayoutStatus({
+      restaurantId: getStringParam(req.params.restaurantId),
+      payoutId: getStringParam(req.params.payoutId),
+      status: payload.status,
+      expectedStatus: payload.expectedStatus,
+      failureReason: payload.failureReason,
+      providerReference: payload.providerReference,
+      providerPayoutId: payload.providerPayoutId,
+      providerTransactionId: payload.providerTransactionId,
+      paymentProofUrl: payload.paymentProofUrl,
+      processingNote: payload.processingNote,
+      adminId: getAdminId(req),
+    });
+
+    return sendSuccess(res, {
+      message: "Payout status updated",
       data,
     });
   },

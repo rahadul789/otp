@@ -4,7 +4,10 @@ import { Link, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
 import { AuthFieldMessage, AuthShell } from "@/components/auth/auth-shell"
-import { useForgotPasswordMutation, useVerifyOtpMutation } from "@/hooks/use-owner-api"
+import {
+  useForgotPasswordMutation,
+  useVerifyOtpMutation,
+} from "@/hooks/use-owner-api"
 import { Button } from "@/components/ui/button"
 import {
   InputOTP,
@@ -12,9 +15,10 @@ import {
   InputOTPSlot,
 } from "@/components/ui/input-otp"
 import { getOtpSupportHint } from "@/lib/otp-copy"
+import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import { useAppStore } from "@/store/app-store"
 
-const RESEND_SECONDS = 30
+const OTP_LENGTH = 4
 
 function maskIdentifier(identifier: string, channel: "phone" | "email" | null) {
   if (!identifier) return "your contact method"
@@ -31,12 +35,16 @@ function maskIdentifier(identifier: string, channel: "phone" | "email" | null) {
 export function ResetVerificationPage() {
   const navigate = useNavigate()
   const passwordResetState = useAppStore((state) => state.passwordResetState)
-  const setPasswordResetState = useAppStore((state) => state.setPasswordResetState)
+  const setPasswordResetState = useAppStore(
+    (state) => state.setPasswordResetState
+  )
 
   const [code, setCode] = React.useState("")
   const [error, setError] = React.useState("")
   const [submitError, setSubmitError] = React.useState("")
-  const [secondsLeft, setSecondsLeft] = React.useState(RESEND_SECONDS)
+  const [secondsLeft, setSecondsLeft] = React.useState(() =>
+    resolveOtpResendSeconds(passwordResetState.resendAvailableInSeconds)
+  )
   const [isResending, setIsResending] = React.useState(false)
   const verifyOtpMutation = useVerifyOtpMutation()
   const forgotPasswordMutation = useForgotPasswordMutation()
@@ -55,8 +63,8 @@ export function ResetVerificationPage() {
   async function handleVerify(event: React.FormEvent) {
     event.preventDefault()
 
-    if (!/^\d{6}$/.test(code.trim())) {
-      setError("Enter the 6-digit verification code.")
+    if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(code.trim())) {
+      setError(`Enter the ${OTP_LENGTH}-digit verification code.`)
       return
     }
 
@@ -96,8 +104,11 @@ export function ResetVerificationPage() {
         ...current,
         verificationSessionId: result.verificationSessionId,
         requestedAt: new Date().toISOString(),
+        resendAvailableInSeconds: resolveOtpResendSeconds(
+          result.resendAvailableInSeconds
+        ),
       }))
-      setSecondsLeft(RESEND_SECONDS)
+      setSecondsLeft(resolveOtpResendSeconds(result.resendAvailableInSeconds))
       setError("")
       setSubmitError("")
       toast.success("A fresh verification code has been sent.")
@@ -114,12 +125,12 @@ export function ResetVerificationPage() {
     }
   }
 
-  const otpComplete = code.length === 6
+  const otpComplete = code.length === OTP_LENGTH
 
   return (
     <AuthShell
       title="Verify your identity"
-      description="Enter the 6-digit code we sent so we can safely continue to password reset."
+      description={`Enter the ${OTP_LENGTH}-digit code we sent so we can safely continue to password reset.`}
       footer={
         <>
           Want to use a different contact?{" "}
@@ -134,7 +145,9 @@ export function ResetVerificationPage() {
     >
       <form onSubmit={handleVerify} className="space-y-6">
         <div className="rounded-2xl border bg-muted/20 p-4">
-          <p className="text-sm text-muted-foreground">Verification code sent to</p>
+          <p className="text-sm text-muted-foreground">
+            Verification code sent to
+          </p>
           <p className="mt-1 text-base font-medium">
             {maskIdentifier(
               passwordResetState.identifier,
@@ -147,15 +160,15 @@ export function ResetVerificationPage() {
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium">Enter OTP</p>
             <p className="text-xs text-muted-foreground">
-              {otpComplete ? "Code complete" : `${code.length}/6 digits`}
+              {otpComplete ? "Code complete" : `${code.length}/${OTP_LENGTH} digits`}
             </p>
           </div>
 
           <InputOTP
-            maxLength={6}
+            maxLength={OTP_LENGTH}
             value={code}
             onChange={(value) => {
-              setCode(value.replace(/\D/g, "").slice(0, 6))
+              setCode(value.replace(/\D/g, "").slice(0, OTP_LENGTH))
               if (error || submitError) {
                 setError("")
                 setSubmitError("")
@@ -164,7 +177,7 @@ export function ResetVerificationPage() {
             containerClassName="justify-center"
           >
             <InputOTPGroup className="gap-2 rounded-none border-0">
-              {Array.from({ length: 6 }).map((_, index) => (
+              {Array.from({ length: OTP_LENGTH }).map((_, index) => (
                 <InputOTPSlot
                   key={index}
                   index={index}
@@ -192,7 +205,9 @@ export function ResetVerificationPage() {
             className="h-12 flex-1 rounded-2xl"
             disabled={!otpComplete || isLoading}
           >
-            {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+            {isLoading ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : null}
             {isLoading ? "Verifying..." : "Verify Code"}
             {!isLoading ? <BadgeCheck className="ml-2 h-4 w-4" /> : null}
           </Button>

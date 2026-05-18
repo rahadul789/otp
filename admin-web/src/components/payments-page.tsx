@@ -25,6 +25,7 @@ import {
   type AdminPaymentTransaction,
   type AdminRestaurantOrderDateFilterPreset,
 } from "@/lib/admin-api"
+import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -77,7 +78,15 @@ import { Textarea } from "@/components/ui/textarea"
 
 type PaymentPreset = Extract<
   AdminRestaurantOrderDateFilterPreset,
-  "today" | "last7Days" | "last30Days" | "thisMonth" | "custom"
+  | "today"
+  | "yesterday"
+  | "last7Days"
+  | "last30Days"
+  | "last90Days"
+  | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
+  | "custom"
 >
 type PaymentMethodFilter = "all" | "Cash" | "Bkash"
 type PaymentStatusFilter =
@@ -847,6 +856,13 @@ export function PaymentsPage() {
   ])
 
   React.useEffect(() => {
+    if (preset !== "custom") {
+      setFrom("")
+      setTo("")
+    }
+  }, [preset])
+
+  React.useEffect(() => {
     if (page > pageCount) setPage(pageCount)
   }, [page, pageCount])
 
@@ -979,7 +995,7 @@ export function PaymentsPage() {
           <CardHeader>
             <CardTitle>Payout readiness</CardTitle>
             <CardDescription>
-              Available, pending, and already paid restaurant balances.
+              Available, requested, and completed restaurant payout balances.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
@@ -988,12 +1004,24 @@ export function PaymentsPage() {
               value={formatCurrency(summary?.payoutReadyAmount ?? 0)}
             />
             <InfoRow
+              label="Requested payout"
+              value={formatCurrency(summary?.payoutRequestedAmount ?? 0)}
+            />
+            <InfoRow
+              label="Reserved by requests"
+              value={formatCurrency(summary?.payoutReservedAmount ?? 0)}
+            />
+            <InfoRow
               label="Pending settlement"
               value={formatCurrency(summary?.payoutPendingAmount ?? 0)}
             />
             <InfoRow
               label="Already paid out"
               value={formatCurrency(summary?.paidOutAmount ?? 0)}
+            />
+            <InfoRow
+              label="Failed payout"
+              value={formatCurrency(summary?.payoutFailedAmount ?? 0)}
             />
             <InfoRow
               label="Pending COD"
@@ -1060,18 +1088,18 @@ export function PaymentsPage() {
                 onChange={(event) => setSearch(event.target.value)}
               />
             </div>
-            <Select value={preset} onValueChange={(value) => setPreset(value as PaymentPreset)}>
-              <SelectTrigger className="h-9 w-full sm:w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="last7Days">Last 7 days</SelectItem>
-                <SelectItem value="last30Days">Last 30 days</SelectItem>
-                <SelectItem value="thisMonth">This month</SelectItem>
-                <SelectItem value="custom">Custom</SelectItem>
-              </SelectContent>
-            </Select>
+            <AdminDateRangeFilter<PaymentPreset>
+              value={preset}
+              from={from}
+              to={to}
+              label="Date"
+              triggerClassName="h-9 sm:w-44"
+              onPresetChange={setPreset}
+              onRangeChange={(range) => {
+                setFrom(range.from)
+                setTo(range.to)
+              }}
+            />
             <Select
               value={paymentMethod}
               onValueChange={(value) => setPaymentMethod(value as PaymentMethodFilter)}
@@ -1130,22 +1158,6 @@ export function PaymentsPage() {
                 <SelectItem value="recentlyUpdated">Recently updated</SelectItem>
               </SelectContent>
             </Select>
-            {preset === "custom" ? (
-              <>
-                <Input
-                  type="date"
-                  className="h-9 w-full sm:w-36"
-                  value={from}
-                  onChange={(event) => setFrom(event.target.value)}
-                />
-                <Input
-                  type="date"
-                  className="h-9 w-full sm:w-36"
-                  value={to}
-                  onChange={(event) => setTo(event.target.value)}
-                />
-              </>
-            ) : null}
           </div>
 
           <div className="overflow-hidden rounded-lg border">

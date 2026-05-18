@@ -48,6 +48,7 @@ import {
   normalizeBangladeshPhone,
   sanitizeBangladeshPhoneInput,
 } from "@/lib/phone"
+import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import { calculateProfileCompletion } from "@/lib/store-profile"
 import { useUpdateOwnerPasswordMutation, useUpdateOwnerProfileMutation } from "@/hooks/use-owner-api"
 import { useAppStore } from "@/store/app-store"
@@ -571,6 +572,7 @@ export function OwnerAccountPage() {
           phone: normalizedPhone,
           referenceId: result.owner.id,
           pendingPassword: "",
+          resendAvailableInSeconds: resolveOtpResendSeconds(result.resendAvailableInSeconds),
         })
         setVerificationModalOpen(true)
         toast.success("Verify the new phone number to finish the update.")

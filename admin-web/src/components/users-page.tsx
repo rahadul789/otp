@@ -8,31 +8,55 @@ import {
   Loader2,
   Lock,
   MoreHorizontal,
+  Pencil,
+  Plus,
   RotateCcw,
+  Save,
   Search,
   ShieldCheck,
   Smartphone,
   TableConfig,
   Trash2,
   UserCheck,
+  UserMinus,
+  UserPlus,
   Users,
+  UsersRound,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import {
+  addAdminCustomerGroupMembers,
+  createAdminCustomerGroup,
+  deleteAdminCustomerGroup,
   getAdminCustomer,
   listAdminCustomerOrders,
+  listAdminCustomerGroups,
   listAdminCustomers,
   deleteAdminRestaurantReview,
   reviewCustomerAccountRequest,
   restoreAdminRestaurantReview,
+  removeAdminCustomerGroupMember,
+  updateAdminCustomerGroup,
   updateAdminCustomerStatus,
   type AdminCustomerDetails,
+  type AdminCustomerGroup,
   type AdminCustomerOrderHistoryItem,
   type AdminCustomerSummary,
   type AdminRestaurantOrderDateFilterPreset,
 } from "@/lib/admin-api"
+import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -66,7 +90,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -110,7 +136,15 @@ type CustomerOrderStatusFilter = "all" | "live" | "delivered" | "cancelled"
 type CustomerOrderSort = "newest" | "oldest" | "highestValue"
 type CustomerOrderPreset = Extract<
   AdminRestaurantOrderDateFilterPreset,
-  "today" | "last7Days" | "last30Days" | "thisMonth"
+  | "today"
+  | "yesterday"
+  | "last7Days"
+  | "last30Days"
+  | "last90Days"
+  | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
+  | "custom"
 >
 type UserColumnKey =
   | "user"
@@ -141,6 +175,15 @@ const defaultUserColumnVisibility: Record<UserColumnKey, boolean> = {
   lastLogin: true,
 }
 
+const smartCustomerGroups = [
+  { value: "new_users", label: "New users" },
+  { value: "returning_users", label: "Returning users" },
+  { value: "has_push_token", label: "Push-ready users" },
+  { value: "ordered_last_30_days", label: "Ordered in last 30 days" },
+  { value: "inactive_30_days", label: "Inactive for 30 days" },
+  { value: "high_value_customers", label: "High-value customers" },
+]
+
 function formatDate(value?: string | null) {
   if (!value) return "N/A"
   const date = new Date(value)
@@ -148,8 +191,42 @@ function formatDate(value?: string | null) {
   return date.toLocaleString()
 }
 
+function formatShortDate(value?: string | null) {
+  if (!value) return "Never"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "Never"
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  })
+}
+
 function formatCurrency(value: number) {
   return `Tk ${Math.round(Number.isFinite(value) ? value : 0).toLocaleString()}`
+}
+
+function CustomerMiniStats({ customer }: { customer: AdminCustomerSummary }) {
+  const stats = [
+    { label: "Orders", value: customer.totalOrders },
+    { label: "Last order", value: formatShortDate(customer.lastOrderAt) },
+    { label: "Last active", value: formatShortDate(customer.lastLoginAt) },
+    { label: "Spend", value: formatCurrency(customer.deliveredSpend) },
+  ]
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {stats.map((stat) => (
+        <span
+          key={stat.label}
+          className="rounded-full border bg-background px-2.5 py-1 text-xs"
+        >
+          <span className="text-muted-foreground">{stat.label}: </span>
+          <span className="font-medium">{stat.value}</span>
+        </span>
+      ))}
+    </div>
+  )
 }
 
 function getInitials(name: string) {
@@ -368,10 +445,17 @@ function CustomerDetailsSheet({
 }) {
   const queryClient = useQueryClient()
   const [preset, setPreset] = React.useState<CustomerOrderPreset>("last7Days")
+  const [from, setFrom] = React.useState("")
+  const [to, setTo] = React.useState("")
   const [requestNote, setRequestNote] = React.useState("")
   const detailsQuery = useQuery({
-    queryKey: ["admin-customer-details", customerId, preset],
-    queryFn: () => getAdminCustomer(customerId, { preset }),
+    queryKey: ["admin-customer-details", customerId, preset, from, to],
+    queryFn: () =>
+      getAdminCustomer(customerId, {
+        preset,
+        from: preset === "custom" ? from : undefined,
+        to: preset === "custom" ? to : undefined,
+      }),
     enabled: open && Boolean(customerId),
   })
   const details = detailsQuery.data
@@ -397,9 +481,16 @@ function CustomerDetailsSheet({
     },
   })
 
+  React.useEffect(() => {
+    if (preset !== "custom") {
+      setFrom("")
+      setTo("")
+    }
+  }, [preset])
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-7xl!">
+      <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
         <SheetHeader className="border-b">
           <SheetTitle>{details?.fullName ?? "Customer details"}</SheetTitle>
           <SheetDescription>
@@ -448,28 +539,27 @@ function CustomerDetailsSheet({
                     </p>
                   </div>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Select
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                  <AdminDateRangeFilter<CustomerOrderPreset>
                     value={preset}
-                    onValueChange={(value) =>
-                      setPreset(value as CustomerOrderPreset)
-                    }
-                  >
-                    <SelectTrigger className="w-full sm:w-44">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="today">Today</SelectItem>
-                      <SelectItem value="last7Days">Last 7 days</SelectItem>
-                      <SelectItem value="last30Days">Last 30 days</SelectItem>
-                      <SelectItem value="thisMonth">This month</SelectItem>
-                    </SelectContent>
-                  </Select>
+                    from={from}
+                    to={to}
+                    label="Date"
+                    onPresetChange={setPreset}
+                    onRangeChange={(range) => {
+                      setFrom(range.from)
+                      setTo(range.to)
+                    }}
+                  />
                   <Button
                     type="button"
                     variant="outline"
-                    disabled={preset === "last7Days"}
-                    onClick={() => setPreset("last7Days")}
+                    disabled={preset === "last7Days" && !from && !to}
+                    onClick={() => {
+                      setPreset("last7Days")
+                      setFrom("")
+                      setTo("")
+                    }}
                   >
                     <RotateCcw className="size-4" />
                     Reset filter
@@ -1097,6 +1187,8 @@ function CustomerReviewsTab({ details }: { details: AdminCustomerDetails }) {
 
 function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
   const [preset, setPreset] = React.useState<CustomerOrderPreset>("last7Days")
+  const [from, setFrom] = React.useState("")
+  const [to, setTo] = React.useState("")
   const [status, setStatus] = React.useState<CustomerOrderStatusFilter>("all")
   const [restaurantId, setRestaurantId] = React.useState("all")
   const [sortBy, setSortBy] = React.useState<CustomerOrderSort>("newest")
@@ -1108,6 +1200,8 @@ function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
       "admin-customer-orders",
       customer.id,
       preset,
+      from,
+      to,
       status,
       restaurantId,
       sortBy,
@@ -1117,6 +1211,8 @@ function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
     queryFn: () =>
       listAdminCustomerOrders(customer.id, {
         preset,
+        from: preset === "custom" ? from : undefined,
+        to: preset === "custom" ? to : undefined,
         status,
         restaurantId: restaurantId === "all" ? undefined : restaurantId,
         sortBy,
@@ -1129,17 +1225,26 @@ function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
   const hasFilters =
     search.trim() !== "" ||
     preset !== "last7Days" ||
+    from !== "" ||
+    to !== "" ||
     status !== "all" ||
     restaurantId !== "all" ||
     sortBy !== "newest"
 
   React.useEffect(() => {
     setPage(1)
-  }, [preset, status, restaurantId, sortBy, debouncedSearch])
+  }, [preset, from, to, status, restaurantId, sortBy, debouncedSearch])
+
+  React.useEffect(() => {
+    if (preset !== "custom") {
+      setFrom("")
+      setTo("")
+    }
+  }, [preset])
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_140px_150px_170px_150px_150px]">
+      <div className="grid gap-2 xl:grid-cols-[minmax(220px,1fr)_minmax(240px,auto)_150px_170px_150px_150px]">
         <div className="relative">
           <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -1149,20 +1254,18 @@ function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
             className="pl-8"
           />
         </div>
-        <Select
+        <AdminDateRangeFilter<CustomerOrderPreset>
           value={preset}
-          onValueChange={(value) => setPreset(value as CustomerOrderPreset)}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="today">Today</SelectItem>
-            <SelectItem value="last7Days">Last 7 days</SelectItem>
-            <SelectItem value="last30Days">Last 30 days</SelectItem>
-            <SelectItem value="thisMonth">This month</SelectItem>
-          </SelectContent>
-        </Select>
+          from={from}
+          to={to}
+          label="Date"
+          triggerClassName="w-full"
+          onPresetChange={setPreset}
+          onRangeChange={(range) => {
+            setFrom(range.from)
+            setTo(range.to)
+          }}
+        />
         <Select
           value={status}
           onValueChange={(value) =>
@@ -1215,6 +1318,8 @@ function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
           onClick={() => {
             setSearch("")
             setPreset("last7Days")
+            setFrom("")
+            setTo("")
             setStatus("all")
             setRestaurantId("all")
             setSortBy("newest")
@@ -1313,10 +1418,12 @@ function CustomerOrdersTab({ customer }: { customer: AdminCustomerDetails }) {
 }
 
 export function UsersPage() {
+  const queryClient = useQueryClient()
   const [search, setSearch] = React.useState("")
   const [status, setStatus] = React.useState<CustomerStatusFilter>("all")
   const [requestStatus, setRequestStatus] =
     React.useState<CustomerRequestFilter>("all")
+  const [customerGroupKey, setCustomerGroupKey] = React.useState("none")
   const [sortBy, setSortBy] = React.useState<CustomerSort>("newest")
   const [page, setPage] = React.useState(1)
   const [selectedCustomerId, setSelectedCustomerId] = React.useState("")
@@ -1325,13 +1432,29 @@ export function UsersPage() {
   const [columnVisibility, setColumnVisibility] = React.useState(
     defaultUserColumnVisibility
   )
+  const [saveGroupOpen, setSaveGroupOpen] = React.useState(false)
+  const [editingGroup, setEditingGroup] =
+    React.useState<AdminCustomerGroup | null>(null)
+  const [deleteGroupTarget, setDeleteGroupTarget] =
+    React.useState<AdminCustomerGroup | null>(null)
+  const [groupMembersTarget, setGroupMembersTarget] =
+    React.useState<AdminCustomerGroup | null>(null)
+  const [groupMemberSearch, setGroupMemberSearch] = React.useState("")
+  const [groupName, setGroupName] = React.useState("")
+  const [groupDescription, setGroupDescription] = React.useState("")
   const debouncedSearch = useDebouncedValue(search, 350)
+  const debouncedGroupMemberSearch = useDebouncedValue(groupMemberSearch, 300)
+  const customerGroupsQuery = useQuery({
+    queryKey: ["admin-customer-groups"],
+    queryFn: listAdminCustomerGroups,
+  })
   const customersQuery = useQuery({
     queryKey: [
       "admin-customers",
       debouncedSearch,
       status,
       requestStatus,
+      customerGroupKey,
       sortBy,
       page,
     ],
@@ -1340,10 +1463,116 @@ export function UsersPage() {
         search: debouncedSearch,
         status,
         requestStatus,
+        customerGroupKey: customerGroupKey === "none" ? undefined : customerGroupKey,
         sortBy,
         page,
         pageSize: 12,
       }),
+  })
+  const groupMembersQuery = useQuery({
+    queryKey: ["admin-customer-group-members", groupMembersTarget?.id],
+    enabled: Boolean(groupMembersTarget),
+    queryFn: () =>
+      listAdminCustomers({
+        customerGroupKey: groupMembersTarget
+          ? `manual:${groupMembersTarget.id}`
+          : undefined,
+        sortBy: "recentLogin",
+        page: 1,
+        pageSize: 50,
+      }),
+  })
+  const groupMemberCandidatesQuery = useQuery({
+    queryKey: [
+      "admin-customer-group-member-candidates",
+      groupMembersTarget?.id,
+      debouncedGroupMemberSearch,
+    ],
+    enabled: Boolean(groupMembersTarget),
+    queryFn: () =>
+      listAdminCustomers({
+        search: debouncedGroupMemberSearch,
+        status: "active",
+        sortBy: "recentLogin",
+        page: 1,
+        pageSize: 20,
+      }),
+  })
+
+  const saveGroupMutation = useMutation({
+    mutationFn: createAdminCustomerGroup,
+    onSuccess: (group) => {
+      toast.success(`${group.name} group saved`)
+      setSaveGroupOpen(false)
+      setGroupName("")
+      setGroupDescription("")
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-groups"] })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Group save failed"),
+  })
+  const updateGroupMutation = useMutation({
+    mutationFn: (payload: { groupId: string; name: string; description: string }) =>
+      updateAdminCustomerGroup(payload.groupId, {
+        name: payload.name,
+        description: payload.description,
+      }),
+    onSuccess: (group) => {
+      toast.success(`${group.name} group updated`)
+      setSaveGroupOpen(false)
+      setEditingGroup(null)
+      setGroupName("")
+      setGroupDescription("")
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-groups"] })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Group update failed"),
+  })
+  const deleteGroupMutation = useMutation({
+    mutationFn: deleteAdminCustomerGroup,
+    onSuccess: (result) => {
+      toast.success(`${result.group.name} group deleted`)
+      if (customerGroupKey === `manual:${result.group.id}`) {
+        setCustomerGroupKey("none")
+      }
+      if (groupMembersTarget?.id === result.group.id) {
+        setGroupMembersTarget(null)
+      }
+      setDeleteGroupTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-groups"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-customers"] })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Group delete failed"),
+  })
+  const addMemberMutation = useMutation({
+    mutationFn: addAdminCustomerGroupMembers,
+    onSuccess: (group) => {
+      toast.success("Member added to group")
+      setGroupMembersTarget(group)
+      setGroupMemberSearch("")
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-groups"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-group-members"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-customer-group-member-candidates"],
+      })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Member add failed"),
+  })
+  const removeMemberMutation = useMutation({
+    mutationFn: removeAdminCustomerGroupMember,
+    onSuccess: (group) => {
+      toast.success("Member removed from group")
+      setGroupMembersTarget(group)
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-groups"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-customer-group-members"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-customer-group-member-candidates"],
+      })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Member remove failed"),
   })
 
   const customers = customersQuery.data?.items ?? []
@@ -1355,11 +1584,58 @@ export function UsersPage() {
     search.trim() !== "" ||
     status !== "all" ||
     requestStatus !== "all" ||
+    customerGroupKey !== "none" ||
     sortBy !== "newest"
+  const groupMembers = groupMembersQuery.data?.items ?? []
+  const groupMemberIds = new Set(groupMembers.map((customer) => customer.id))
+  const groupMemberCandidates = groupMemberCandidatesQuery.data?.items ?? []
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, status, requestStatus, sortBy])
+  }, [debouncedSearch, status, requestStatus, customerGroupKey, sortBy])
+
+  function openCreateGroupDialog() {
+    setEditingGroup(null)
+    setGroupName("")
+    setGroupDescription("")
+    setSaveGroupOpen(true)
+  }
+
+  function openEditGroupDialog(group: AdminCustomerGroup) {
+    setEditingGroup(group)
+    setGroupName(group.name)
+    setGroupDescription(group.description)
+    setSaveGroupOpen(true)
+  }
+
+  function openMembersDrawer(group: AdminCustomerGroup) {
+    setGroupMembersTarget(group)
+    setGroupMemberSearch("")
+  }
+
+  function submitGroupForm() {
+    if (editingGroup) {
+      updateGroupMutation.mutate({
+        groupId: editingGroup.id,
+        name: groupName,
+        description: groupDescription,
+      })
+      return
+    }
+
+    saveGroupMutation.mutate({
+      name: groupName,
+      description: groupDescription,
+      sourceFilter: {
+        search: debouncedSearch,
+        status,
+        requestStatus,
+        customerGroupKey:
+          customerGroupKey === "none" ? undefined : customerGroupKey,
+        sortBy,
+      },
+    })
+  }
 
   return (
     <>
@@ -1408,16 +1684,118 @@ export function UsersPage() {
       </div>
 
       <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <UsersRound className="size-4" />
+                Saved audience groups
+              </CardTitle>
+              <CardDescription>
+                Create manual customer groups from the current filters and reuse
+                them for promotional notifications.
+              </CardDescription>
+            </div>
+            <Button type="button" variant="outline" onClick={openCreateGroupDialog}>
+              <Save className="size-4" />
+              Save current filter
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {(customerGroupsQuery.data?.items ?? []).length ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {(customerGroupsQuery.data?.items ?? []).slice(0, 6).map((group) => (
+                <div
+                  key={group.id}
+                  className="rounded-xl border bg-muted/20 p-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{group.name}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                        {group.description || "Manual saved customer group"}
+                      </p>
+                    </div>
+                    <Badge variant="outline">{group.memberCount}</Badge>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openMembersDrawer(group)}
+                    >
+                      <Eye className="size-4" />
+                      Members
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setCustomerGroupKey(`manual:${group.id}`)
+                        setPage(1)
+                      }}
+                    >
+                      Use filter
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      onClick={() => openEditGroupDialog(group)}
+                      aria-label={`Edit ${group.name}`}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setDeleteGroupTarget(group)}
+                      aria-label={`Delete ${group.name}`}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed bg-muted/20 p-6 text-center">
+              <UsersRound className="mx-auto size-8 text-muted-foreground" />
+              <p className="mt-3 font-medium">No manual groups yet</p>
+              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                Filter users below, then save that result as a manual audience
+                group for future promo pushes.
+              </p>
+              <Button
+                type="button"
+                className="mt-4"
+                variant="outline"
+                onClick={openCreateGroupDialog}
+              >
+                <Save className="size-4" />
+                Create first group
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader className="gap-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-4">
             <div>
               <CardTitle>Customer directory</CardTitle>
               <CardDescription>
                 Search customers and review account health from one place.
               </CardDescription>
             </div>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_150px_170px_170px_auto_auto]">
-              <div className="relative">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-[minmax(260px,1fr)_150px_170px_170px_190px_auto_auto_auto]">
+              <div className="relative sm:col-span-2 lg:col-span-2 2xl:col-span-1">
                 <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
@@ -1432,7 +1810,7 @@ export function UsersPage() {
                   setStatus(value as CustomerStatusFilter)
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1448,7 +1826,7 @@ export function UsersPage() {
                   setRequestStatus(value as CustomerRequestFilter)
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1464,7 +1842,7 @@ export function UsersPage() {
                 value={sortBy}
                 onValueChange={(value) => setSortBy(value as CustomerSort)}
               >
-                <SelectTrigger>
+                <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1474,9 +1852,34 @@ export function UsersPage() {
                   <SelectItem value="highestSpend">Highest spend</SelectItem>
                 </SelectContent>
               </Select>
+              <Select value={customerGroupKey} onValueChange={setCustomerGroupKey}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Audience group" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">All groups</SelectItem>
+                  {smartCustomerGroups.map((group) => (
+                    <SelectItem key={group.value} value={group.value}>
+                      {group.label}
+                    </SelectItem>
+                  ))}
+                  {(customerGroupsQuery.data?.items ?? []).length ? (
+                    <SelectGroup>
+                      <SelectLabel>Saved groups</SelectLabel>
+                      {(customerGroupsQuery.data?.items ?? []).map(
+                        (group: AdminCustomerGroup) => (
+                          <SelectItem key={group.id} value={`manual:${group.id}`}>
+                            {group.name} ({group.memberCount})
+                          </SelectItem>
+                        )
+                      )}
+                    </SelectGroup>
+                  ) : null}
+                </SelectContent>
+              </Select>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline">
+                  <Button variant="outline" className="w-full justify-between">
                     <TableConfig className="size-4" />
                     Columns
                     <ChevronDown className="size-4" />
@@ -1502,17 +1905,28 @@ export function UsersPage() {
               </DropdownMenu>
               <Button
                 variant="outline"
+                className="w-full"
                 disabled={!hasFilters}
                 onClick={() => {
                   setSearch("")
                   setStatus("all")
                   setRequestStatus("all")
+                  setCustomerGroupKey("none")
                   setSortBy("newest")
                   setPage(1)
                 }}
               >
                 <RotateCcw className="size-4" />
                 Reset filter
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={openCreateGroupDialog}
+              >
+                <Save className="size-4" />
+                Save group
               </Button>
             </div>
           </div>
@@ -1683,6 +2097,364 @@ export function UsersPage() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={saveGroupOpen} onOpenChange={setSaveGroupOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {editingGroup ? "Edit customer group" : "Save customer group"}
+            </DialogTitle>
+            <DialogDescription>
+              {editingGroup
+                ? "Update the saved group's admin-facing name and note."
+                : "Save the current user filter as a reusable audience for future promotional notifications."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Group name</Label>
+              <Input
+                value={groupName}
+                onChange={(event) => setGroupName(event.target.value)}
+                placeholder="Example: Dhaka weekend buyers"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Textarea
+                value={groupDescription}
+                onChange={(event) => setGroupDescription(event.target.value)}
+                placeholder="Internal note for the admin team"
+                rows={3}
+              />
+            </div>
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+              <div className="font-medium">
+                {editingGroup
+                  ? `${editingGroup.memberCount} saved members`
+                  : `${customersQuery.data?.total ?? 0} users match right now`}
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {editingGroup
+                  ? "Editing does not change the saved members."
+                  : "The group stores the matched customers now. You can still use smart filters later for live audience targeting."}
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setSaveGroupOpen(false)
+                setEditingGroup(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={
+                saveGroupMutation.isPending ||
+                updateGroupMutation.isPending ||
+                !groupName.trim()
+              }
+              onClick={submitGroupForm}
+            >
+              {saveGroupMutation.isPending || updateGroupMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              {editingGroup ? "Update group" : "Save group"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Sheet
+        open={Boolean(groupMembersTarget)}
+        onOpenChange={(open) => {
+          if (!open) setGroupMembersTarget(null)
+        }}
+      >
+        <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
+          <SheetHeader className="border-b px-6 py-5">
+            <SheetTitle>{groupMembersTarget?.name ?? "Group members"}</SheetTitle>
+            <SheetDescription>
+              Add, remove, and review customers inside this manual audience
+              group.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="grid flex-1 gap-4 overflow-y-auto p-6 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="space-y-3">
+              <div className="rounded-xl border bg-muted/30 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="text-lg font-semibold">
+                      {groupMembersTarget?.memberCount ?? 0} members
+                    </div>
+                    <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+                      {groupMembersTarget?.description || "No description added."}
+                    </p>
+                  </div>
+                  {groupMembersTarget ? (
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openEditGroupDialog(groupMembersTarget)}
+                      >
+                        <Pencil className="size-4" />
+                        Edit group
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setDeleteGroupTarget(groupMembersTarget)}
+                      >
+                        <Trash2 className="size-4" />
+                        Delete
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border">
+                <div className="flex items-center justify-between gap-3 border-b bg-muted/30 px-4 py-3">
+                  <div>
+                    <p className="font-medium">Current members</p>
+                    <p className="text-xs text-muted-foreground">
+                      These users receive notifications sent to this group.
+                    </p>
+                  </div>
+                  {groupMembersQuery.isFetching ? (
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                  ) : null}
+                </div>
+                <div className="max-h-[560px] overflow-y-auto">
+                  {groupMembers.map((customer) => (
+                    <div
+                      key={customer.id}
+                      className="flex flex-col gap-3 border-b p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <button
+                        type="button"
+                        className="flex min-w-0 items-center gap-3 text-left"
+                        onClick={() => setSelectedCustomerId(customer.id)}
+                      >
+                        <Avatar className="size-9">
+                          <AvatarFallback>
+                            {getInitials(customer.fullName)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium">
+                            {customer.fullName}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {customer.phone || customer.email || "No contact"}
+                          </span>
+                          <span className="mt-2 block">
+                            <CustomerMiniStats customer={customer} />
+                          </span>
+                        </span>
+                      </button>
+                      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                        <Badge
+                          variant="outline"
+                          className={getCustomerStatusBadgeClass(customer.status)}
+                        >
+                          {customer.status}
+                        </Badge>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            removeMemberMutation.isPending || !groupMembersTarget
+                          }
+                          onClick={() => {
+                            if (groupMembersTarget) {
+                              removeMemberMutation.mutate({
+                                groupId: groupMembersTarget.id,
+                                customerId: customer.id,
+                              })
+                            }
+                          }}
+                        >
+                          {removeMemberMutation.isPending ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <UserMinus className="size-4" />
+                          )}
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  {groupMembersQuery.isLoading ? (
+                    <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Loading members...
+                    </div>
+                  ) : null}
+                  {!groupMembersQuery.isLoading && !groupMembers.length ? (
+                    <div className="p-8 text-center text-sm text-muted-foreground">
+                      No members found for this group.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-xl border bg-card p-4">
+                <div className="flex items-center gap-2">
+                  <UserPlus className="size-4 text-muted-foreground" />
+                  <div>
+                    <p className="font-medium">Add members</p>
+                    <p className="text-xs text-muted-foreground">
+                      Search active customers and add them to this group.
+                    </p>
+                  </div>
+                </div>
+                <div className="relative mt-4">
+                  <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={groupMemberSearch}
+                    onChange={(event) => setGroupMemberSearch(event.target.value)}
+                    placeholder="Search by name or phone"
+                    className="pl-8"
+                  />
+                </div>
+              </div>
+
+              <div className="overflow-hidden rounded-xl border">
+                <div className="flex items-center justify-between gap-3 border-b bg-muted/30 px-4 py-3">
+                  <p className="font-medium">Available customers</p>
+                  {groupMemberCandidatesQuery.isFetching ? (
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                  ) : null}
+                </div>
+                <div className="max-h-[620px] overflow-y-auto">
+                  {groupMemberCandidates.map((customer) => {
+                    const alreadyAdded = groupMemberIds.has(customer.id)
+                    return (
+                      <div
+                        key={customer.id}
+                        className="flex flex-col gap-3 border-b p-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <button
+                          type="button"
+                          className="flex min-w-0 items-center gap-3 text-left"
+                          onClick={() => setSelectedCustomerId(customer.id)}
+                        >
+                          <Avatar className="size-9">
+                            <AvatarFallback>
+                              {getInitials(customer.fullName)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="min-w-0">
+                            <span className="block truncate font-medium">
+                              {customer.fullName}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {customer.phone || customer.email || "No contact"}
+                            </span>
+                            <span className="mt-2 block">
+                              <CustomerMiniStats customer={customer} />
+                            </span>
+                          </span>
+                        </button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant={alreadyAdded ? "secondary" : "outline"}
+                          disabled={
+                            alreadyAdded ||
+                            addMemberMutation.isPending ||
+                            !groupMembersTarget
+                          }
+                          onClick={() => {
+                            if (groupMembersTarget) {
+                              addMemberMutation.mutate({
+                                groupId: groupMembersTarget.id,
+                                customerIds: [customer.id],
+                              })
+                            }
+                          }}
+                        >
+                          {addMemberMutation.isPending ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : alreadyAdded ? (
+                            <CheckCircle2 className="size-4" />
+                          ) : (
+                            <Plus className="size-4" />
+                          )}
+                          {alreadyAdded ? "Added" : "Add"}
+                        </Button>
+                      </div>
+                    )
+                  })}
+                  {groupMemberCandidatesQuery.isLoading ? (
+                    <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Loading customers...
+                    </div>
+                  ) : null}
+                  {!groupMemberCandidatesQuery.isLoading &&
+                  !groupMemberCandidates.length ? (
+                    <div className="p-8 text-center text-sm text-muted-foreground">
+                      No customers found.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <AlertDialog
+        open={Boolean(deleteGroupTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteGroupTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete customer group?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the saved group from admin targeting. Customers are
+              not deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteGroupMutation.isPending}
+              onClick={() => {
+                if (deleteGroupTarget) {
+                  deleteGroupMutation.mutate(deleteGroupTarget.id)
+                }
+              }}
+            >
+              {deleteGroupMutation.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Delete group
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <CustomerStatusDialog
         target={statusTarget}

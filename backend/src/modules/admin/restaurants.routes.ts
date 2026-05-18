@@ -11,6 +11,7 @@ import {
   patchAdminRestaurantCommission,
   patchAdminRestaurantDeliveryPricing,
   patchAdminRestaurantMerchandising,
+  patchAdminRestaurantPayoutStatus,
   patchAdminRestaurantVisibility,
   postAdminRestaurantFinanceReconcile,
   postAdminRestaurant,
@@ -47,6 +48,10 @@ adminRestaurantsRouter.patch(
 adminRestaurantsRouter.post(
   "/restaurants/:restaurantId/finance/reconcile",
   postAdminRestaurantFinanceReconcile,
+);
+adminRestaurantsRouter.patch(
+  "/restaurants/:restaurantId/payouts/:payoutId/status",
+  patchAdminRestaurantPayoutStatus,
 );
 adminRestaurantsRouter.patch(
   "/restaurants/:restaurantId/visibility",

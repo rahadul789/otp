@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import { RestaurantModel, RiderModel } from "../auth/auth.model";
 import { CustomerModel, VoucherRedemptionModel } from "../customer/customer.model";
 import { LedgerEntryModel } from "../owner/finance.model";
+import { aggregateFinalizedLedgerEntries } from "../owner/finance.service";
 import { ReviewModel } from "../owner/experience.model";
 import { OrderModel } from "../owner/operational.model";
 import { RiderPayrollCycleModel } from "./rider-payroll.model";
@@ -351,29 +352,10 @@ export async function getAdminReports(params: ReportParams) {
       },
       { $sort: { count: -1 } },
     ]),
-    LedgerEntryModel.aggregate<Record<string, any>>([
-      { $match: { entryType: "earning" } },
-      {
-        $lookup: {
-          from: OrderModel.collection.name,
-          localField: "orderId",
-          foreignField: "_id",
-          as: "order",
-        },
-      },
-      { $addFields: { order: { $arrayElemAt: ["$order", 0] } } },
-      { $match: { "order.status": "Delivered" } },
-      {
-        $addFields: {
-          reportDeliveredAt: {
-            $ifNull: [
-              "$order.timestamps.Delivered",
-              { $ifNull: ["$order.timestamps.deliveredAt", "$order.createdAt"] },
-            ],
-          },
-        },
-      },
-      { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
+    aggregateFinalizedLedgerEntries(
+      { entryType: "earning" },
+      [
+      { $match: rangeMatchOn("effectiveAt", range.start, range.end) },
       {
         $group: {
           _id: null,
@@ -389,7 +371,8 @@ export async function getAdminReports(params: ReportParams) {
           paidOut: { $sum: { $cond: [{ $eq: ["$settlementStatus", "paid_out"] }, { $abs: "$netAmount" }, 0] } },
         },
       },
-    ]),
+      ],
+    ),
     LedgerEntryModel.aggregate<Record<string, any>>([
       { $match: { entryType: "refund", createdAt: { $gte: range.start, $lte: range.end } } },
       {
@@ -546,9 +529,30 @@ export async function getAdminReports(params: ReportParams) {
         $group: {
           _id: "$voucherId",
           uses: { $sum: 1 },
-          discount: { $sum: { $ifNull: ["$discountAmount", 0] } },
-          ownerFundedDiscount: { $sum: { $ifNull: ["$discountBreakdown.ownerDiscountCost", 0] } },
-          platformFundedDiscount: { $sum: { $ifNull: ["$discountBreakdown.platformDiscountCost", 0] } },
+          discount: {
+            $sum: {
+              $ifNull: [
+                "$discountBreakdown.discountAmount",
+                { $ifNull: ["$discountAmount", 0] },
+              ],
+            },
+          },
+          ownerFundedDiscount: {
+            $sum: {
+              $ifNull: [
+                "$discountBreakdown.ownerDiscountCost",
+                { $ifNull: ["$discountBreakdown.ownerFundedAmount", 0] },
+              ],
+            },
+          },
+          platformFundedDiscount: {
+            $sum: {
+              $ifNull: [
+                "$discountBreakdown.platformDiscountCost",
+                { $ifNull: ["$discountBreakdown.platformFundedAmount", 0] },
+              ],
+            },
+          },
           revenue: { $sum: { $ifNull: ["$order.pricing.total", 0] } },
           fundedBy: { $last: "$voucherSnapshot.fundedBy" },
           name: { $last: "$voucherSnapshot.name" },
@@ -658,6 +662,7 @@ export async function getAdminReports(params: ReportParams) {
       platformCommission: numberValue(ledger.platformCommission),
       restaurantPayable: numberValue(ledger.restaurantPayable),
       discountCost: numberValue(ledger.discountCost),
+      platformDiscountCost: numberValue(ledger.platformDiscountCost),
       deliveryFees: numberValue(delivered.deliveryFees),
       riderPayrollExpense: payrollSummary.netPayable,
       platformGrossIncome,

@@ -2,7 +2,6 @@ import * as React from "react"
 
 import { format, formatDistanceToNowStrict } from "date-fns"
 import {
-  Banknote,
   BadgeDollarSign,
   Ban,
   CheckCircle2,
@@ -23,6 +22,7 @@ import {
 } from "lucide-react"
 
 import {
+  buildOrderDateFilterQuery,
   defaultOrderDateFilter,
   OrderDateFilter,
   type OrderDateFilterValue,
@@ -411,6 +411,10 @@ function getNextPrimaryAction(status: OrderStatus) {
   return null
 }
 
+function canOwnerCancelOrder(status: OrderStatus) {
+  return status === "Accepted" || status === "Preparing"
+}
+
 function OrdersTable({
   orders,
   emptyTitle,
@@ -595,6 +599,21 @@ function OrdersTable({
                             {isRejectPending ? "Rejecting..." : "Reject"}
                           </Button>
                         ) : null}
+                        {canOwnerCancelOrder(order.currentStatus) ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onUpdateStatus(order.id, "Cancelled")}
+                            disabled={isPendingRow}
+                          >
+                            {isStatusPending ? (
+                              <LoaderCircle className="size-4 animate-spin" />
+                            ) : (
+                              <Ban className="size-4" />
+                            )}
+                            {isStatusPending ? "Cancelling..." : "Cancel"}
+                          </Button>
+                        ) : null}
                         {primaryAction ? (
                           <Button
                             size="sm"
@@ -681,17 +700,7 @@ export function OrdersPage() {
   const queryClient = useQueryClient()
   const debouncedSearch = useDebouncedValue(search)
   const historyRangeQuery = React.useMemo(
-    () => ({
-      preset: historyDateFilter.preset,
-      from:
-        historyDateFilter.preset === "custom" && historyDateFilter.range?.from
-          ? format(historyDateFilter.range.from, "yyyy-MM-dd")
-          : undefined,
-      to:
-        historyDateFilter.preset === "custom" && historyDateFilter.range?.to
-          ? format(historyDateFilter.range.to, "yyyy-MM-dd")
-          : undefined,
-    }),
+    () => buildOrderDateFilterQuery(historyDateFilter),
     [historyDateFilter]
   )
 
@@ -701,8 +710,7 @@ export function OrdersPage() {
   }, [])
 
   const backendQueryParams = React.useMemo(() => {
-    const shouldFilterClientSide =
-      activeTab === "history" || (activeTab === "live" && showUrgentOnly)
+    const shouldFilterClientSide = activeTab === "live" && showUrgentOnly
 
     return {
       tab: activeTab,
@@ -727,59 +735,22 @@ export function OrdersPage() {
     showUrgentOnly,
     sortBy,
   ])
-  const preloadedHistoryQueryParams = React.useMemo(
-    () => ({
-      ...backendQueryParams,
-      tab: "history" as const,
-      preset: historyRangeQuery.preset,
-      from: historyRangeQuery.from,
-      to: historyRangeQuery.to,
-    }),
-    [backendQueryParams, historyRangeQuery]
-  )
-  const preloadedLiveQueryParams = React.useMemo(
-    () => ({
-      ...backendQueryParams,
-      tab: "live" as const,
-      preset: undefined,
-      from: undefined,
-      to: undefined,
-    }),
-    [backendQueryParams]
-  )
-
   const ordersQuery = useOwnerOrdersQuery(
     ownerAccount.isAuthenticated,
     backendQueryParams
   )
-  useOwnerOrdersQuery(
-    ownerAccount.isAuthenticated && activeTab === "live",
-    preloadedHistoryQueryParams
-  )
-  useOwnerOrdersQuery(
-    ownerAccount.isAuthenticated && activeTab === "history",
-    preloadedLiveQueryParams
-  )
   const liveOrdersCountQuery = useOwnerOrdersQuery(
-    ownerAccount.isAuthenticated,
+    ownerAccount.isAuthenticated && activeTab === "history",
     {
       tab: "live",
       page: 1,
       pageSize: 1,
     }
   )
-  const historyOrdersCountQuery = useOwnerOrdersQuery(
-    ownerAccount.isAuthenticated,
-    {
-      tab: "history",
-      preset: historyRangeQuery.preset,
-      from: historyRangeQuery.from,
-      to: historyRangeQuery.to,
-      page: 1,
-      pageSize: 1,
-    }
-  )
-  const combinedLoading = isLoading || ordersQuery.isPending
+  const initialLoading =
+    isLoading ||
+    (ordersQuery.isPending && !ordersQuery.data && orders.length === 0)
+  const isRefreshing = ordersQuery.isFetching && !initialLoading
   const averagePreparationMinutes = Math.max(
     5,
     storeSettingsQuery.data?.preparationTimeMinutes ?? 20
@@ -934,17 +905,6 @@ export function OrdersPage() {
           liveOrderStatuses.includes(order.currentStatus)
         ).length)
 
-  const historyCount =
-    activeTab === "history"
-      ? totalOrders
-      : ((
-          historyOrdersCountQuery.data as
-            | OwnerListResponse<OwnerOrderResponse>
-            | undefined
-        )?.total ??
-        orders.filter((order) =>
-          historyOrderStatuses.includes(order.currentStatus)
-        ).length)
   const pageCount = Math.max(1, Math.ceil(totalOrders / pageSize))
   const safePageIndex = Math.min(pageIndex, pageCount - 1)
 
@@ -1009,6 +969,10 @@ export function OrdersPage() {
   }, [averagePreparationMinutes, filteredOrders, liveStatusCounts])
 
   const historySummaryCards = React.useMemo(() => {
+    const placedTotal = filteredOrders.reduce(
+      (sum, order) => sum + order.total,
+      0
+    )
     const deliveredOrders = filteredOrders.filter(
       (order) => order.currentStatus === "Delivered"
     )
@@ -1019,9 +983,9 @@ export function OrdersPage() {
     const cancelledTotal = filteredOrders
       .filter((order) => order.currentStatus === "Cancelled")
       .reduce((sum, order) => sum + order.total, 0)
-    const averageOrderValue = deliveredOrders.length
-      ? Math.round(deliveredTotal / deliveredOrders.length)
-      : 0
+    const cancelledOrders = filteredOrders.filter(
+      (order) => order.currentStatus === "Cancelled"
+    )
     const rejectedCount = filteredOrders.filter(
       (order) => order.currentStatus === "Rejected"
     ).length
@@ -1035,25 +999,32 @@ export function OrdersPage() {
 
     return [
       {
-        title: "Delivered Amount",
+        title: "Placed Value",
+        value: formatOrderMoney(placedTotal),
+        hint: "All orders in current filter",
+        icon: ShoppingBag,
+        tone: "info" as const,
+      },
+      {
+        title: "Delivered Value",
         value: formatOrderMoney(deliveredTotal),
-        hint: "Total delivered value",
+        hint: `${deliveredOrders.length} delivered orders`,
         icon: BadgeDollarSign,
         tone: "success" as const,
       },
       {
-        title: "Cancelled Amount",
-        value: formatOrderMoney(cancelledTotal),
-        hint: "Total cancelled value",
+        title: "Cancelled Orders",
+        value: cancelledOrders.length,
+        hint: "Orders cancelled in current filter",
         icon: Ban,
         tone: "rose" as const,
       },
       {
-        title: "Average Value",
-        value: formatOrderMoney(averageOrderValue),
-        hint: "Across delivered orders in current filter",
-        icon: Banknote,
-        tone: "info" as const,
+        title: "Cancelled Value",
+        value: formatOrderMoney(cancelledTotal),
+        hint: "Total cancelled value",
+        icon: Ban,
+        tone: "rose" as const,
       },
       {
         title: "Rejected Orders",
@@ -1133,7 +1104,8 @@ export function OrdersPage() {
             | "Accepted"
             | "Rejected"
             | "Preparing"
-            | "ReadyForPickup",
+            | "ReadyForPickup"
+            | "Cancelled",
           actor: "owner",
           note: meta?.note,
         })
@@ -1235,7 +1207,7 @@ export function OrdersPage() {
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement("a")
     link.href = url
-    link.download = `foodex-order-history-${Date.now()}.csv`
+    link.download = `foodbela-order-history-${Date.now()}.csv`
     link.click()
     window.URL.revokeObjectURL(url)
   }, [filteredOrders])
@@ -1244,12 +1216,19 @@ export function OrdersPage() {
     pendingOrderAction?.orderId === rejectingOrder?.id &&
     pendingOrderAction?.type === "reject"
 
-  if (combinedLoading) {
+  if (initialLoading) {
     return <OrdersSkeleton />
   }
 
   return (
-    <div className="space-y-4 px-4 lg:px-6">
+    <div className="relative space-y-4 px-4 lg:px-6">
+      {isRefreshing ? (
+        <div className="pointer-events-none fixed right-6 top-20 z-40 inline-flex items-center gap-2 rounded-full border bg-background/95 px-3 py-2 text-sm font-medium text-muted-foreground shadow-sm backdrop-blur">
+          <LoaderCircle className="size-4 animate-spin text-primary" />
+          Updating orders
+        </div>
+      ) : null}
+
       <OrderDetailsDialog
         order={viewingOrder}
         open={!!viewingOrder}
@@ -1363,15 +1342,12 @@ export function OrdersPage() {
             </TabsTrigger>
             <TabsTrigger value="history">
               Order History
-              <span className="ml-1 text-xs text-muted-foreground">
-                {historyCount}
-              </span>
             </TabsTrigger>
           </TabsList>
         </div>
 
         <TabsContent value="live" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
             {liveSummaryCards.map((card) => {
               const tone = getSummaryCardTone(card.tone)
               return (
@@ -1508,7 +1484,7 @@ export function OrdersPage() {
         </TabsContent>
 
         <TabsContent value="history" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
             {historySummaryCards.map((card) => {
               const tone = getSummaryCardTone(card.tone)
               return (

@@ -60,6 +60,7 @@ import {
   updateAdminRestaurantCommission,
   updateAdminRestaurantDeliveryPricing,
   updateAdminRestaurantMerchandising,
+  updateAdminRestaurantPayoutStatus,
   updateAdminRestaurantVisibility,
   type AdminRestaurantOrderHistoryItem,
   type AdminRestaurantCreateInput,
@@ -69,10 +70,13 @@ import {
   type AdminVoucherLifecycle,
   type AdminVoucherMode,
   type AdminRiderAssignmentOption,
+  type AdminRestaurantOrderDateFilterPreset,
   type ReviewCase,
 } from "@/lib/admin-api"
+import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Card,
   CardContent,
@@ -121,6 +125,7 @@ import {
 } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Table,
   TableBody,
@@ -137,7 +142,18 @@ type RestaurantSort =
   | "mostOrders"
   | "highestRating"
   | "completionHigh"
-type RestaurantOrderPreset = "today" | "last7Days" | "last30Days" | "thisMonth"
+type RestaurantOrderPreset = Extract<
+  AdminRestaurantOrderDateFilterPreset,
+  | "today"
+  | "yesterday"
+  | "last7Days"
+  | "last30Days"
+  | "last90Days"
+  | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
+  | "custom"
+>
 type RestaurantOrderStatusFilter = "all" | "live" | "delivered" | "cancelled"
 type RestaurantOrderSort = "newest" | "oldest" | "highestValue"
 type PromotionModeFilter = "all" | AdminVoucherMode
@@ -188,6 +204,7 @@ const PRESET_CUISINES = [
 const MAX_CUISINES = 3
 const PREPARATION_TIME_OPTIONS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 60]
 const NETROKONA_COORDINATES = { latitude: 24.8831, longitude: 90.7282 }
+const BANGLADESH_PHONE_PATTERN = /^01\d{9}$/
 const restaurantMarkerIcon = L.divIcon({
   className: "",
   html: '<div class="size-5 rounded-full border-2 border-background bg-primary shadow-md"></div>',
@@ -226,6 +243,7 @@ const defaultCreateForm: AdminRestaurantCreateInput = {
   name: "",
   phone: "",
   email: "",
+  payoutBkashNumber: "",
   cuisineTypes: [],
   tags: [],
   address: "",
@@ -251,8 +269,20 @@ function formatCurrency(value: number) {
   return `Tk ${Math.round(value).toLocaleString()}`
 }
 
+function formatAuditMetadataValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : "Not set"
+}
+
 function formatPercent(value: number) {
   return `${Math.round(value)}%`
+}
+
+function sanitizeBangladeshPhone(value: string) {
+  return value.replace(/\D/g, "").slice(0, 11)
+}
+
+function isValidBangladeshPhone(value: string) {
+  return BANGLADESH_PHONE_PATTERN.test(value)
 }
 
 function getVoucherId(voucher: AdminRestaurantVoucher) {
@@ -345,6 +375,13 @@ function getOrderStatusBadgeClass(status: string) {
     return "border-emerald-200 bg-emerald-50 text-emerald-700"
   }
   return "border-rose-200 bg-rose-50 text-rose-700"
+}
+
+function getPayoutStatusBadgeClass(status: string) {
+  if (status === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (status === "processing") return "border-sky-200 bg-sky-50 text-sky-700"
+  if (status === "failed") return "border-rose-200 bg-rose-50 text-rose-700"
+  return "border-amber-200 bg-amber-50 text-amber-700"
 }
 
 function getNextAdminOrderAction(status: string) {
@@ -633,12 +670,18 @@ function AddRestaurantDialog({
   const [cuisineInput, setCuisineInput] = React.useState("")
   const [tagInput, setTagInput] = React.useState("")
   const [isLocating, setIsLocating] = React.useState(false)
+  const [useOwnerPhoneForRestaurant, setUseOwnerPhoneForRestaurant] =
+    React.useState(true)
+  const [useOwnerPhoneForBkash, setUseOwnerPhoneForBkash] =
+    React.useState(true)
 
   const createMutation = useMutation({
     mutationFn: createAdminRestaurant,
     onSuccess: () => {
       toast.success("Restaurant added successfully.")
       setForm({ ...defaultCreateForm, cuisineTypes: [], tags: [] })
+      setUseOwnerPhoneForRestaurant(true)
+      setUseOwnerPhoneForBkash(true)
       setCuisineInput("")
       setTagInput("")
       onOpenChange(false)
@@ -726,6 +769,26 @@ function AddRestaurantDialog({
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const ownerPhone = sanitizeBangladeshPhone(form.ownerPhone)
+    const restaurantPhone = useOwnerPhoneForRestaurant
+      ? ownerPhone
+      : sanitizeBangladeshPhone(form.phone ?? "")
+    const payoutBkashNumber = useOwnerPhoneForBkash
+      ? ownerPhone
+      : sanitizeBangladeshPhone(form.payoutBkashNumber ?? "")
+
+    if (!isValidBangladeshPhone(ownerPhone)) {
+      toast.error("Enter a valid owner phone number.")
+      return
+    }
+    if (!isValidBangladeshPhone(restaurantPhone)) {
+      toast.error("Enter a valid restaurant contact number.")
+      return
+    }
+    if (!isValidBangladeshPhone(payoutBkashNumber)) {
+      toast.error("Enter a valid bKash payout number.")
+      return
+    }
     if (!(form.cuisineTypes ?? []).length) {
       toast.error("Choose at least one cuisine type.")
       return
@@ -733,10 +796,12 @@ function AddRestaurantDialog({
 
     createMutation.mutate({
       ...form,
+      ownerPhone,
       city: "Netrokona",
       ownerEmail: form.ownerEmail || undefined,
       email: form.email || undefined,
-      phone: form.phone || form.ownerPhone,
+      phone: restaurantPhone,
+      payoutBkashNumber,
     })
   }
 
@@ -770,8 +835,13 @@ function AddRestaurantDialog({
                     id="owner-phone"
                     value={form.ownerPhone}
                     onChange={(event) =>
-                      updateForm("ownerPhone", event.target.value)
+                      updateForm(
+                        "ownerPhone",
+                        sanitizeBangladeshPhone(event.target.value)
+                      )
                     }
+                    inputMode="numeric"
+                    maxLength={11}
                     required
                   />
                 </div>
@@ -813,15 +883,104 @@ function AddRestaurantDialog({
                   />
                 </div>
                 <div className="space-y-2">
-                  <OptionalLabel htmlFor="restaurant-phone">
-                    Restaurant phone
-                  </OptionalLabel>
+                  <Label htmlFor="restaurant-phone">
+                    Restaurant contact number
+                  </Label>
+                  <label
+                    htmlFor="same-restaurant-phone"
+                    className="flex items-start gap-3 rounded-lg border bg-muted/20 p-3 text-sm"
+                  >
+                    <Checkbox
+                      id="same-restaurant-phone"
+                      checked={useOwnerPhoneForRestaurant}
+                      onCheckedChange={(checked) => {
+                        const nextValue = checked === true
+                        setUseOwnerPhoneForRestaurant(nextValue)
+                        if (nextValue) {
+                          updateForm("phone", sanitizeBangladeshPhone(form.ownerPhone))
+                        } else {
+                          updateForm("phone", "")
+                        }
+                      }}
+                    />
+                    <span>
+                      <span className="block font-medium">
+                        Use owner phone for restaurant contact
+                      </span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        Foodbela will contact this number if restaurant support
+                        is needed.
+                      </span>
+                    </span>
+                  </label>
                   <Input
                     id="restaurant-phone"
-                    value={form.phone}
-                    onChange={(event) =>
-                      updateForm("phone", event.target.value)
+                    value={
+                      useOwnerPhoneForRestaurant
+                        ? sanitizeBangladeshPhone(form.ownerPhone)
+                        : form.phone
                     }
+                    onChange={(event) =>
+                      updateForm(
+                        "phone",
+                        sanitizeBangladeshPhone(event.target.value)
+                      )
+                    }
+                    disabled={useOwnerPhoneForRestaurant}
+                    inputMode="numeric"
+                    maxLength={11}
+                  />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="payout-bkash-number">bKash payout number</Label>
+                  <label
+                    htmlFor="same-bkash-phone"
+                    className="flex items-start gap-3 rounded-lg border bg-muted/20 p-3 text-sm"
+                  >
+                    <Checkbox
+                      id="same-bkash-phone"
+                      checked={useOwnerPhoneForBkash}
+                      onCheckedChange={(checked) => {
+                        const nextValue = checked === true
+                        setUseOwnerPhoneForBkash(nextValue)
+                        if (nextValue) {
+                          updateForm(
+                            "payoutBkashNumber",
+                            sanitizeBangladeshPhone(form.ownerPhone)
+                          )
+                        } else {
+                          updateForm("payoutBkashNumber", "")
+                        }
+                      }}
+                    />
+                    <span>
+                      <span className="block font-medium">
+                        Use owner phone as bKash number
+                      </span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        If payout will go to another bKash wallet, uncheck this
+                        and enter the wallet number.
+                      </span>
+                    </span>
+                  </label>
+                  <Input
+                    id="payout-bkash-number"
+                    value={
+                      useOwnerPhoneForBkash
+                        ? sanitizeBangladeshPhone(form.ownerPhone)
+                        : form.payoutBkashNumber
+                    }
+                    onChange={(event) =>
+                      updateForm(
+                        "payoutBkashNumber",
+                        sanitizeBangladeshPhone(event.target.value)
+                      )
+                    }
+                    disabled={useOwnerPhoneForBkash}
+                    inputMode="numeric"
+                    maxLength={11}
+                    placeholder="01XXXXXXXXX"
+                    required
                   />
                 </div>
                 <div className="space-y-2">
@@ -1032,11 +1191,40 @@ function RestaurantDetailsSheet({
     React.useState("500")
   const [deliveryStepAmountDraft, setDeliveryStepAmountDraft] =
     React.useState("5")
+  const [payoutActionTarget, setPayoutActionTarget] = React.useState<{
+    payoutId: string
+    status: "completed" | "failed"
+    expectedStatus: string
+    amount: number
+  } | null>(null)
+  const [payoutProviderReference, setPayoutProviderReference] = React.useState("")
+  const [payoutProviderPayoutId, setPayoutProviderPayoutId] = React.useState("")
+  const [payoutProviderTransactionId, setPayoutProviderTransactionId] = React.useState("")
+  const [payoutPaymentProofUrl, setPayoutPaymentProofUrl] = React.useState("")
+  const [payoutProcessingNote, setPayoutProcessingNote] = React.useState("")
+  const [payoutChecklist, setPayoutChecklist] = React.useState({
+    methodVerified: false,
+    amountMatched: false,
+    referenceReady: false,
+  })
   const [detailsPreset, setDetailsPreset] =
     React.useState<RestaurantOrderPreset>("last7Days")
+  const [detailsFrom, setDetailsFrom] = React.useState("")
+  const [detailsTo, setDetailsTo] = React.useState("")
   const detailsQuery = useQuery({
-    queryKey: ["admin-restaurant-details", restaurantId, detailsPreset],
-    queryFn: () => getAdminRestaurant(restaurantId, { preset: detailsPreset }),
+    queryKey: [
+      "admin-restaurant-details",
+      restaurantId,
+      detailsPreset,
+      detailsFrom,
+      detailsTo,
+    ],
+    queryFn: () =>
+      getAdminRestaurant(restaurantId, {
+        preset: detailsPreset,
+        from: detailsPreset === "custom" ? detailsFrom : undefined,
+        to: detailsPreset === "custom" ? detailsTo : undefined,
+      }),
     enabled: open && Boolean(restaurantId),
   })
   const details = detailsQuery.data
@@ -1056,6 +1244,13 @@ function RestaurantDetailsSheet({
       `${details.deliveryPricing.override.surchargeAmountTaka ?? 5}`
     )
   }, [details])
+
+  React.useEffect(() => {
+    if (detailsPreset !== "custom") {
+      setDetailsFrom("")
+      setDetailsTo("")
+    }
+  }, [detailsPreset])
 
   const visibilityMutation = useMutation({
     mutationFn: updateAdminRestaurantVisibility,
@@ -1141,6 +1336,23 @@ function RestaurantDetailsSheet({
     },
   })
 
+  const payoutStatusMutation = useMutation({
+    mutationFn: updateAdminRestaurantPayoutStatus,
+    onSuccess: () => {
+      toast.success("Payout status updated.")
+      void queryClient.invalidateQueries({ queryKey: ["admin-restaurants"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-restaurant-details", restaurantId],
+      })
+      void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Payout status update failed."
+      )
+    },
+  })
+
   function updateCommission() {
     const commissionRate = Number(commissionDraft)
     if (Number.isNaN(commissionRate)) return
@@ -1200,7 +1412,68 @@ function RestaurantDetailsSheet({
     return Math.max(1, Math.floor(featuredPosition))
   }
 
+  function openPayoutStatusAction(
+    payoutId: string,
+    status: "processing" | "completed" | "failed",
+    expectedStatus: string,
+    amount: number
+  ) {
+    if (status === "processing") {
+      payoutStatusMutation.mutate({
+        restaurantId,
+        payoutId,
+        status,
+        expectedStatus,
+        processingNote: "Approved for payout processing",
+      })
+      return
+    }
+
+    setPayoutActionTarget({ payoutId, status, expectedStatus, amount })
+    setPayoutProviderReference("")
+    setPayoutProviderPayoutId("")
+    setPayoutProviderTransactionId("")
+    setPayoutPaymentProofUrl("")
+    setPayoutProcessingNote("")
+    setPayoutChecklist({
+      methodVerified: false,
+      amountMatched: false,
+      referenceReady: false,
+    })
+  }
+
+  function submitPayoutStatusAction() {
+    if (!payoutActionTarget) return
+    payoutStatusMutation.mutate(
+      {
+        restaurantId,
+        payoutId: payoutActionTarget.payoutId,
+        status: payoutActionTarget.status,
+        expectedStatus: payoutActionTarget.expectedStatus,
+        providerReference: payoutProviderReference || undefined,
+        providerPayoutId: payoutProviderPayoutId || undefined,
+        providerTransactionId: payoutProviderTransactionId || undefined,
+        paymentProofUrl: payoutPaymentProofUrl || undefined,
+        processingNote: payoutProcessingNote || undefined,
+        failureReason:
+          payoutActionTarget.status === "failed"
+            ? payoutProcessingNote || "Marked failed by admin"
+            : undefined,
+      },
+      {
+        onSuccess: () => setPayoutActionTarget(null),
+      }
+    )
+  }
+
+  const payoutChecklistComplete =
+    payoutActionTarget?.status !== "completed" ||
+    (payoutChecklist.methodVerified &&
+      payoutChecklist.amountMatched &&
+      payoutChecklist.referenceReady)
+
   return (
+    <>
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
         <SheetHeader className="border-b">
@@ -1235,6 +1508,7 @@ function RestaurantDetailsSheet({
               deliveryStepAmountDraft={deliveryStepAmountDraft}
               setDeliveryStepAmountDraft={setDeliveryStepAmountDraft}
               reconcilePending={reconcileMutation.isPending}
+              payoutStatusPending={payoutStatusMutation.isPending}
               onVisibilityChange={(isVisible) =>
                 visibilityMutation.mutate({ restaurantId, isVisible })
               }
@@ -1263,8 +1537,17 @@ function RestaurantDetailsSheet({
                 })
               }
               onReconcileFinance={() => reconcileMutation.mutate(restaurantId)}
+              onPayoutStatusChange={(payoutId, status, expectedStatus, amount) =>
+                openPayoutStatusAction(payoutId, status, expectedStatus, amount)
+              }
               detailsPreset={detailsPreset}
+              detailsFrom={detailsFrom}
+              detailsTo={detailsTo}
               setDetailsPreset={setDetailsPreset}
+              setDetailsRange={({ from, to }) => {
+                setDetailsFrom(from)
+                setDetailsTo(to)
+              }}
             />
           ) : (
             <div className="p-4 text-sm text-muted-foreground">
@@ -1274,6 +1557,136 @@ function RestaurantDetailsSheet({
         </ScrollArea>
       </SheetContent>
     </Sheet>
+    <Dialog
+      open={Boolean(payoutActionTarget)}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) setPayoutActionTarget(null)
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {payoutActionTarget?.status === "completed"
+              ? "Complete payout"
+              : "Fail payout"}
+          </DialogTitle>
+          <DialogDescription>
+            {payoutActionTarget?.status === "completed"
+              ? "Add bKash or bank transaction reference before marking this payout completed."
+              : "Record why this payout failed so the owner and audit trail stay clear."}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4">
+          {payoutActionTarget?.status === "completed" ? (
+            <div className="rounded-xl border bg-muted/20 p-4">
+              <div className="mb-3 text-sm font-medium">Admin payout checklist</div>
+              <div className="grid gap-3 text-sm">
+                {[
+                  ["methodVerified", "Verified payout method and account holder"],
+                  ["amountMatched", `Matched payable amount: ${formatCurrency(payoutActionTarget.amount)}`],
+                  ["referenceReady", "Transaction reference will be added before completion"],
+                ].map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-3">
+                    <Checkbox
+                      checked={payoutChecklist[key as keyof typeof payoutChecklist]}
+                      onCheckedChange={(checked) =>
+                        setPayoutChecklist((current) => ({
+                          ...current,
+                          [key]: checked === true,
+                        }))
+                      }
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="grid gap-2">
+            <Label htmlFor="payout-provider-reference">Reference</Label>
+            <Input
+              id="payout-provider-reference"
+              value={payoutProviderReference}
+              onChange={(event) => setPayoutProviderReference(event.target.value)}
+              placeholder="bKash trxID, bank reference, or voucher number"
+            />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2">
+              <Label htmlFor="payout-provider-id">Provider payout ID</Label>
+              <Input
+                id="payout-provider-id"
+                value={payoutProviderPayoutId}
+                onChange={(event) => setPayoutProviderPayoutId(event.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="payout-transaction-id">Transaction ID</Label>
+              <Input
+                id="payout-transaction-id"
+                value={payoutProviderTransactionId}
+                onChange={(event) => setPayoutProviderTransactionId(event.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="payout-proof-url">Proof URL</Label>
+            <Input
+              id="payout-proof-url"
+              value={payoutPaymentProofUrl}
+              onChange={(event) => setPayoutPaymentProofUrl(event.target.value)}
+              placeholder="Optional receipt/screenshot link"
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="payout-note">Note</Label>
+            <Textarea
+              id="payout-note"
+              value={payoutProcessingNote}
+              onChange={(event) => setPayoutProcessingNote(event.target.value)}
+              placeholder={
+                payoutActionTarget?.status === "failed"
+                  ? "Failure reason"
+                  : "Internal processing note"
+              }
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setPayoutActionTarget(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={
+              payoutStatusMutation.isPending ||
+              !payoutChecklistComplete ||
+              (payoutActionTarget?.status === "completed" &&
+                !payoutProviderReference.trim() &&
+                !payoutProviderPayoutId.trim() &&
+                !payoutProviderTransactionId.trim())
+            }
+            onClick={submitPayoutStatusAction}
+          >
+            {payoutStatusMutation.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : payoutActionTarget?.status === "completed" ? (
+              <CheckCircle2 className="size-4" />
+            ) : (
+              <XCircle className="size-4" />
+            )}
+            Confirm
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }
 
@@ -1869,7 +2282,7 @@ function RestaurantPromotionUsesTab({
         type,
         sortBy,
         page: 1,
-        pageSize: 100,
+        pageSize: 50,
       }),
   })
 
@@ -2153,9 +2566,9 @@ function AdminPromotionDetailsDrawer({
       <SheetContent
         side="right"
         showCloseButton={false}
-        className="w-full max-w-none! p-0 sm:max-w-3xl! md:max-w-4xl!"
+        className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!"
       >
-        <SheetHeader className="sticky top-0 z-10 border-b bg-popover px-6 pb-4">
+        <SheetHeader className="border-b px-6 py-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -2186,7 +2599,7 @@ function AdminPromotionDetailsDrawer({
           </div>
         </SheetHeader>
 
-        <ScrollArea className="h-[calc(100vh-88px)]">
+        <ScrollArea className="min-h-0 flex-1">
           <div className="space-y-6 px-6 py-6">
             <section className="grid gap-4 md:grid-cols-2">
               <Card>
@@ -2433,6 +2846,7 @@ function RestaurantDetailsContent({
   deliveryStepAmountDraft,
   setDeliveryStepAmountDraft,
   reconcilePending,
+  payoutStatusPending,
   onVisibilityChange,
   onFeatureChange,
   onCommissionSave,
@@ -2441,8 +2855,12 @@ function RestaurantDetailsContent({
   onDistanceSurchargeToggle,
   onFeaturedPositionSave,
   onReconcileFinance,
+  onPayoutStatusChange,
   detailsPreset,
+  detailsFrom,
+  detailsTo,
   setDetailsPreset,
+  setDetailsRange,
 }: {
   details: AdminRestaurantDetails
   commissionDraft: string
@@ -2462,6 +2880,7 @@ function RestaurantDetailsContent({
   deliveryStepAmountDraft: string
   setDeliveryStepAmountDraft: (value: string) => void
   reconcilePending: boolean
+  payoutStatusPending: boolean
   onVisibilityChange: (isVisible: boolean) => void
   onFeatureChange: (isFeatured: boolean) => void
   onCommissionSave: () => void
@@ -2470,8 +2889,17 @@ function RestaurantDetailsContent({
   onDistanceSurchargeToggle: (enabled: boolean) => void
   onFeaturedPositionSave: () => void
   onReconcileFinance: () => void
+  onPayoutStatusChange: (
+    payoutId: string,
+    status: "processing" | "completed" | "failed",
+    expectedStatus: string,
+    amount: number
+  ) => void
   detailsPreset: RestaurantOrderPreset
+  detailsFrom: string
+  detailsTo: string
   setDetailsPreset: (value: RestaurantOrderPreset) => void
+  setDetailsRange: (range: { from: string; to: string }) => void
 }) {
   return (
     <div className="space-y-5 p-4">
@@ -2482,28 +2910,23 @@ function RestaurantDetailsContent({
             Revenue is counted only from delivered orders.
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Select
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <AdminDateRangeFilter<RestaurantOrderPreset>
             value={detailsPreset}
-            onValueChange={(value) =>
-              setDetailsPreset(value as RestaurantOrderPreset)
-            }
-          >
-            <SelectTrigger className="w-full sm:w-44">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="today">Today</SelectItem>
-              <SelectItem value="last7Days">Last 7 days</SelectItem>
-              <SelectItem value="last30Days">Last 30 days</SelectItem>
-              <SelectItem value="thisMonth">This month</SelectItem>
-            </SelectContent>
-          </Select>
+            from={detailsFrom}
+            to={detailsTo}
+            label="Date"
+            onPresetChange={setDetailsPreset}
+            onRangeChange={setDetailsRange}
+          />
           <Button
             type="button"
             variant="outline"
-            disabled={detailsPreset === "last7Days"}
-            onClick={() => setDetailsPreset("last7Days")}
+            disabled={detailsPreset === "last7Days" && !detailsFrom && !detailsTo}
+            onClick={() => {
+              setDetailsPreset("last7Days")
+              setDetailsRange({ from: "", to: "" })
+            }}
           >
             <RotateCcw className="size-4" />
             Reset filter
@@ -3063,6 +3486,28 @@ function RestaurantDetailsContent({
           </div>
           <Card>
             <CardHeader>
+              <CardTitle>Payout policy</CardTitle>
+              <CardDescription>
+                Current global rules from Settings &gt; Payments. These are enforced by backend before owners can request payout.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3 text-sm md:grid-cols-3">
+              <InfoRow
+                label="Settlement hold"
+                value={`${details.finance.settlementDelayDays} day${details.finance.settlementDelayDays === 1 ? "" : "s"}`}
+              />
+              <InfoRow
+                label="Minimum request"
+                value={formatCurrency(details.finance.minimumPayoutAmountTaka)}
+              />
+              <InfoRow
+                label="Active request lock"
+                value={details.finance.oneActivePayoutRequest ? "Enabled" : "Disabled"}
+              />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
               <CardTitle>Payout method</CardTitle>
               <CardDescription>
                 Settlement destination and verification.
@@ -3085,6 +3530,127 @@ function RestaurantDetailsContent({
                 label="Verified"
                 value={details.payoutMethod?.isVerified ? "Yes" : "No"}
               />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent payout requests</CardTitle>
+              <CardDescription>
+                Move owner payout requests through processing, completed, or failed.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Reference</TableHead>
+                      <TableHead>Amount</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Requested</TableHead>
+                      <TableHead>Processed</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {details.finance.recentPayouts.length ? (
+                      details.finance.recentPayouts.map((payout) => (
+                        <TableRow key={payout.id}>
+                          <TableCell className="font-medium">
+                            <div>{payout.batchReference || payout.id}</div>
+                            {payout.providerReference || payout.providerTransactionId ? (
+                              <div className="mt-1 text-xs font-normal text-muted-foreground">
+                                {payout.providerTransactionId || payout.providerReference}
+                              </div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>{formatCurrency(payout.amount)}</TableCell>
+                          <TableCell>
+                            <Badge
+                              variant="outline"
+                              className={getPayoutStatusBadgeClass(payout.status)}
+                            >
+                              {payout.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>{formatShortDate(payout.requestedAt)}</TableCell>
+                          <TableCell>{formatShortDate(payout.processedAt)}</TableCell>
+                          <TableCell>
+                            <div className="flex justify-end gap-2">
+                              {payout.status === "pending" ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={payoutStatusPending}
+                                  onClick={() =>
+                                    onPayoutStatusChange(
+                                      payout.id,
+                                      "processing",
+                                      payout.status,
+                                      payout.amount
+                                    )
+                                  }
+                                >
+                                  Process
+                                </Button>
+                              ) : null}
+                              {["pending", "processing"].includes(payout.status) ? (
+                                <>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={payoutStatusPending}
+                                    onClick={() =>
+                                      onPayoutStatusChange(
+                                        payout.id,
+                                        "completed",
+                                        payout.status,
+                                        payout.amount
+                                      )
+                                    }
+                                  >
+                                    Complete
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="destructive"
+                                    disabled={payoutStatusPending}
+                                    onClick={() =>
+                                      onPayoutStatusChange(
+                                        payout.id,
+                                        "failed",
+                                        payout.status,
+                                        payout.amount
+                                      )
+                                    }
+                                  >
+                                    Fail
+                                  </Button>
+                                </>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">
+                                  Final
+                                </span>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell
+                          colSpan={6}
+                          className="py-6 text-center text-sm text-muted-foreground"
+                        >
+                          No payout requests yet.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -3117,9 +3683,9 @@ function RestaurantDetailsContent({
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>Admin audit log</CardTitle>
+                <CardTitle>Audit log</CardTitle>
                 <CardDescription>
-                  Moderation, commission, and finance sync actions.
+                  Admin and owner-side changes that affect restaurant operations.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -3132,6 +3698,26 @@ function RestaurantDetailsContent({
                     <p className="mt-1 text-sm text-muted-foreground">
                       {log.description}
                     </p>
+                    {log.action === "restaurant_contact_updated" ? (
+                      <div className="mt-3 grid gap-2 rounded-lg bg-muted/40 p-3 text-xs sm:grid-cols-2">
+                        <div>
+                          <div className="font-medium text-muted-foreground">
+                            Previous number
+                          </div>
+                          <div className="mt-1 font-semibold">
+                            {formatAuditMetadataValue(log.metadata.previousPhone)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-medium text-muted-foreground">
+                            New number
+                          </div>
+                          <div className="mt-1 font-semibold">
+                            {formatAuditMetadataValue(log.metadata.nextPhone)}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                     <p className="mt-2 text-xs text-muted-foreground">
                       {log.actorName} - {formatDate(log.createdAt)}
                     </p>
@@ -3139,7 +3725,7 @@ function RestaurantDetailsContent({
                 ))}
                 {details.auditLogs.length === 0 ? (
                   <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-                    No admin audit logs yet.
+                    No audit logs yet.
                   </div>
                 ) : null}
               </CardContent>

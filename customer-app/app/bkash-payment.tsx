@@ -1,76 +1,116 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { WebView } from "react-native-webview";
 
 import { useCustomerPlaceOrderMutation } from "@/src/hooks/use-customer-api";
+import { trackCustomerEvent } from "@/src/lib/analytics";
 import { getApiBaseUrl } from "@/src/lib/api";
+import {
+  clearBkashPaymentDraft,
+  getBkashPaymentDraft,
+  type BkashPaymentDraft,
+} from "@/src/lib/bkash-payment-draft";
 import { useCartStore } from "@/src/store/cart-store";
 import { palette } from "@/src/theme/palette";
 
-type CartQuoteItemPayload = {
-  itemId: string;
-  quantity: number;
-  selectedVariantOptions?: { groupName: string; optionLabel: string }[];
-  selectedAddOnOptions?: { groupName: string; optionLabel: string }[];
-};
-
-function isCartQuoteItemPayload(value: unknown): value is CartQuoteItemPayload {
-  if (!value || typeof value !== "object") {
+function isTrustedBkashPaymentUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return (
+      url.protocol === "https:" &&
+      (hostname === "bka.sh" ||
+        hostname.endsWith(".bka.sh") ||
+        hostname === "bkash.com" ||
+        hostname.endsWith(".bkash.com"))
+    );
+  } catch {
     return false;
   }
-
-  const candidate = value as Record<string, unknown>;
-
-  return (
-    typeof candidate.itemId === "string" &&
-    candidate.itemId.length > 0 &&
-    typeof candidate.quantity === "number" &&
-    Number.isFinite(candidate.quantity) &&
-    candidate.quantity > 0
-  );
 }
 
 export default function BkashPaymentScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
-    url?: string;
     sessionId?: string;
-    walletNumber?: string;
-    restaurantId?: string;
-    voucherCode?: string;
-    deliveryLabel?: string;
-    deliveryAddressLine?: string;
-    deliveryLatitude?: string;
-    deliveryLongitude?: string;
-    cartPayload?: string;
   }>();
   const [loadError, setLoadError] = useState("");
   const [paymentProcessing, setPaymentProcessing] = useState(false);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [callbackHandled, setCallbackHandled] = useState(false);
+  const [draft, setDraft] = useState<BkashPaymentDraft | null>(null);
+  const [isDraftLoading, setIsDraftLoading] = useState(true);
+  const [canRetryOrderCreation, setCanRetryOrderCreation] = useState(false);
   const placeOrderMutation = useCustomerPlaceOrderMutation();
   const clearCart = useCartStore((state) => state.clearCart);
+  const isMountedRef = useRef(true);
+  const hasNavigatedRef = useRef(false);
 
-  const paymentUrl = useMemo(
-    () => (typeof params.url === "string" ? params.url : ""),
-    [params.url]
-  );
+  const paymentUrl = draft?.paymentUrl ?? "";
   const bkashReturnPrefix = useMemo(
     () => `${getApiBaseUrl()}/customer/payments/bkash/return`,
     []
   );
 
   useEffect(() => {
-    if (!callbackUrl || paymentProcessing || callbackHandled) {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!paymentProcessing) {
       return;
     }
 
+    const subscription = BackHandler.addEventListener(
+      "hardwareBackPress",
+      () => true,
+    );
+
+    return () => subscription.remove();
+  }, [paymentProcessing]);
+
+  useEffect(() => {
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
+    if (!sessionId) {
+      setLoadError("bKash session unavailable.");
+      setIsDraftLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+    void getBkashPaymentDraft(sessionId).then((nextDraft) => {
+      if (!isMounted) return;
+
+      if (!nextDraft) {
+        setLoadError("bKash session unavailable. Please start payment again.");
+      } else if (!isTrustedBkashPaymentUrl(nextDraft.paymentUrl)) {
+        setLoadError("This bKash payment link could not be verified.");
+      } else {
+        setDraft(nextDraft);
+      }
+
+      setIsDraftLoading(false);
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [params.sessionId]);
+
+  useEffect(() => {
+    if (!callbackUrl || !draft || paymentProcessing || callbackHandled) {
+      return;
+    }
+
+    setCanRetryOrderCreation(false);
     const callbackParams = Linking.parse(callbackUrl).queryParams ?? {};
     const status = typeof callbackParams.status === "string" ? callbackParams.status : "";
 
@@ -80,6 +120,26 @@ export default function BkashPaymentScreen() {
 
     if (status !== "success") {
       setCallbackHandled(true);
+      void trackCustomerEvent({
+        eventType: status === "cancelled" ? "payment_cancelled" : "payment_failed",
+        path: "/bkash-payment",
+        screenName: "bkash-payment",
+        entityType: "payment",
+        entityId:
+          typeof callbackParams.paymentID === "string" ? callbackParams.paymentID : "",
+        metadata: {
+          provider: "Bkash",
+          status,
+          sessionId:
+            typeof callbackParams.sessionId === "string"
+              ? callbackParams.sessionId
+              : draft.sessionId,
+          restaurantId: draft.restaurantId,
+        },
+      });
+      void clearBkashPaymentDraft(draft.sessionId).catch(() => undefined);
+      if (!isMountedRef.current) return;
+
       setLoadError(
         status === "cancelled"
           ? "You cancelled the bKash payment."
@@ -90,79 +150,88 @@ export default function BkashPaymentScreen() {
       return;
     }
 
-    const rawCartPayload =
-      typeof params.cartPayload === "string" ? params.cartPayload : "";
-    let parsedCartPayload: CartQuoteItemPayload[] = [];
+    if (typeof callbackParams.orderId === "string" && callbackParams.orderId) {
+      setCallbackHandled(true);
+      void clearBkashPaymentDraft(draft.sessionId).catch(() => undefined);
+      clearCart();
+      if (!isMountedRef.current || hasNavigatedRef.current) return;
 
-    try {
-      const decodedPayload = rawCartPayload
-        ? JSON.parse(decodeURIComponent(rawCartPayload))
-        : [];
-
-      if (!Array.isArray(decodedPayload) || !decodedPayload.every(isCartQuoteItemPayload)) {
-        setLoadError("Payment succeeded, but the order details could not be restored.");
-        return;
-      }
-
-      parsedCartPayload = decodedPayload;
-    } catch {
-      setLoadError("Payment succeeded, but the order details could not be restored.");
-      return;
-    }
-
-    if (
-      !params.restaurantId ||
-      !params.deliveryLabel ||
-      !params.deliveryAddressLine ||
-      !parsedCartPayload.length
-    ) {
-      setLoadError("Payment succeeded, but the order data is incomplete.");
+      hasNavigatedRef.current = true;
+      router.replace({
+        pathname: "/orders/[orderId]",
+        params: {
+          orderId: callbackParams.orderId,
+          justPlaced: "1",
+        },
+      });
       return;
     }
 
     const run = async () => {
       try {
+        if (!isMountedRef.current) return;
+
         setPaymentProcessing(true);
         setCallbackHandled(true);
+        void trackCustomerEvent({
+          eventType: "payment_completed",
+          path: "/bkash-payment",
+          screenName: "bkash-payment",
+          entityType: "payment",
+          entityId:
+            typeof callbackParams.paymentID === "string"
+              ? callbackParams.paymentID
+              : draft.sessionId,
+          metadata: {
+            provider: "Bkash",
+            status: "success",
+            sessionId:
+              typeof callbackParams.sessionId === "string"
+                ? callbackParams.sessionId
+                : draft.sessionId,
+            restaurantId: draft.restaurantId,
+          },
+        });
 
         const response = await placeOrderMutation.mutateAsync({
-          restaurantId: params.restaurantId as string,
+          restaurantId: draft.restaurantId,
+          clientOrderId: draft.clientOrderId,
           paymentMethod: "Bkash",
-          voucherCode:
-            typeof params.voucherCode === "string" && params.voucherCode
-              ? params.voucherCode
-              : undefined,
+          voucherCode: draft.voucherCode || undefined,
           paymentReference: {
             provider: "Bkash",
             bkashSessionId:
               typeof callbackParams.sessionId === "string"
                 ? callbackParams.sessionId
-                : typeof params.sessionId === "string"
-                  ? params.sessionId
-                  : undefined,
+                : draft.sessionId,
             walletNumber:
               typeof callbackParams.walletNumber === "string"
                 ? callbackParams.walletNumber
-                : typeof params.walletNumber === "string"
-                  ? params.walletNumber
-                  : undefined,
+                : draft.walletNumber,
           },
-          items: parsedCartPayload,
-          deliveryAddress: {
-            label: params.deliveryLabel as string,
-            addressLine: params.deliveryAddressLine as string,
-            latitude:
-              typeof params.deliveryLatitude === "string" && params.deliveryLatitude
-                ? Number(params.deliveryLatitude)
-                : undefined,
-            longitude:
-              typeof params.deliveryLongitude === "string" && params.deliveryLongitude
-                ? Number(params.deliveryLongitude)
-                : undefined,
+          items: draft.items,
+          deliveryAddress: draft.deliveryAddress,
+        });
+
+        void trackCustomerEvent({
+          eventType: "order_created",
+          path: "/bkash-payment",
+          screenName: "bkash-payment",
+          entityType: "order",
+          entityId: response.order._id,
+          metadata: {
+            paymentMethod: "Bkash",
+            provider: "Bkash",
+            restaurantId: draft.restaurantId,
+            voucherApplied: Boolean(draft.voucherCode),
           },
         });
 
+        await clearBkashPaymentDraft(draft.sessionId).catch(() => undefined);
         clearCart();
+        if (!isMountedRef.current || hasNavigatedRef.current) return;
+
+        hasNavigatedRef.current = true;
         router.replace({
           pathname: "/orders/[orderId]",
           params: {
@@ -171,12 +240,34 @@ export default function BkashPaymentScreen() {
           },
         });
       } catch (error) {
+        if (!isMountedRef.current) return;
+
         setPaymentProcessing(false);
-      setLoadError(
+        void trackCustomerEvent({
+          eventType: "payment_failed",
+          path: "/bkash-payment",
+          screenName: "bkash-payment",
+          entityType: "payment",
+          entityId:
+            typeof callbackParams.paymentID === "string"
+              ? callbackParams.paymentID
+              : draft.sessionId,
+          metadata: {
+            provider: "Bkash",
+            stage: "post_payment_order_submit",
+            restaurantId: draft.restaurantId,
+            message:
+              error instanceof Error
+                ? error.message.slice(0, 120)
+                : "Payment succeeded, but the order could not be placed.",
+          },
+        });
+        setLoadError(
           error instanceof Error
             ? error.message
             : "Payment succeeded, but the order could not be placed."
         );
+        setCanRetryOrderCreation(true);
       }
     };
 
@@ -184,15 +275,7 @@ export default function BkashPaymentScreen() {
   }, [
     callbackUrl,
     clearCart,
-    params.cartPayload,
-    params.deliveryAddressLine,
-    params.deliveryLabel,
-    params.deliveryLatitude,
-    params.deliveryLongitude,
-    params.restaurantId,
-    params.sessionId,
-    params.voucherCode,
-    params.walletNumber,
+    draft,
     callbackHandled,
     paymentProcessing,
     placeOrderMutation,
@@ -207,7 +290,13 @@ export default function BkashPaymentScreen() {
           <Pressable style={styles.backButton} onPress={() => router.replace("/checkout")}>
             <Ionicons name="chevron-back" size={20} color={palette.foreground} />
           </Pressable>
-          <Text style={styles.errorText}>bKash session unavailable.</Text>
+          {isDraftLoading ? (
+            <ActivityIndicator size="large" color={palette.secondary} />
+          ) : (
+            <Text style={styles.errorText}>
+              {loadError || "bKash session unavailable."}
+            </Text>
+          )}
         </View>
       </SafeAreaView>
     );
@@ -218,14 +307,23 @@ export default function BkashPaymentScreen() {
       <StatusBar style="dark" />
       <View style={styles.root}>
         <Pressable
-          style={[styles.backButton, { top: 10 + insets.top }]}
-          onPress={() => router.back()}
+          style={[
+            styles.backButton,
+            { top: 10 + insets.top },
+            paymentProcessing ? styles.backButtonDisabled : null,
+          ]}
+          disabled={paymentProcessing}
+          onPress={() => {
+            if (!paymentProcessing) {
+              router.back();
+            }
+          }}
         >
           <Ionicons name="chevron-back" size={20} color={palette.foreground} />
         </Pressable>
 
         <View style={[styles.brandPill, { top: 10 + insets.top, right: 16 }]}>
-          <Text style={styles.brandPillText}>bKash sandbox</Text>
+          <Text style={styles.brandPillText}>bKash checkout</Text>
         </View>
 
         <View style={[styles.webviewFrame, { marginTop: 66 + insets.top, marginBottom: Math.max(insets.bottom, 16) }]}>
@@ -257,7 +355,7 @@ export default function BkashPaymentScreen() {
               }
             }}
             onError={() => {
-              setLoadError("Could not load the bKash sandbox.");
+              setLoadError("Could not load the bKash checkout.");
             }}
             renderLoading={() => (
               <View style={styles.loadingOverlay}>
@@ -271,6 +369,18 @@ export default function BkashPaymentScreen() {
         {loadError ? (
           <View style={[styles.bottomNotice, { bottom: Math.max(insets.bottom, 12) }]}>
             <Text style={styles.bottomNoticeText}>{loadError}</Text>
+            {canRetryOrderCreation ? (
+              <Pressable
+                style={styles.retryButton}
+                onPress={() => {
+                  setLoadError("");
+                  setCanRetryOrderCreation(false);
+                  setCallbackHandled(false);
+                }}
+              >
+                <Text style={styles.retryButtonText}>Create order</Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
       </View>
@@ -302,6 +412,9 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 },
     elevation: 5,
+  },
+  backButtonDisabled: {
+    opacity: 0.5,
   },
   brandPill: {
     position: "absolute",
@@ -367,6 +480,19 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: palette.foreground,
     textAlign: "center",
+  },
+  retryButton: {
+    marginTop: 10,
+    alignSelf: "center",
+    borderRadius: 999,
+    backgroundColor: palette.secondary,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  retryButtonText: {
+    color: palette.surface,
+    fontSize: 13,
+    fontWeight: "800",
   },
   emptyState: {
     flex: 1,

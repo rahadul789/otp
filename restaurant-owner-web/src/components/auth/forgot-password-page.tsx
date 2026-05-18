@@ -15,6 +15,7 @@ import {
   sanitizeBangladeshPhoneInput,
 } from "@/lib/phone"
 import { getOtpDeliveryHint } from "@/lib/otp-copy"
+import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import { useAppStore } from "@/store/app-store"
 
 function isPhoneIdentifier(value: string) {
@@ -62,6 +63,7 @@ export function ForgotPasswordPage() {
         verificationSessionId: result.verificationSessionId,
         otpVerified: false,
         requestedAt: new Date().toISOString(),
+        resendAvailableInSeconds: resolveOtpResendSeconds(result.resendAvailableInSeconds),
       })
       toast.success("Verification code sent.")
       navigate("/auth/reset-verify")

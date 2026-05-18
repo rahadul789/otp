@@ -21,11 +21,14 @@ export type DiscoverableRestaurant = {
     longitude?: number | null;
   };
   discovery?: {
+    isFeatured?: boolean;
     featuredSortOrder?: number;
   };
   preparationTimeMinutes?: number | null;
   lowestMenuPrice?: number | null;
   distanceKm?: number | null;
+  deliveryRadiusKm?: number | null;
+  isServiceableForSelectedLocation?: boolean | null;
   avgRating?: number | null;
   reviewCount?: number;
 };

@@ -1,12 +1,24 @@
 import { StatusCodes } from "http-status-codes";
+import type { PipelineStage } from "mongoose";
 
 import { AppError } from "../../common/utils/app-error";
 import { decorateTrackingSnapshot } from "../../common/utils/tracking-freshness";
 import { AdminModel } from "./admin.model";
 import { OwnerModel, RiderModel, RestaurantModel } from "../auth/auth.model";
-import { LedgerEntryModel } from "../owner/finance.model";
+import { LedgerEntryModel, PayoutBatchModel } from "../owner/finance.model";
+import {
+  aggregateFinalizedLedgerEntries,
+  reconcileRestaurantLedgerStatuses,
+  syncOrderLedgerForFinalStatus,
+} from "../owner/finance.service";
 import { NotificationModel, OrderModel } from "../owner/operational.model";
+import {
+  buildOrderPreparationTiming,
+  buildPreparationMetaForStart,
+} from "../owner/preparation-timing";
+import { VoucherRedemptionModel } from "../customer/customer.model";
 import { emitSocketEvent } from "../../config/socket";
+import { revokeReferralRewardForOrder } from "../customer/referral.service";
 import { sendPushToCustomer } from "../customer/push.service";
 import { sendPushToRider } from "../rider/push.service";
 import {
@@ -47,9 +59,13 @@ type DispatchSettings = {
   staleLocationCutoffMinutes: number;
   assignmentTimeoutMinutes: number;
   prepStartGraceMinutes: number;
+  preparationMaxExtraMinutes: number;
   prepLateGraceMinutes: number;
   pickupLateGraceMinutes: number;
   deliveryLateGraceMinutes: number;
+  deliveryWatchAfterPickupMinutes: number;
+  deliveryLateAfterPickupMinutes: number;
+  deliveryCriticalAfterPickupMinutes: number;
   retryCooldownMinutes: number;
   surgeReadyOrderThreshold: number;
   surgeUnassignedOrderThreshold: number;
@@ -57,6 +73,19 @@ type DispatchSettings = {
   autoCancelAfterMinutes: number;
   autoCancelNotifyBeforeMinutes: number;
 };
+
+const ADMIN_DISPATCH_SETTINGS_CACHE_TTL_MS = 10_000;
+let adminDispatchSettingsCache:
+  | {
+      expiresAt: number;
+      value?: Awaited<ReturnType<typeof buildAdminDispatchSettings>>;
+      promise?: Promise<Awaited<ReturnType<typeof buildAdminDispatchSettings>>>;
+    }
+  | null = null;
+
+function invalidateAdminDispatchSettingsCache() {
+  adminDispatchSettingsCache = null;
+}
 
 type RiderAssignmentCandidate = {
   id: string;
@@ -119,6 +148,7 @@ type AdminOrderListParams = {
   paymentMethod?: "all" | "Cash" | "Bkash";
   paymentStatus?: "all" | "pending" | "paid" | "refund_pending" | "refunded";
   assignment?: "all" | "assigned" | "unassigned" | "stale";
+  attention?: "all" | "riderDelay";
   sortBy?: "newest" | "oldest" | "highestValue" | "recentlyUpdated";
   page?: number;
   pageSize?: number;
@@ -190,10 +220,14 @@ const DEFAULT_DISPATCH_SETTINGS: DispatchSettings = {
   maxActiveOrdersPerRider: 3,
   staleLocationCutoffMinutes: 20,
   assignmentTimeoutMinutes: 8,
-  prepStartGraceMinutes: 8,
+  prepStartGraceMinutes: 3,
+  preparationMaxExtraMinutes: 20,
   prepLateGraceMinutes: 5,
   pickupLateGraceMinutes: 10,
   deliveryLateGraceMinutes: 10,
+  deliveryWatchAfterPickupMinutes: 20,
+  deliveryLateAfterPickupMinutes: 25,
+  deliveryCriticalAfterPickupMinutes: 30,
   retryCooldownMinutes: 3,
   surgeReadyOrderThreshold: 4,
   surgeUnassignedOrderThreshold: 2,
@@ -219,37 +253,37 @@ const orderTimestampFieldByStatus: Partial<Record<string, string>> = {
   Cancelled: "cancelledAt",
 };
 
-function getCustomerOrderStatusMessage(orderNumber: string, nextStatus: string) {
+function getCustomerOrderStatusMessage(nextStatus: string) {
   switch (nextStatus) {
     case "Accepted":
       return {
-        title: "Order accepted",
-        body: `Good news. ${orderNumber} has been accepted and the kitchen will begin shortly.`,
+        title: "✅ Order accepted",
+        body: "Your order is confirmed. The kitchen will start soon.",
       };
     case "Preparing":
       return {
-        title: "Cooking has started",
-        body: `${orderNumber} is now being prepared in the kitchen.`,
+        title: "🍳 Food is preparing",
+        body: "Your food is being prepared now.",
       };
     case "ReadyForPickup":
       return {
-        title: "Ready for pickup",
-        body: `${orderNumber} is packed and waiting for the rider.`,
+        title: "📦 Ready for pickup",
+        body: "Your order is packed. A rider will pick it up soon.",
       };
     case "Rejected":
       return {
-        title: "Order was not accepted",
-        body: `${orderNumber} could not be accepted. If you paid online, support will review the refund.`,
+        title: "😕 Order not accepted",
+        body: "Your order could not be accepted. If you paid online, support will review the refund.",
       };
     case "Cancelled":
       return {
-        title: "Order cancelled",
-        body: `${orderNumber} was cancelled. If you paid online, support will review the refund.`,
+        title: "❌ Order cancelled",
+        body: "Your order was cancelled. If you paid online, support will review the refund.",
       };
     default:
       return {
-        title: "Order updated",
-        body: `There is a fresh update on ${orderNumber}.`,
+        title: "🔔 Order update",
+        body: "There is a new update on your order.",
       };
   }
 }
@@ -277,10 +311,7 @@ async function safeSendCustomerOrderStatusPush(params: {
   orderNumber: string;
   nextStatus: string;
 }) {
-  const customerMessage = getCustomerOrderStatusMessage(
-    params.orderNumber,
-    params.nextStatus,
-  );
+  const customerMessage = getCustomerOrderStatusMessage(params.nextStatus);
 
   try {
     await sendPushToCustomer({
@@ -291,7 +322,7 @@ async function safeSendCustomerOrderStatusPush(params: {
         data: {
           type: "order_status",
           orderId: params.orderId,
-          path: `/orders/${params.orderId}`,
+          path: `/orders/${params.orderId}/tracking`,
         },
       },
     });
@@ -511,12 +542,6 @@ function isRiderVerificationApproved(rider: Record<string, any>) {
   return getRiderVerification(rider).status === "approved";
 }
 
-function getOrderDeliveryMinutes(order: Record<string, any>) {
-  const readyAt = getOrderTimestamp(order, "ReadyForPickup");
-  const deliveredAt = getOrderTimestamp(order, "Delivered");
-  return minutesBetween(readyAt, deliveredAt) ?? 0;
-}
-
 async function getRiderOrderStatsMap(riderIds: string[]) {
   if (!riderIds.length) return new Map<string, AdminRiderOrderStats>();
 
@@ -655,6 +680,10 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
   let from: Date | null = null;
   let to: Date | null = null;
 
+  if (params?.preset === "lifetime") {
+    return null;
+  }
+
   if (params?.preset === "today") {
     from = new Date(now);
     from.setHours(0, 0, 0, 0);
@@ -669,9 +698,15 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
   } else if (params?.preset === "last30Days") {
     from = new Date(now);
     from.setDate(from.getDate() - 30);
+  } else if (params?.preset === "last90Days") {
+    from = new Date(now);
+    from.setDate(from.getDate() - 90);
   } else if (params?.preset === "thisMonth") {
     from = new Date(now.getFullYear(), now.getMonth(), 1);
     to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else if (params?.preset === "lastMonth") {
+    from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
   } else if (params?.preset === "custom") {
     from = params.from ? new Date(params.from) : null;
     to = params.to ? new Date(params.to) : null;
@@ -750,10 +785,13 @@ function getAdminOrderDelayState(
   }
 
   if (order.status === "Preparing") {
-    const preparingAt = getOrderTimestamp(order, "Preparing");
-    const prepElapsedMinutes = minutesSince(preparingAt);
-    const expectedPrepMinutes = getRestaurantPrepMinutes(restaurant);
-    const lateByMinutes = Math.max(0, prepElapsedMinutes - expectedPrepMinutes);
+    const prepTiming = buildOrderPreparationTiming({
+      order,
+      restaurant,
+      prepStartGraceMinutes: settings.prepStartGraceMinutes,
+      maxExtraMinutes: settings.preparationMaxExtraMinutes,
+    });
+    const lateByMinutes = Math.ceil((prepTiming.lateBySeconds ?? 0) / 60);
     if (lateByMinutes >= settings.prepLateGraceMinutes) {
       return {
         label: "Food prep late",
@@ -830,6 +868,27 @@ function getAdminOrderDelayState(
     );
     const pickedUpAt = getOrderTimestamp(order, "PickedUp");
     const pickupMinutes = minutesSince(pickedUpAt);
+    if (pickupMinutes >= settings.deliveryCriticalAfterPickupMinutes) {
+      return {
+        label: "Delivery critically late",
+        minutes: Math.max(0, pickupMinutes - settings.deliveryLateAfterPickupMinutes),
+        tone: "critical",
+      };
+    }
+    if (pickupMinutes >= settings.deliveryLateAfterPickupMinutes) {
+      return {
+        label: "Delivery late",
+        minutes: Math.max(0, pickupMinutes - settings.deliveryLateAfterPickupMinutes),
+        tone: "warning",
+      };
+    }
+    if (pickupMinutes >= settings.deliveryWatchAfterPickupMinutes) {
+      return {
+        label: "Delivery watch",
+        minutes: pickupMinutes,
+        tone: "warning",
+      };
+    }
     if (
       remainingMinutes > 0 &&
       pickupMinutes > remainingMinutes + settings.deliveryLateGraceMinutes
@@ -881,6 +940,22 @@ function getDispatchSettingsFromContent(
   content: Awaited<ReturnType<typeof getPlatformContent>>,
 ): DispatchSettings {
   const dispatch = content.operations?.dispatch ?? {};
+  const deliveryWatchAfterPickupMinutes =
+    typeof dispatch.deliveryWatchAfterPickupMinutes === "number"
+      ? dispatch.deliveryWatchAfterPickupMinutes
+      : DEFAULT_DISPATCH_SETTINGS.deliveryWatchAfterPickupMinutes;
+  const deliveryLateAfterPickupMinutes = Math.max(
+    deliveryWatchAfterPickupMinutes,
+    typeof dispatch.deliveryLateAfterPickupMinutes === "number"
+      ? dispatch.deliveryLateAfterPickupMinutes
+      : DEFAULT_DISPATCH_SETTINGS.deliveryLateAfterPickupMinutes,
+  );
+  const deliveryCriticalAfterPickupMinutes = Math.max(
+    deliveryLateAfterPickupMinutes,
+    typeof dispatch.deliveryCriticalAfterPickupMinutes === "number"
+      ? dispatch.deliveryCriticalAfterPickupMinutes
+      : DEFAULT_DISPATCH_SETTINGS.deliveryCriticalAfterPickupMinutes,
+  );
 
   return {
     autoAssignmentEnabled:
@@ -927,6 +1002,10 @@ function getDispatchSettingsFromContent(
       typeof dispatch.prepStartGraceMinutes === "number"
         ? dispatch.prepStartGraceMinutes
         : DEFAULT_DISPATCH_SETTINGS.prepStartGraceMinutes,
+    preparationMaxExtraMinutes:
+      typeof dispatch.preparationMaxExtraMinutes === "number"
+        ? dispatch.preparationMaxExtraMinutes
+        : DEFAULT_DISPATCH_SETTINGS.preparationMaxExtraMinutes,
     prepLateGraceMinutes:
       typeof dispatch.prepLateGraceMinutes === "number"
         ? dispatch.prepLateGraceMinutes
@@ -939,6 +1018,9 @@ function getDispatchSettingsFromContent(
       typeof dispatch.deliveryLateGraceMinutes === "number"
         ? dispatch.deliveryLateGraceMinutes
         : DEFAULT_DISPATCH_SETTINGS.deliveryLateGraceMinutes,
+    deliveryWatchAfterPickupMinutes,
+    deliveryLateAfterPickupMinutes,
+    deliveryCriticalAfterPickupMinutes,
     retryCooldownMinutes:
       typeof dispatch.retryCooldownMinutes === "number"
         ? dispatch.retryCooldownMinutes
@@ -1465,6 +1547,22 @@ async function assignOrderToRider(params: {
 
   const previousRiderId =
     typeof order.riderId === "string" ? order.riderId : "";
+  if (previousRiderId !== rider.id) {
+    const settings = getDispatchSettingsFromContent(await getPlatformContent());
+    const activeOrdersCount = await OrderModel.countDocuments({
+      _id: { $ne: order._id },
+      riderId: rider.id,
+      status: { $in: ["ReadyForPickup", "PickedUp"] },
+    });
+
+    if (activeOrdersCount >= settings.maxActiveOrdersPerRider) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "RIDER_CAPACITY_REACHED",
+        `This rider already has ${activeOrdersCount} active orders. Choose another rider or increase the dispatch capacity.`,
+      );
+    }
+  }
   order.riderId = rider.id;
   order.riderSnapshot = {
     ...(order.riderSnapshot ?? {}),
@@ -1497,6 +1595,7 @@ async function assignOrderToRider(params: {
   } as any);
   order.history = order.history.slice(-MAX_ORDER_HISTORY_ENTRIES);
   await order.save();
+  await emitOrderRealtimeUpdates(order.toObject());
 
   if (previousRiderId && previousRiderId !== rider.id) {
     emitSocketEvent(`rider:${previousRiderId}`, "rider.assignment.updated", {
@@ -1629,7 +1728,7 @@ async function assignOrderToRider(params: {
   };
 }
 
-export async function getAdminDispatchSettings() {
+async function buildAdminDispatchSettings() {
   const content = await getPlatformContent();
   const settings = getDispatchSettingsFromContent(content);
   const [
@@ -1716,10 +1815,43 @@ export async function getAdminDispatchSettings() {
   };
 }
 
+export async function getAdminDispatchSettings() {
+  const now = Date.now();
+  if (
+    adminDispatchSettingsCache?.value &&
+    adminDispatchSettingsCache.expiresAt > now
+  ) {
+    return adminDispatchSettingsCache.value;
+  }
+
+  if (adminDispatchSettingsCache?.promise) {
+    return adminDispatchSettingsCache.promise;
+  }
+
+  const promise = buildAdminDispatchSettings();
+  adminDispatchSettingsCache = {
+    expiresAt: now + ADMIN_DISPATCH_SETTINGS_CACHE_TTL_MS,
+    promise,
+  };
+
+  try {
+    const value = await promise;
+    adminDispatchSettingsCache = {
+      expiresAt: Date.now() + ADMIN_DISPATCH_SETTINGS_CACHE_TTL_MS,
+      value,
+    };
+    return value;
+  } catch (error) {
+    adminDispatchSettingsCache = null;
+    throw error;
+  }
+}
+
 export async function updateAdminDispatchSettings(params: {
   adminId: string;
   settings: DispatchSettings;
 }) {
+  invalidateAdminDispatchSettingsCache();
   const content = await getPlatformContent();
   const nextContent = {
     ...content,
@@ -1739,9 +1871,16 @@ export async function updateAdminDispatchSettings(params: {
         staleLocationCutoffMinutes: params.settings.staleLocationCutoffMinutes,
         assignmentTimeoutMinutes: params.settings.assignmentTimeoutMinutes,
         prepStartGraceMinutes: params.settings.prepStartGraceMinutes,
+        preparationMaxExtraMinutes: params.settings.preparationMaxExtraMinutes,
         prepLateGraceMinutes: params.settings.prepLateGraceMinutes,
         pickupLateGraceMinutes: params.settings.pickupLateGraceMinutes,
         deliveryLateGraceMinutes: params.settings.deliveryLateGraceMinutes,
+        deliveryWatchAfterPickupMinutes:
+          params.settings.deliveryWatchAfterPickupMinutes,
+        deliveryLateAfterPickupMinutes:
+          params.settings.deliveryLateAfterPickupMinutes,
+        deliveryCriticalAfterPickupMinutes:
+          params.settings.deliveryCriticalAfterPickupMinutes,
         retryCooldownMinutes: params.settings.retryCooldownMinutes,
         surgeReadyOrderThreshold: params.settings.surgeReadyOrderThreshold,
         surgeUnassignedOrderThreshold:
@@ -1760,6 +1899,7 @@ export async function updateAdminDispatchSettings(params: {
     content: nextContent,
   });
 
+  invalidateAdminDispatchSettingsCache();
   return getAdminDispatchSettings();
 }
 
@@ -1941,6 +2081,9 @@ async function buildAdminOrderQuery(params: AdminOrderListParams = {}) {
     query.status = { $in: ["Cancelled", "Rejected"] };
     query.paymentMethod = "Bkash";
     query.paymentStatus = { $in: ["paid", "refund_pending"] };
+  }
+  if (params.attention === "riderDelay") {
+    query.status = { $in: ["ReadyForPickup", "PickedUp"] };
   }
 
   if (params.paymentMethod && params.paymentMethod !== "all") {
@@ -2131,9 +2274,15 @@ function mapAdminOrderListItem(
     order.riderTracking ?? {},
     order.status ?? "",
   );
-  const delayState = getAdminOrderDelayState(order);
+  const delayState = getAdminOrderDelayState(order, dispatchState, restaurant);
   const status = stringValue(order.status);
   const paymentStatus = stringValue(order.paymentStatus);
+  const preparationTiming = buildOrderPreparationTiming({
+    order,
+    restaurant,
+    prepStartGraceMinutes: dispatchState.prepStartGraceMinutes,
+    maxExtraMinutes: dispatchState.preparationMaxExtraMinutes,
+  });
 
   return {
     id: String(order._id ?? ""),
@@ -2193,6 +2342,7 @@ function mapAdminOrderListItem(
     lateReason: delayState?.label ?? "",
     lateMinutes: delayState?.minutes ?? 0,
     lateTone: delayState?.tone ?? "none",
+    preparationTiming,
     riderTracking,
   };
 }
@@ -2202,13 +2352,37 @@ export async function listAdminOrders(params: AdminOrderListParams = {}) {
   const pageSize = clampPageSize(params.pageSize);
   const query = await buildAdminOrderQuery(params);
   const sort = buildOrderSort(params.sortBy);
-  const [orders, total, summaryRows, dispatchState] = await Promise.all([
+  const shouldFilterRiderDelay = params.attention === "riderDelay";
+  const [rawOrders, rawTotal, summaryRows, dispatchState] = await Promise.all([
     OrderModel.find(query)
       .sort(sort)
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
+      .skip(shouldFilterRiderDelay ? 0 : (page - 1) * pageSize)
+      .limit(shouldFilterRiderDelay ? 1000 : pageSize)
+      .select({
+        restaurantId: 1,
+        customerId: 1,
+        orderNumber: 1,
+        status: 1,
+        terminalReason: 1,
+        cancelledBy: 1,
+        rejectionReason: 1,
+        paymentMethod: 1,
+        paymentStatus: 1,
+        pricing: 1,
+        customerSnapshot: 1,
+        riderId: 1,
+        riderSnapshot: 1,
+        riderTracking: 1,
+        dispatchMeta: 1,
+        preparationMeta: 1,
+        timestamps: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      })
       .lean(),
-    OrderModel.countDocuments(query),
+    shouldFilterRiderDelay
+      ? Promise.resolve(0)
+      : OrderModel.countDocuments(query),
     OrderModel.aggregate<{
       _id: null;
       total: number;
@@ -2292,11 +2466,13 @@ export async function listAdminOrders(params: AdminOrderListParams = {}) {
   ]);
   const restaurantIds = [
     ...new Set(
-      orders.map((order) => String(order.restaurantId ?? "")).filter(Boolean),
+      rawOrders.map((order) => String(order.restaurantId ?? "")).filter(Boolean),
     ),
   ];
   const restaurants = restaurantIds.length
-    ? await RestaurantModel.find({ _id: { $in: restaurantIds } }).lean()
+    ? await RestaurantModel.find({ _id: { $in: restaurantIds } })
+        .select({ name: 1, preparationTimeMinutes: 1 })
+        .lean()
     : [];
   const restaurantMap = new Map(
     restaurants.map((restaurant) => [restaurant._id.toString(), restaurant]),
@@ -2313,23 +2489,44 @@ export async function listAdminOrders(params: AdminOrderListParams = {}) {
     deliveredRevenue: 0,
   };
 
-  return {
-    items: orders.map((order) =>
+  const mappedOrders = rawOrders.map((order) =>
       mapAdminOrderListItem(
         order,
         restaurantMap.get(String(order.restaurantId ?? "")),
         dispatchState,
       ),
-    ),
+  );
+  const filteredOrders = shouldFilterRiderDelay
+    ? mappedOrders.filter(
+        (order) =>
+          order.isLate &&
+          ["ReadyForPickup", "PickedUp"].includes(order.status),
+      )
+    : mappedOrders;
+  const total = shouldFilterRiderDelay ? filteredOrders.length : rawTotal;
+  const pagedOrders = shouldFilterRiderDelay
+    ? filteredOrders.slice((page - 1) * pageSize, page * pageSize)
+    : filteredOrders;
+
+  return {
+    items: pagedOrders,
     total,
     page,
     pageSize,
     pageCount: Math.max(1, Math.ceil(total / pageSize)),
     summary: {
       ...summary,
+      total,
       onlineRiders: dispatchState.metrics.onlineRiders,
       unassignedReadyOrders: dispatchState.metrics.unassignedReadyOrders,
       staleTracking: 0,
+      delayedRiderOrders: shouldFilterRiderDelay
+        ? total
+        : mappedOrders.filter(
+            (order) =>
+              order.isLate &&
+              ["ReadyForPickup", "PickedUp"].includes(order.status),
+          ).length,
     },
   };
 }
@@ -2346,7 +2543,29 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
   const ledgerMatch: Record<string, any> = {
     entryType: { $in: ["earning", "refund", "adjustment"] },
   };
-  if (ledgerDateMatch) ledgerMatch.createdAt = ledgerDateMatch;
+  const ledgerFilterStages: PipelineStage[] = [];
+  if (ledgerDateMatch) {
+    ledgerFilterStages.push({ $match: { effectiveAt: ledgerDateMatch } });
+  }
+  if (params.paymentMethod && params.paymentMethod !== "all") {
+    ledgerFilterStages.push({
+      $match: { relatedOrderPaymentMethod: params.paymentMethod },
+    });
+  }
+  if (params.paymentStatus && params.paymentStatus !== "all") {
+    ledgerFilterStages.push({
+      $match: { relatedOrderPaymentStatus: params.paymentStatus },
+    });
+  }
+  if (params.settlement === "delivered") {
+    ledgerFilterStages.push({ $match: { relatedOrderStatus: "Delivered" } });
+  }
+  if (params.settlement === "online") {
+    ledgerFilterStages.push({ $match: { relatedOrderPaymentMethod: "Bkash" } });
+  }
+  if (params.settlement === "cod") {
+    ledgerFilterStages.push({ $match: { relatedOrderPaymentMethod: "Cash" } });
+  }
 
   await LedgerEntryModel.updateMany(
     {
@@ -2358,7 +2577,8 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
   );
 
   const payrollMonths = monthKeysFromDateMatch(ledgerDateMatch);
-  const [orders, total, summaryRows, settlementRows, nextPayoutRows, riderPayrollSummary] =
+  const payoutBatchDateMatch = ledgerDateMatch ? { requestedAt: ledgerDateMatch } : {};
+  const [orders, total, summaryRows, settlementRows, nextPayoutRows, payoutRows, riderPayrollSummary] =
     await Promise.all([
     OrderModel.find(query)
       .sort(sort)
@@ -2436,9 +2656,11 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
                             "Preparing",
                             "ReadyForPickup",
                             "PickedUp",
+                            "Delivered",
                           ],
                         ],
                       },
+                      { $ne: ["$paymentStatus", "paid"] },
                     ],
                   },
                   { $ifNull: ["$pricing.total", 0] },
@@ -2496,7 +2718,102 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
           },
         },
       ]),
-      LedgerEntryModel.aggregate<{
+      aggregateFinalizedLedgerEntries(
+        ledgerMatch,
+        [
+          ...ledgerFilterStages,
+          {
+            $addFields: {
+              countsInSettlementTotals: {
+                $not: [
+                  {
+                    $in: [
+                      "$sourceEntityType",
+                      ["payout_residual", "payout_residual_reversal"],
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              grossAmount: {
+                $sum: {
+                  $cond: ["$countsInSettlementTotals", { $ifNull: ["$grossAmount", 0] }, 0],
+                },
+              },
+              commissionBase: {
+                $sum: {
+                  $cond: [
+                    "$countsInSettlementTotals",
+                    { $ifNull: ["$commissionBase", "$grossAmount"] },
+                    0,
+                  ],
+                },
+              },
+              commission: {
+                $sum: {
+                  $cond: ["$countsInSettlementTotals", { $ifNull: ["$commission", 0] }, 0],
+                },
+              },
+              discountCost: {
+                $sum: {
+                  $cond: ["$countsInSettlementTotals", { $ifNull: ["$discountCost", 0] }, 0],
+                },
+              },
+              platformDiscountCost: {
+                $sum: {
+                  $cond: [
+                    "$countsInSettlementTotals",
+                    { $ifNull: ["$platformDiscountCost", 0] },
+                    0,
+                  ],
+                },
+              },
+              deliveryCost: {
+                $sum: {
+                  $cond: ["$countsInSettlementTotals", { $ifNull: ["$deliveryCost", 0] }, 0],
+                },
+              },
+              netAmount: {
+                $sum: {
+                  $cond: ["$countsInSettlementTotals", { $ifNull: ["$netAmount", 0] }, 0],
+                },
+              },
+              availableBalance: {
+                $sum: {
+                  $cond: [
+                    { $eq: ["$settlementStatus", "available"] },
+                    { $ifNull: ["$netAmount", 0] },
+                    0,
+                  ],
+                },
+              },
+              pendingBalance: {
+                $sum: {
+                  $cond: [
+                    { $eq: ["$settlementStatus", "pending"] },
+                    { $ifNull: ["$netAmount", 0] },
+                    0,
+                  ],
+                },
+              },
+              reservedPayoutBalance: {
+                $sum: {
+                  $cond: [
+                    { $eq: ["$settlementStatus", "paid_out"] },
+                    { $ifNull: ["$netAmount", 0] },
+                    0,
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      ) as Promise<
+        Array<{
         _id: null;
         grossAmount: number;
         commissionBase: number;
@@ -2507,58 +2824,63 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
         netAmount: number;
         availableBalance: number;
         pendingBalance: number;
-        paidOutBalance: number;
+        reservedPayoutBalance: number;
+      }>
+      >,
+      aggregateFinalizedLedgerEntries(
+        {
+          ...ledgerMatch,
+          settlementStatus: "pending",
+          availableAt: { $ne: null },
+        },
+        [
+          ...ledgerFilterStages,
+          { $group: { _id: null, nextPayoutDate: { $min: "$availableAt" } } },
+        ],
+      ) as Promise<Array<{ _id: null; nextPayoutDate: Date }>>,
+      PayoutBatchModel.aggregate<{
+        _id: null;
+        requestedAmount: number;
+        paidOutAmount: number;
+        failedAmount: number;
       }>([
-        { $match: ledgerMatch },
+        {
+          $match: {
+            ...payoutBatchDateMatch,
+          },
+        },
         {
           $group: {
             _id: null,
-            grossAmount: { $sum: { $ifNull: ["$grossAmount", 0] } },
-            commissionBase: { $sum: { $ifNull: ["$commissionBase", "$grossAmount"] } },
-            commission: { $sum: { $ifNull: ["$commission", 0] } },
-            discountCost: { $sum: { $ifNull: ["$discountCost", 0] } },
-            platformDiscountCost: { $sum: { $ifNull: ["$platformDiscountCost", 0] } },
-            deliveryCost: { $sum: { $ifNull: ["$deliveryCost", 0] } },
-            netAmount: { $sum: { $ifNull: ["$netAmount", 0] } },
-            availableBalance: {
+            requestedAmount: {
               $sum: {
                 $cond: [
-                  { $eq: ["$settlementStatus", "available"] },
-                  { $ifNull: ["$netAmount", 0] },
+                  { $in: ["$status", ["pending", "processing"]] },
+                  { $ifNull: ["$amount", 0] },
                   0,
                 ],
               },
             },
-            pendingBalance: {
+            paidOutAmount: {
               $sum: {
                 $cond: [
-                  { $eq: ["$settlementStatus", "pending"] },
-                  { $ifNull: ["$netAmount", 0] },
+                  { $eq: ["$status", "completed"] },
+                  { $ifNull: ["$amount", 0] },
                   0,
                 ],
               },
             },
-            paidOutBalance: {
+            failedAmount: {
               $sum: {
                 $cond: [
-                  { $eq: ["$settlementStatus", "paid_out"] },
-                  { $ifNull: ["$netAmount", 0] },
+                  { $eq: ["$status", "failed"] },
+                  { $ifNull: ["$amount", 0] },
                   0,
                 ],
               },
             },
           },
         },
-      ]),
-      LedgerEntryModel.aggregate<{ _id: null; nextPayoutDate: Date }>([
-        {
-          $match: {
-            ...ledgerMatch,
-            settlementStatus: "pending",
-            availableAt: { $ne: null },
-          },
-        },
-        { $group: { _id: null, nextPayoutDate: { $min: "$availableAt" } } },
       ]),
       getRiderPayrollFinanceSummary(payrollMonths),
     ]);
@@ -2584,7 +2906,12 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
     netAmount: 0,
     availableBalance: 0,
     pendingBalance: 0,
-    paidOutBalance: 0,
+    reservedPayoutBalance: 0,
+  };
+  const payoutSummary = payoutRows[0] ?? {
+    requestedAmount: 0,
+    paidOutAmount: 0,
+    failedAmount: 0,
   };
   const platformGrossIncome =
     numberValue(settlementSummary.commission) + numberValue(settlementSummary.deliveryCost);
@@ -2625,7 +2952,10 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
       deliveryCost: settlementSummary.deliveryCost,
       payoutReadyAmount: settlementSummary.availableBalance,
       payoutPendingAmount: settlementSummary.pendingBalance,
-      paidOutAmount: Math.abs(settlementSummary.paidOutBalance),
+      payoutRequestedAmount: payoutSummary.requestedAmount,
+      payoutReservedAmount: settlementSummary.reservedPayoutBalance,
+      paidOutAmount: payoutSummary.paidOutAmount,
+      payoutFailedAmount: payoutSummary.failedAmount,
       riderPayrollBaseSalary: riderPayrollSummary.baseSalary,
       riderPayrollBonus: riderPayrollSummary.platformBonus,
       riderPayrollPenalties: riderPayrollSummary.penalties,
@@ -2790,6 +3120,12 @@ export async function getAdminOrderMonitorDetails(orderId: string) {
     dispatchSettings,
     riderTracking,
   );
+  const preparationTiming = buildOrderPreparationTiming({
+    order,
+    restaurant,
+    prepStartGraceMinutes: dispatchSettings.prepStartGraceMinutes,
+    maxExtraMinutes: dispatchSettings.preparationMaxExtraMinutes,
+  });
 
   return {
     id: String(order._id ?? ""),
@@ -2856,6 +3192,7 @@ export async function getAdminOrderMonitorDetails(orderId: string) {
         : null,
     },
     autoCancel: buildOrderAutoCancelSnapshot(order, dispatchSettings),
+    preparationTiming,
     operationalTiming,
     riderTracking,
     history: Array.isArray(order.history)
@@ -3232,12 +3569,8 @@ export async function createAdminRider(params: {
 export async function getAdminLiveMap() {
   const liveRestaurantOrderStatuses = ["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"];
   const dispatchSettings = getDispatchSettingsFromContent(await getPlatformContent());
-  const [orders, activeRidersCount, availableRidersCount, riders, allRestaurants, restaurantLiveOrders] =
+  const [activeRidersCount, availableRidersCount, riders, allRestaurants, restaurantLiveOrders] =
     await Promise.all([
-      OrderModel.find({ status: { $in: liveRestaurantOrderStatuses } })
-        .sort({ updatedAt: -1 })
-        .limit(100)
-        .lean(),
       RiderModel.countDocuments({ status: "active" }),
       RiderModel.countDocuments({
         status: "active",
@@ -3257,6 +3590,7 @@ export async function getAdminLiveMap() {
         .limit(500)
         .lean(),
     ]);
+  const orders = restaurantLiveOrders.slice(0, 100);
 
   const restaurantIds = [
     ...new Set(
@@ -4367,6 +4701,14 @@ export async function updateAdminOrderStatus(params: {
     params.adminId && params.adminId.trim().length > 0
       ? await AdminModel.findById(params.adminId).lean()
       : null;
+  const restaurant =
+    params.nextStatus === "Preparing"
+      ? await RestaurantModel.findById(currentOrder.restaurantId).lean()
+      : null;
+  const dispatchSettings =
+    params.nextStatus === "Preparing"
+      ? getDispatchSettingsFromContent(await getPlatformContent())
+      : DEFAULT_DISPATCH_SETTINGS;
   const setPayload: Record<string, unknown> = {
     status: params.nextStatus,
     timestamps: applyOrderStatusTimestamp(
@@ -4375,6 +4717,16 @@ export async function updateAdminOrderStatus(params: {
       now,
     ),
   };
+
+  if (params.nextStatus === "Preparing") {
+    setPayload.preparationMeta = buildPreparationMetaForStart({
+      order: currentOrder,
+      restaurant,
+      startedAt: now,
+      autoStarted: false,
+      maxExtraMinutes: dispatchSettings.preparationMaxExtraMinutes,
+    });
+  }
 
   if (params.nextStatus === "Rejected") {
     setPayload.rejectionReason = params.note ?? "";
@@ -4424,6 +4776,27 @@ export async function updateAdminOrderStatus(params: {
       "ORDER_STATUS_CHANGED",
       `Order status is already ${latestOrder?.status ?? "updated"}`,
     );
+  }
+
+  if (["Rejected", "Cancelled"].includes(params.nextStatus)) {
+    await Promise.all([
+      syncOrderLedgerForFinalStatus({
+        restaurantId: String(updatedOrder.restaurantId ?? ""),
+        orderId: updatedOrder.id,
+        nextStatus: params.nextStatus as "Rejected" | "Cancelled",
+        finalizedAt: now,
+      }),
+      VoucherRedemptionModel.updateMany(
+        { orderId: updatedOrder._id, releasedAt: null },
+        {
+          $set: {
+            releasedAt: now,
+            releaseReason:
+              params.nextStatus === "Rejected" ? "admin_rejected" : "admin_cancelled",
+          },
+        },
+      ),
+    ]);
   }
 
   const updatedOrderObject = updatedOrder.toObject();
@@ -4567,11 +4940,14 @@ export async function updateAdminOrderRefundStatus(params: {
     );
   }
 
-  emitSocketEvent(
-    `customer:${updatedOrder.customerId}`,
-    "customer.order.updated",
-    updatedOrder.toObject(),
-  );
+  await reconcileRestaurantLedgerStatuses(String(updatedOrder.restaurantId ?? ""));
+  if (params.paymentStatus === "refunded") {
+    await revokeReferralRewardForOrder({
+      orderId: updatedOrder.id,
+      reason: params.note?.trim() || "Order was marked refunded by admin",
+    }).catch(() => undefined);
+  }
+  await emitOrderRealtimeUpdates(updatedOrder.toObject());
   emitSocketEvent("admin:live-map", "admin.live-map.updated", {
     type: "order.refund",
     orderId: updatedOrder.id,
@@ -4666,6 +5042,8 @@ export async function updateAdminOrderCodCollection(params: {
     );
   }
 
+  await reconcileRestaurantLedgerStatuses(String(updatedOrder.restaurantId ?? ""));
+  await emitOrderRealtimeUpdates(updatedOrder.toObject());
   emitSocketEvent("admin:live-map", "admin.live-map.updated", {
     type: "order.cod_collected",
     orderId: updatedOrder.id,
@@ -4715,6 +5093,12 @@ function buildAdminOrderOperationalTiming(
   const deliveredAt = getOrderTimestamp(order, "Delivered");
   const averagePreparationMinutes = getRestaurantPrepMinutes(restaurant);
   const status = String(order.status ?? "");
+  const preparationTiming = buildOrderPreparationTiming({
+    order,
+    restaurant,
+    prepStartGraceMinutes: settings.prepStartGraceMinutes,
+    maxExtraMinutes: settings.preparationMaxExtraMinutes,
+  });
 
   const base = {
     averagePreparationMinutes,
@@ -4756,14 +5140,11 @@ function buildAdminOrderOperationalTiming(
 
   if (status === "Accepted") {
     const acceptedMinutes = minutesSince(acceptedAt);
-    const lateByMinutes = Math.max(
-      0,
-      acceptedMinutes - settings.prepStartGraceMinutes,
-    );
-    const remainingMinutes = Math.max(
-      0,
-      settings.prepStartGraceMinutes - acceptedMinutes,
-    );
+    const remainingMinutes =
+      typeof preparationTiming.remainingSeconds === "number"
+        ? Math.ceil(preparationTiming.remainingSeconds / 60)
+        : Math.max(0, settings.prepStartGraceMinutes - acceptedMinutes);
+    const lateByMinutes = Math.ceil((preparationTiming.lateBySeconds ?? 0) / 60);
     return {
       ...base,
       currentPhaseLabel: "Prep not started",
@@ -4775,40 +5156,31 @@ function buildAdminOrderOperationalTiming(
       lateByMinutes,
       remainingMinutes,
       targetMinutes: settings.prepStartGraceMinutes,
-      targetAt: acceptedAt
-        ? new Date(
-            acceptedAt.getTime() + settings.prepStartGraceMinutes * 60_000,
-          ).toISOString()
-        : null,
+      targetAt: preparationTiming.targetStartAt,
+      preparationTiming,
     };
   }
 
   if (status === "Preparing") {
     const prepElapsedMinutes = minutesSince(preparingAt);
-    const lateByMinutes = Math.max(
-      0,
-      prepElapsedMinutes - averagePreparationMinutes,
-    );
-    const remainingMinutes = Math.max(
-      0,
-      averagePreparationMinutes - prepElapsedMinutes,
-    );
+    const lateByMinutes = Math.ceil((preparationTiming.lateBySeconds ?? 0) / 60);
+    const remainingMinutes =
+      typeof preparationTiming.remainingSeconds === "number"
+        ? Math.ceil(preparationTiming.remainingSeconds / 60)
+        : Math.max(0, preparationTiming.totalMinutes - prepElapsedMinutes);
     return {
       ...base,
       currentPhaseLabel: "Preparing",
       primaryLabel:
         lateByMinutes > 0
-          ? `${lateByMinutes} min behind average prep`
-          : `${remainingMinutes} min left by average prep`,
+          ? `${lateByMinutes} min behind prep target`
+          : `${remainingMinutes} min left for prep`,
       secondaryLabel: `${prepElapsedMinutes} min already in kitchen`,
       lateByMinutes,
       remainingMinutes,
-      targetMinutes: averagePreparationMinutes,
-      targetAt: preparingAt
-        ? new Date(
-            preparingAt.getTime() + averagePreparationMinutes * 60_000,
-          ).toISOString()
-        : null,
+      targetMinutes: preparationTiming.totalMinutes,
+      targetAt: preparationTiming.targetReadyAt,
+      preparationTiming,
     };
   }
 
@@ -4840,7 +5212,7 @@ function buildAdminOrderOperationalTiming(
 
   if (status === "PickedUp") {
     const pickedUpMinutes = minutesSince(pickedUpAt);
-    const travelTargetMinutes = settings.deliveryLateGraceMinutes;
+    const travelTargetMinutes = settings.deliveryLateAfterPickupMinutes;
     const lateByMinutes = Math.max(0, pickedUpMinutes - travelTargetMinutes);
     const remainingMinutes =
       typeof riderTracking?.remainingDurationMinutes === "number"
@@ -5121,6 +5493,70 @@ export async function processAdminOperationalAlerts() {
       const acceptedAt = getOrderTimestamp(order, "Accepted");
       const acceptedMinutes = minutesSince(acceptedAt);
       const lateByMinutes = Math.max(0, acceptedMinutes - settings.prepStartGraceMinutes);
+      if (acceptedMinutes >= settings.prepStartGraceMinutes && acceptedAt) {
+        const startedAt = new Date();
+        const result = await OrderModel.updateOne(
+          { _id: order._id, status: "Accepted" },
+          {
+            $set: {
+              status: "Preparing",
+              timestamps: applyOrderStatusTimestamp(
+                order.timestamps as Record<string, unknown> | undefined,
+                "Preparing",
+                startedAt,
+              ),
+              preparationMeta: buildPreparationMetaForStart({
+                order,
+                restaurant,
+                startedAt,
+                autoStarted: true,
+                maxExtraMinutes: settings.preparationMaxExtraMinutes,
+              }),
+            },
+            $push: {
+              history: {
+                status: "Preparing",
+                actor: "system",
+                note: `Auto-started food preparation after ${settings.prepStartGraceMinutes} minutes.`,
+                createdAt: startedAt,
+              },
+            },
+          },
+        );
+
+        if (result.modifiedCount > 0) {
+          const updatedOrder = await OrderModel.findById(order._id).lean();
+          if (updatedOrder) {
+            await emitOrderRealtimeUpdates(updatedOrder);
+            if (updatedOrder.customerId) {
+              await safeSendCustomerOrderStatusPush({
+                customerId: String(updatedOrder.customerId),
+                orderId,
+                orderNumber,
+                nextStatus: "Preparing",
+              });
+            }
+          }
+          await recordBusinessEvent({
+            event: "order.preparation_auto_started",
+            category: "orders",
+            severity: "info",
+            title: "Preparation auto-started",
+            description: `${orderNumber} moved to Preparing after the ${settings.prepStartGraceMinutes}-minute start window.`,
+            entityType: "order",
+            entityId: orderId,
+            metadata: {
+              orderNumber,
+              restaurantId: String(order.restaurantId ?? ""),
+              customerId: String(order.customerId ?? ""),
+              acceptedMinutes,
+              prepStartGraceMinutes: settings.prepStartGraceMinutes,
+            },
+          });
+        }
+        continue;
+      }
+
       if (lateByMinutes > 0) {
         await createAdminOperationalAlert({
           alertType: "prep_start_late",
@@ -5148,8 +5584,14 @@ export async function processAdminOperationalAlerts() {
     if (order.status === "Preparing") {
       const preparingAt = getOrderTimestamp(order, "Preparing");
       const prepElapsedMinutes = minutesSince(preparingAt);
-      const expectedPrepMinutes = getRestaurantPrepMinutes(restaurant);
-      const lateByMinutes = Math.max(0, prepElapsedMinutes - expectedPrepMinutes);
+      const preparationTiming = buildOrderPreparationTiming({
+        order,
+        restaurant,
+        prepStartGraceMinutes: settings.prepStartGraceMinutes,
+        maxExtraMinutes: settings.preparationMaxExtraMinutes,
+      });
+      const expectedPrepMinutes = preparationTiming.totalMinutes;
+      const lateByMinutes = Math.ceil((preparationTiming.lateBySeconds ?? 0) / 60);
       if (lateByMinutes >= settings.prepLateGraceMinutes) {
         await createAdminOperationalAlert({
           alertType: "food_prepare_late",
@@ -5281,6 +5723,89 @@ export async function processAdminOperationalAlerts() {
       const pickupMinutes = pickedUpAt
         ? Math.floor((Date.now() - new Date(pickedUpAt).getTime()) / 60000)
         : 0;
+      if (pickedUpAt && pickupMinutes >= settings.deliveryCriticalAfterPickupMinutes) {
+        const lateByMinutes = Math.max(
+          0,
+          pickupMinutes - settings.deliveryLateAfterPickupMinutes,
+        );
+        await createAdminOperationalAlert({
+          alertType: "delivery_critical_after_pickup",
+          severity: "critical",
+          title: `${orderNumber} delivery critically late`,
+          description: `Rider has been out for ${pickupMinutes} minutes since pickup. This passed the ${settings.deliveryCriticalAfterPickupMinutes}-minute critical threshold.`,
+          source: "Delivery",
+          entityType: "order",
+          entityId: orderId,
+          path,
+          iconKey: "alert-triangle",
+          dedupeKey: `order:${orderId}:delivery_critical_after_pickup`,
+          metadata: {
+            orderId,
+            orderNumber,
+            pickupMinutes,
+            deliveryWatchAfterPickupMinutes:
+              settings.deliveryWatchAfterPickupMinutes,
+            deliveryLateAfterPickupMinutes:
+              settings.deliveryLateAfterPickupMinutes,
+            deliveryCriticalAfterPickupMinutes:
+              settings.deliveryCriticalAfterPickupMinutes,
+            lateByMinutes,
+          },
+        });
+      } else if (pickedUpAt && pickupMinutes >= settings.deliveryLateAfterPickupMinutes) {
+        const lateByMinutes = Math.max(
+          0,
+          pickupMinutes - settings.deliveryLateAfterPickupMinutes,
+        );
+        await createAdminOperationalAlert({
+          alertType: "delivery_late_after_pickup",
+          severity: "warning",
+          title: `${orderNumber} delivery late`,
+          description: `Rider has been out for ${pickupMinutes} minutes since pickup. This passed the ${settings.deliveryLateAfterPickupMinutes}-minute delivery target.`,
+          source: "Delivery",
+          entityType: "order",
+          entityId: orderId,
+          path,
+          iconKey: "timer",
+          dedupeKey: `order:${orderId}:delivery_late_after_pickup`,
+          metadata: {
+            orderId,
+            orderNumber,
+            pickupMinutes,
+            deliveryWatchAfterPickupMinutes:
+              settings.deliveryWatchAfterPickupMinutes,
+            deliveryLateAfterPickupMinutes:
+              settings.deliveryLateAfterPickupMinutes,
+            deliveryCriticalAfterPickupMinutes:
+              settings.deliveryCriticalAfterPickupMinutes,
+            lateByMinutes,
+          },
+        });
+      } else if (pickedUpAt && pickupMinutes >= settings.deliveryWatchAfterPickupMinutes) {
+        await createAdminOperationalAlert({
+          alertType: "delivery_watch_after_pickup",
+          severity: "warning",
+          title: `${orderNumber} delivery needs attention`,
+          description: `Rider has been out for ${pickupMinutes} minutes since pickup. Watch threshold is ${settings.deliveryWatchAfterPickupMinutes} minutes.`,
+          source: "Delivery",
+          entityType: "order",
+          entityId: orderId,
+          path,
+          iconKey: "clock",
+          dedupeKey: `order:${orderId}:delivery_watch_after_pickup`,
+          metadata: {
+            orderId,
+            orderNumber,
+            pickupMinutes,
+            deliveryWatchAfterPickupMinutes:
+              settings.deliveryWatchAfterPickupMinutes,
+            deliveryLateAfterPickupMinutes:
+              settings.deliveryLateAfterPickupMinutes,
+            deliveryCriticalAfterPickupMinutes:
+              settings.deliveryCriticalAfterPickupMinutes,
+          },
+        });
+      }
       if (remainingMinutes > 0 && pickupMinutes > remainingMinutes + settings.deliveryLateGraceMinutes) {
         const lateByMinutes = Math.max(0, pickupMinutes - remainingMinutes);
         await createAdminOperationalAlert({

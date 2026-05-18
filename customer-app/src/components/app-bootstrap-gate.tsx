@@ -1,43 +1,85 @@
 import { Ionicons } from "@expo/vector-icons";
-import { PropsWithChildren } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { PropsWithChildren, useEffect, useRef } from "react";
+import { ActivityIndicator, Animated, StyleSheet, Text, View } from "react-native";
 
 import { useAppStartup } from "@/src/hooks/use-app-startup";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
-import { useLocationStore } from "@/src/store/location-store";
 import { palette } from "@/src/theme/palette";
 
 export function AppBootstrapGate({ children }: PropsWithChildren) {
   useAppStartup();
-  const startupStatus = useLocationStore((state) => state.startupStatus);
+  const pulse = useRef(new Animated.Value(0)).current;
   const isAuthHydrated = useCustomerAuthStore((state) => state.isHydrated);
 
-  if (startupStatus === "loading_location" || !isAuthHydrated) {
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    animation.start();
+    return () => animation.stop();
+  }, [pulse]);
+
+  if (!isAuthHydrated) {
+    const pulseScale = pulse.interpolate({
+      inputRange: [0, 1],
+      outputRange: [1, 1.06],
+    });
+    const pulseOpacity = pulse.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.12, 0.22],
+    });
+
     return (
       <View style={styles.container}>
         <View style={styles.card}>
-          <View style={styles.glowPrimary} />
-          <View style={styles.glowSecondary} />
+          <View style={styles.blobPink} />
+          <View style={styles.blobYellow} />
 
-          <View style={styles.iconRow}>
-            <View style={[styles.iconBubble, { backgroundColor: "#FFE8F0" }]}>
-              <Ionicons name="location-outline" size={20} color={palette.secondary} />
+          <View style={styles.brandCluster}>
+            <View style={[styles.sideBubble, styles.sideBubbleLeft]}>
+              <Ionicons name="location" size={18} color={palette.secondary} />
             </View>
-            <View style={[styles.iconBubble, { backgroundColor: "#FFF2D5" }]}>
-              <Ionicons name="restaurant-outline" size={20} color={palette.primary} />
-            </View>
-            <View style={[styles.iconBubble, { backgroundColor: "#EAF2FF" }]}>
-              <Ionicons name="sparkles-outline" size={20} color={palette.sky} />
+            <Animated.View
+              style={[
+                styles.pulseRing,
+                {
+                  opacity: pulseOpacity,
+                  transform: [{ scale: pulseScale }],
+                },
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.heroBubble,
+                {
+                  transform: [{ scale: pulseScale }],
+                },
+              ]}
+            >
+              <Ionicons name="fast-food" size={26} color={palette.surface} />
+            </Animated.View>
+            <View style={[styles.sideBubble, styles.sideBubbleRight]}>
+              <Ionicons name="pricetag" size={18} color={palette.sky} />
             </View>
           </View>
+          <Text style={styles.title}>Finding fresh bites nearby</Text>
+          <Text style={styles.subtitle}>Setting up Foodbela for you</Text>
 
-          <Text style={styles.title}>Preparing your nearby restaurants</Text>
-          <Text style={styles.text}>
-            Checking your location and restoring your account so nearby menus, offers, and delivery details open correctly.
-          </Text>
           <View style={styles.loaderRow}>
             <ActivityIndicator size="small" color={palette.secondary} />
-            <Text style={styles.loaderText}>Getting everything ready</Text>
+            <Text style={styles.loaderText}>Just a moment</Text>
           </View>
         </View>
       </View>
@@ -53,71 +95,118 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: palette.background,
-    padding: 24,
+    paddingHorizontal: 24,
   },
   card: {
     overflow: "hidden",
     width: "100%",
-    borderRadius: 28,
+    maxWidth: 360,
+    borderRadius: 30,
     borderWidth: 1,
-    borderColor: palette.border,
+    borderColor: "rgba(243, 221, 204, 0.9)",
     backgroundColor: palette.surface,
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingTop: 34,
+    paddingBottom: 24,
     alignItems: "center",
-    gap: 12,
+    shadowColor: palette.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 16 },
+    elevation: 8,
   },
-  glowPrimary: {
+  blobPink: {
     position: "absolute",
-    top: -30,
-    right: -20,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "#FFE7F1",
+    top: -48,
+    right: -44,
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    backgroundColor: "#FFE0EC",
   },
-  glowSecondary: {
+  blobYellow: {
     position: "absolute",
-    bottom: -24,
-    left: -16,
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    backgroundColor: "#FFF0C8",
+    bottom: -54,
+    left: -52,
+    width: 132,
+    height: 132,
+    borderRadius: 66,
+    backgroundColor: "#FFF1BF",
   },
-  iconRow: {
-    flexDirection: "row",
+  brandCluster: {
+    width: 156,
+    height: 82,
     alignItems: "center",
-    gap: 10,
-    marginBottom: 4,
+    justifyContent: "center",
+    marginBottom: 18,
   },
-  iconBubble: {
+  pulseRing: {
+    position: "absolute",
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: palette.secondary,
+  },
+  heroBubble: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.secondary,
+    shadowColor: "rgba(255, 99, 146, 0.38)",
+    shadowOpacity: 1,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 7,
+  },
+  sideBubble: {
+    position: "absolute",
+    top: 15,
     width: 46,
     height: 46,
     borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.8)",
+  },
+  sideBubbleLeft: {
+    left: 4,
+    backgroundColor: "#FFE7F1",
+    transform: [{ rotate: "-8deg" }],
+  },
+  sideBubbleRight: {
+    right: 4,
+    backgroundColor: "#EAF2FF",
+    transform: [{ rotate: "8deg" }],
   },
   title: {
-    fontSize: 20,
+    maxWidth: 260,
+    fontSize: 24,
+    lineHeight: 30,
     fontWeight: "800",
     color: palette.foreground,
     textAlign: "center",
   },
-  text: {
+  subtitle: {
+    marginTop: 8,
     fontSize: 14,
-    lineHeight: 22,
+    lineHeight: 20,
     textAlign: "center",
     color: palette.mutedForeground,
   },
   loaderRow: {
-    marginTop: 2,
+    marginTop: 22,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: palette.background,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    backgroundColor: "#FFF4F8",
+    borderWidth: 1,
+    borderColor: "#FFE3EE",
   },
   loaderText: {
     fontSize: 13,

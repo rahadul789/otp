@@ -29,6 +29,7 @@ type OwnerOrderQueryParams = {
   preset?: string
   from?: string
   to?: string
+  dateBasis?: "created" | "history" | "activity"
   page?: number
   pageSize?: number
 }
@@ -133,6 +134,29 @@ function buildDateRange(params?: OwnerOrderQueryParams) {
         start: buildDhakaDayRange(shiftDateParts(todayParts, -29)).start,
         end: buildDhakaDayRange(todayParts).end,
       }
+    case "last90Days":
+      return {
+        start: buildDhakaDayRange(shiftDateParts(todayParts, -89)).start,
+        end: buildDhakaDayRange(todayParts).end,
+      }
+    case "lastMonth": {
+      const start = new Date(Date.UTC(todayParts.year, todayParts.month - 2, 1))
+      const end = new Date(Date.UTC(todayParts.year, todayParts.month - 1, 0))
+      return {
+        start: buildDhakaDayRange({
+          year: start.getUTCFullYear(),
+          month: start.getUTCMonth() + 1,
+          day: start.getUTCDate(),
+        }).start,
+        end: buildDhakaDayRange({
+          year: end.getUTCFullYear(),
+          month: end.getUTCMonth() + 1,
+          day: end.getUTCDate(),
+        }).end,
+      }
+    }
+    case "lifetime":
+      return null
     case "thisWeek": {
       const weekStartParts = shiftDateParts(todayParts, -getDatePartsWeekday(todayParts))
       return {
@@ -149,7 +173,7 @@ function buildDateRange(params?: OwnerOrderQueryParams) {
         }).start,
         end: buildDhakaDayRange(todayParts).end,
       }
-    case "custom":
+    case "custom": {
       if (!params.from) return null
       const fromParts = parseDateOnlyParts(params.from)
       if (!fromParts) return null
@@ -158,6 +182,7 @@ function buildDateRange(params?: OwnerOrderQueryParams) {
         start: buildDhakaDayRange(fromParts).start,
         end: buildDhakaDayRange(toParts).end,
       }
+    }
     default:
       return null
   }
@@ -200,10 +225,22 @@ function matchesDate(order: OwnerOrderResponse, params?: OwnerOrderQueryParams) 
   if (!range) return true
 
   const status = order.status as OrderStatus
-  const effectiveDate =
-    params?.tab === "history" || historyOrderStatuses.includes(status)
-      ? new Date(getHistoryTimestamp(order))
-      : new Date(order.timestamps?.placedAt ?? 0)
+  const placedAt = new Date(order.timestamps?.placedAt ?? 0)
+  const historyAt = new Date(getHistoryTimestamp(order))
+  const dateBasis =
+    params?.dateBasis ??
+    (params?.tab === "history" || historyOrderStatuses.includes(status)
+      ? "history"
+      : "created")
+
+  if (dateBasis === "activity") {
+    return (
+      (placedAt >= range.start && placedAt <= range.end) ||
+      (historyAt >= range.start && historyAt <= range.end)
+    )
+  }
+
+  const effectiveDate = dateBasis === "history" ? historyAt : placedAt
 
   return effectiveDate >= range.start && effectiveDate <= range.end
 }

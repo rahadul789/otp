@@ -16,7 +16,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useRiderOrdersQuery, type RiderOrder } from "@/src/hooks/use-rider-api";
 import { useDeliveryCopy } from "@/src/lib/copy";
-import { formatDateTime } from "@/src/lib/date-time";
+import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
+import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 import { RiderScreenHeader } from "@/src/components/rider-screen-header";
@@ -203,7 +204,6 @@ export default function HistoryScreen() {
             <RiderScreenHeader
               icon="time-outline"
               title={copy.history.title}
-              subtitle={copy.history.subtitle}
               statusTone={statusTone}
               statusLabel={statusLabel}
             />
@@ -230,7 +230,7 @@ export default function HistoryScreen() {
                   value={searchQuery}
                   onChangeText={handleSearchChange}
                   placeholder={historyCopy.searchPlaceholder}
-                  placeholderTextColor="#9F948A"
+                  placeholderTextColor={palette.placeholder}
                   style={styles.searchInput}
                 />
                 {searchQuery ? (
@@ -247,7 +247,7 @@ export default function HistoryScreen() {
                 <Ionicons
                   name="options-outline"
                   size={16}
-                  color={palette.secondary}
+                  color={palette.primary}
                 />
                 {activeFilterCount > 0 ? (
                   <View style={styles.filterCountBadgeFloating}>
@@ -283,18 +283,18 @@ export default function HistoryScreen() {
           <RefreshControl
             refreshing={isRefreshing}
             onRefresh={handleRefresh}
-            tintColor={palette.primaryStrong}
+            tintColor={palette.primary}
           />
         }
         ListEmptyComponent={
           ordersQuery.isLoading ? (
             <View style={styles.centered}>
-              <ActivityIndicator size="small" color={palette.primaryStrong} />
+              <ActivityIndicator size="small" color={palette.primary} />
             </View>
           ) : (
             <View style={styles.emptyState}>
               <View style={styles.emptyIcon}>
-                <Ionicons name="receipt-outline" size={24} color={palette.primaryStrong} />
+                <Ionicons name="receipt-outline" size={24} color={palette.foreground} />
               </View>
               <Text style={styles.emptyTitle}>
                 {searchQuery || activeFilterCount > 0 ? historyCopy.noMatchingTitle : copy.history.noTripsTitle}
@@ -309,24 +309,39 @@ export default function HistoryScreen() {
             </View>
           )
         }
-        renderItem={({ item }) => (
-          <Pressable style={styles.card} onPress={() => router.push(`/orders/${item.id}`)}>
-            <View style={styles.row}>
-              <Text style={styles.orderNumber}>{item.orderNumber}</Text>
-              <Text
-                style={[
-                  styles.status,
-                  item.status === "Delivered" ? styles.statusDelivered : styles.statusCancelled,
-                ]}
-              >
-                {item.status === "Delivered" ? copy.common.delivered : copy.common.cancelled}
-              </Text>
-            </View>
-            <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
-            <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
-            <Text style={styles.meta}>{formatDateTime(item.updatedAt ?? item.createdAt)}</Text>
-          </Pressable>
-        )}
+        renderItem={({ item }) => {
+          const statusBadge = getOrderStatusBadge(item.status);
+          const timingInfo = getOrderTimingInfo(item);
+          return (
+            <Pressable style={styles.card} onPress={() => router.push(`/orders/${item.id}`)}>
+              <View style={styles.row}>
+                <Text style={styles.orderNumber}>{item.orderNumber}</Text>
+                <View
+                  style={[
+                    styles.statusChip,
+                    {
+                      backgroundColor: statusBadge.backgroundColor,
+                      borderColor: statusBadge.borderColor,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.status, { color: statusBadge.color }]}>
+                    {statusBadge.label}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
+              <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
+              <View style={styles.timeRow}>
+                <Ionicons name="time-outline" size={14} color={palette.mutedForeground} />
+                <Text style={styles.meta}>
+                  {timingInfo.label}: {formatDateTime(timingInfo.value)}
+                  {timingInfo.value ? ` - ${formatRelativeTime(timingInfo.value)}` : ""}
+                </Text>
+              </View>
+            </Pressable>
+          );
+        }}
       />
 
       <Modal
@@ -423,18 +438,21 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: palette.background },
-  listContent: { paddingHorizontal: 20, paddingBottom: 24, gap: 14, flexGrow: 1 },
-  headerWrap: { paddingTop: 16, paddingBottom: 10, gap: 14 },
+  listContent: { paddingHorizontal: 20, paddingBottom: 112, gap: 12, flexGrow: 1 },
+  headerWrap: { paddingTop: 16, paddingBottom: 12, gap: 12 },
   summaryRow: { flexDirection: "row", gap: 10 },
   summaryCard: {
     flex: 1,
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 14,
     gap: 6,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
   },
-  summaryPink: { backgroundColor: "#FFE8F0" },
-  summaryAmber: { backgroundColor: "#FFF1D9" },
-  summarySky: { backgroundColor: "#EAF1FF" },
+  summaryPink: {},
+  summaryAmber: {},
+  summarySky: {},
   summaryLabel: {
     fontSize: 11,
     fontWeight: "800",
@@ -450,7 +468,7 @@ const styles = StyleSheet.create({
   searchShell: {
     flex: 1,
     minHeight: 50,
-    borderRadius: 18,
+    borderRadius: 16,
     paddingHorizontal: 14,
     backgroundColor: palette.surface,
     borderWidth: 1,
@@ -478,8 +496,8 @@ const styles = StyleSheet.create({
     height: 50,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#FFD3E2",
-    backgroundColor: "#FFF1F6",
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -498,7 +516,7 @@ const styles = StyleSheet.create({
   filterCountText: {
     fontSize: 10,
     fontWeight: "800",
-    color: palette.secondary,
+    color: palette.primary,
   },
   resultsBar: {
     flexDirection: "row",
@@ -520,12 +538,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "#FFF1F6",
+    backgroundColor: palette.primarySoft,
   },
   clearBadgeText: {
     fontSize: 12,
     fontWeight: "800",
-    color: palette.secondary,
+    color: palette.primary,
   },
   appliedChipsRow: {
     flexDirection: "row",
@@ -536,14 +554,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "#FFEAF2",
+    backgroundColor: palette.primarySoft,
     borderWidth: 1,
-    borderColor: "#FFCEE0",
+    borderColor: "#FFD0C3",
   },
   appliedChipText: {
     fontSize: 12,
     fontWeight: "800",
-    color: palette.secondary,
+    color: palette.primary,
   },
   filterSection: {
     gap: 10,
@@ -564,8 +582,8 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   filterChipActive: {
-    borderColor: "#FFB8CE",
-    backgroundColor: "#FFEAF2",
+    borderColor: "#FFD0C3",
+    backgroundColor: palette.primarySoft,
   },
   filterChipText: {
     fontSize: 12,
@@ -573,7 +591,7 @@ const styles = StyleSheet.create({
     color: palette.mutedForeground,
   },
   filterChipTextActive: {
-    color: palette.secondary,
+    color: palette.primary,
   },
   filterActionsRow: {
     flexDirection: "row",
@@ -591,7 +609,7 @@ const styles = StyleSheet.create({
   filterResetText: {
     fontSize: 14,
     fontWeight: "800",
-    color: palette.primaryStrong,
+    color: palette.foreground,
   },
   filterApplyButton: {
     flex: 1,
@@ -599,7 +617,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: palette.secondary,
+    backgroundColor: palette.foreground,
   },
   filterApplyText: {
     fontSize: 14,
@@ -649,7 +667,7 @@ const styles = StyleSheet.create({
   centered: { minHeight: 320, alignItems: "center", justifyContent: "center" },
   card: {
     backgroundColor: palette.surface,
-    borderRadius: 24,
+    borderRadius: 18,
     padding: 16,
     gap: 6,
     borderWidth: 1,
@@ -657,12 +675,21 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
   orderNumber: { fontSize: 16, fontWeight: "800", color: palette.foreground },
-  status: { fontSize: 13, fontWeight: "800" },
-  statusDelivered: { color: palette.successText },
-  statusCancelled: { color: palette.warningText },
+  statusChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+  },
+  status: { fontSize: 12, fontWeight: "800" },
   name: { fontSize: 15, fontWeight: "700", color: palette.foreground },
   metaStrong: { fontSize: 13, fontWeight: "700", color: palette.foreground },
   meta: { fontSize: 13, color: palette.mutedForeground },
+  timeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   emptyState: {
     flex: 1,
     minHeight: 320,
@@ -673,7 +700,7 @@ const styles = StyleSheet.create({
   emptyIcon: {
     width: 56,
     height: 56,
-    borderRadius: 18,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: palette.surface,

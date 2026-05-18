@@ -8,6 +8,7 @@ import {
 
 import { apiDelete, apiGet, apiPost } from "@/src/lib/api";
 import { buildQueryString } from "@/src/lib/query-params";
+import type { RiderLiveTrackingPolicy } from "@/src/lib/live-tracking-policy";
 import { useRiderAuthStore, type RiderProfile } from "@/src/store/auth-store";
 
 export type RiderOrder = {
@@ -18,6 +19,7 @@ export type RiderOrder = {
   paymentStatus: string;
   assignmentState?: "unassigned" | "assigned_to_you" | "assigned_to_other";
   isTrackingActiveForRider?: boolean;
+  isFocusedLiveTrip?: boolean;
   createdAt: string | null;
   updatedAt: string | null;
   pricing?: {
@@ -32,6 +34,7 @@ export type RiderOrder = {
   };
   riderTracking?: {
     isActive?: boolean;
+    isFocused?: boolean;
     startedAt?: string;
     lastUpdatedAt?: string;
     freshness?: {
@@ -59,6 +62,7 @@ export type RiderOrder = {
     deliveryAddress?: {
       label?: string;
       addressLine?: string;
+      addressDetails?: string;
       latitude?: number | null;
       longitude?: number | null;
     };
@@ -96,6 +100,32 @@ const ACTIVE_ORDER_STATUSES = new Set([
 
 const HISTORY_ORDER_STATUSES = new Set(["Delivered", "Cancelled", "Rejected"]);
 
+type PlatformContentResponse = {
+  operations?: {
+    liveTracking?: RiderLiveTrackingPolicy;
+    dispatch?: Partial<RiderDeliveryThresholds>;
+  };
+  supportContact?: {
+    phone?: string;
+  };
+};
+
+export type RiderDeliveryThresholds = {
+  assignmentTimeoutMinutes: number;
+  pickupLateGraceMinutes: number;
+  deliveryWatchAfterPickupMinutes: number;
+  deliveryLateAfterPickupMinutes: number;
+  deliveryCriticalAfterPickupMinutes: number;
+};
+
+const DEFAULT_RIDER_DELIVERY_THRESHOLDS: RiderDeliveryThresholds = {
+  assignmentTimeoutMinutes: 8,
+  pickupLateGraceMinutes: 10,
+  deliveryWatchAfterPickupMinutes: 20,
+  deliveryLateAfterPickupMinutes: 25,
+  deliveryCriticalAfterPickupMinutes: 30,
+};
+
 function normalizeRiderOrder(order: Partial<RiderOrder> & { _id?: string; id?: string }) {
   const id = order.id ?? order._id ?? "";
   return {
@@ -126,6 +156,28 @@ function patchScopedOrdersList(
   return list.map((item) => (item.id === nextOrder.id ? { ...item, ...nextOrder } : item));
 }
 
+function mergeRiderOrder(current: RiderOrder | undefined, nextOrder: RiderOrder) {
+  if (!current) return nextOrder;
+
+  return {
+    ...current,
+    ...nextOrder,
+    pricing: nextOrder.pricing ?? current.pricing,
+    riderSnapshot: nextOrder.riderSnapshot ?? current.riderSnapshot,
+    riderTracking: nextOrder.riderTracking
+      ? { ...current.riderTracking, ...nextOrder.riderTracking }
+      : current.riderTracking,
+    customer: nextOrder.customer ?? current.customer,
+    restaurant: nextOrder.restaurant ?? current.restaurant,
+    items: nextOrder.items ?? current.items,
+    history: nextOrder.history ?? current.history,
+    timestamps: {
+      ...(current.timestamps ?? {}),
+      ...(nextOrder.timestamps ?? {}),
+    },
+  };
+}
+
 export function patchRiderOrderCaches(
   queryClient: QueryClient,
   orderLike: Partial<RiderOrder> & { _id?: string; id?: string }
@@ -135,7 +187,9 @@ export function patchRiderOrderCaches(
     return;
   }
 
-  queryClient.setQueryData(["rider", "order", nextOrder.id], nextOrder);
+  queryClient.setQueryData<RiderOrder>(["rider", "order", nextOrder.id], (current) =>
+    mergeRiderOrder(current, nextOrder)
+  );
   queryClient.setQueryData<RiderOrder[]>(["rider", "orders", "active"], (current) =>
     patchScopedOrdersList(current, nextOrder, ACTIVE_ORDER_STATUSES.has(nextOrder.status))
   );
@@ -155,6 +209,19 @@ type RiderAuthResponse = {
   accessToken: string;
   refreshToken: string;
   rider: RiderProfile;
+};
+
+type RiderOtpSessionResponse = {
+  verificationSessionId: string;
+  phone?: string;
+  expiresInSeconds: number;
+  resendAvailableInSeconds?: number;
+};
+
+type RiderPasswordResetVerifyResponse = {
+  verificationSessionId: string;
+  phone: string;
+  expiresInSeconds: number;
 };
 
 export function useRiderProfileQuery(enabled = true) {
@@ -245,6 +312,71 @@ export function useRiderOrdersQuery(scope: "available" | "active" | "history") {
   });
 }
 
+export function useRiderLiveTrackingPolicyQuery() {
+  return useQuery({
+    queryKey: ["platform-content", "rider-live-tracking"],
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const response = await apiGet<PlatformContentResponse>("/public/content");
+      return response.data.operations?.liveTracking ?? null;
+    },
+  });
+}
+
+export function useRiderDeliveryThresholdsQuery() {
+  return useQuery({
+    queryKey: ["platform-content", "rider-delivery-thresholds"],
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const response = await apiGet<PlatformContentResponse>("/public/content");
+      const dispatch = response.data.operations?.dispatch ?? {};
+      const assignmentTimeoutMinutes =
+        typeof dispatch.assignmentTimeoutMinutes === "number"
+          ? dispatch.assignmentTimeoutMinutes
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.assignmentTimeoutMinutes;
+      const pickupLateGraceMinutes =
+        typeof dispatch.pickupLateGraceMinutes === "number"
+          ? dispatch.pickupLateGraceMinutes
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.pickupLateGraceMinutes;
+      const watch =
+        typeof dispatch.deliveryWatchAfterPickupMinutes === "number"
+          ? dispatch.deliveryWatchAfterPickupMinutes
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.deliveryWatchAfterPickupMinutes;
+      const late = Math.max(
+        watch,
+        typeof dispatch.deliveryLateAfterPickupMinutes === "number"
+          ? dispatch.deliveryLateAfterPickupMinutes
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.deliveryLateAfterPickupMinutes
+      );
+      const critical = Math.max(
+        late,
+        typeof dispatch.deliveryCriticalAfterPickupMinutes === "number"
+          ? dispatch.deliveryCriticalAfterPickupMinutes
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.deliveryCriticalAfterPickupMinutes
+      );
+
+      return {
+        assignmentTimeoutMinutes,
+        pickupLateGraceMinutes,
+        deliveryWatchAfterPickupMinutes: watch,
+        deliveryLateAfterPickupMinutes: late,
+        deliveryCriticalAfterPickupMinutes: critical,
+      } satisfies RiderDeliveryThresholds;
+    },
+  });
+}
+
+export function useRiderSupportContactQuery() {
+  return useQuery({
+    queryKey: ["platform-content", "rider-support-contact"],
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const response = await apiGet<PlatformContentResponse>("/public/content");
+      return response.data.supportContact ?? null;
+    },
+  });
+}
+
 export function useRiderOrderDetailsQuery(orderId?: string) {
   const isAuthenticated = useRiderAuthStore((state: { accessToken: string }) => Boolean(state.accessToken));
 
@@ -262,10 +394,58 @@ export function useRiderOrderDetailsQuery(orderId?: string) {
 export function useStartRiderPhoneAuthMutation() {
   return useMutation({
     mutationFn: async (params: { phone: string }) => {
-      const response = await apiPost<{
-        verificationSessionId: string;
-        expiresInSeconds: number;
-      }>("/rider/auth/phone/start", params);
+      const response = await apiPost<RiderOtpSessionResponse>("/rider/auth/phone/start", params);
+      return response.data;
+    },
+  });
+}
+
+export function useRiderPasswordSigninMutation() {
+  const setSession = useRiderAuthStore((state) => state.setSession);
+
+  return useMutation({
+    mutationFn: async (params: { phone: string; password: string }) => {
+      const response = await apiPost<RiderAuthResponse>("/rider/auth/password/signin", params);
+      return response.data;
+    },
+    onSuccess: (data: RiderAuthResponse) => {
+      setSession({
+        rider: data.rider,
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+      });
+    },
+  });
+}
+
+export function useRiderPasswordResetStartMutation() {
+  return useMutation({
+    mutationFn: async (params: { phone: string }) => {
+      const response = await apiPost<RiderOtpSessionResponse>("/rider/auth/password/forgot", params);
+      return response.data;
+    },
+  });
+}
+
+export function useRiderPasswordResetVerifyMutation() {
+  return useMutation({
+    mutationFn: async (params: { verificationSessionId: string; otpCode: string }) => {
+      const response = await apiPost<RiderPasswordResetVerifyResponse>(
+        "/rider/auth/password/verify",
+        params
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useRiderPasswordResetMutation() {
+  return useMutation({
+    mutationFn: async (params: { verificationSessionId: string; newPassword: string }) => {
+      const response = await apiPost<{ reset: boolean; phone: string }>(
+        "/rider/auth/password/reset",
+        params
+      );
       return response.data;
     },
   });
@@ -307,6 +487,8 @@ export function usePickupOrderMutation() {
     },
     onSuccess: (data: RiderOrder) => {
       patchRiderOrderCaches(queryClient, data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
   });
 }
@@ -321,6 +503,8 @@ export function useAcceptOrderMutation() {
     },
     onSuccess: (data: RiderOrder) => {
       patchRiderOrderCaches(queryClient, data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
   });
 }
@@ -335,6 +519,8 @@ export function useDeliverOrderMutation() {
     },
     onSuccess: (data: RiderOrder) => {
       patchRiderOrderCaches(queryClient, data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
   });
 }
@@ -349,6 +535,8 @@ export function useActivateTrackingMutation() {
     },
     onSuccess: (data: RiderOrder) => {
       patchRiderOrderCaches(queryClient, data);
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
   });
 }

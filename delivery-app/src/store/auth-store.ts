@@ -27,8 +27,8 @@ export type RiderProfile = {
 
 type PendingPhoneAuth = {
   phone: string;
-  fullName: string;
   verificationSessionId: string;
+  resendAvailableInSeconds?: number;
 };
 
 type RiderAuthStore = {

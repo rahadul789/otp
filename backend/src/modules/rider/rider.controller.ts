@@ -16,10 +16,14 @@ import {
   postRiderLocation,
   refreshRiderSession,
   registerRiderPushToken,
+  requestRiderPasswordReset,
+  resetRiderPassword,
+  signinRiderWithPassword,
   startRiderPhoneSignin,
   unregisterRiderPushToken,
   updateRiderLastKnownLocation,
   updateRiderAvailability,
+  verifyRiderPasswordResetOtp,
   verifyRiderPhoneSignin
 } from "./rider.service"
 
@@ -29,8 +33,27 @@ const riderPhoneStartSchema = z.object({
 
 const riderPhoneVerifySchema = z.object({
   verificationSessionId: z.string().min(1),
-  otpCode: z.string().length(6),
+  otpCode: z.string().length(4),
   fullName: z.string().optional()
+})
+
+const riderPasswordSigninSchema = z.object({
+  phone: z.string().regex(/^01\d{9}$/),
+  password: z.string().min(6)
+})
+
+const riderPasswordResetStartSchema = z.object({
+  phone: z.string().regex(/^01\d{9}$/)
+})
+
+const riderPasswordResetVerifySchema = z.object({
+  verificationSessionId: z.string().min(1),
+  otpCode: z.string().length(4)
+})
+
+const riderPasswordResetSchema = z.object({
+  verificationSessionId: z.string().min(1),
+  newPassword: z.string().min(6)
 })
 
 const refreshSchema = z.object({
@@ -81,7 +104,10 @@ function getStringValue(value: unknown) {
 
 export const startRiderPhoneAuth = asyncHandler(async (req: Request, res: Response) => {
   const payload = riderPhoneStartSchema.parse(req.body)
-  const data = await startRiderPhoneSignin(payload.phone)
+  const data = await startRiderPhoneSignin(payload.phone, {
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
 
   return sendSuccess(res, {
     statusCode: StatusCodes.ACCEPTED,
@@ -100,6 +126,59 @@ export const verifyRiderPhoneAuth = asyncHandler(async (req: Request, res: Respo
 
   return sendSuccess(res, {
     message: "Rider signed in successfully",
+    data
+  })
+})
+
+export const signinRiderPasswordAuth = asyncHandler(async (req: Request, res: Response) => {
+  const payload = riderPasswordSigninSchema.parse(req.body)
+  const data = await signinRiderWithPassword({
+    ...payload,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
+
+  return sendSuccess(res, {
+    message: "Rider signed in successfully",
+    data
+  })
+})
+
+export const startRiderPasswordResetAuth = asyncHandler(async (req: Request, res: Response) => {
+  const payload = riderPasswordResetStartSchema.parse(req.body)
+  const data = await requestRiderPasswordReset({
+    phone: payload.phone,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.ACCEPTED,
+    message: "Password reset OTP sent",
+    data
+  })
+})
+
+export const verifyRiderPasswordResetAuth = asyncHandler(async (req: Request, res: Response) => {
+  const payload = riderPasswordResetVerifySchema.parse(req.body)
+  const data = await verifyRiderPasswordResetOtp({
+    ...payload,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
+
+  return sendSuccess(res, {
+    message: "Password reset OTP verified",
+    data
+  })
+})
+
+export const resetRiderPasswordAuth = asyncHandler(async (req: Request, res: Response) => {
+  const payload = riderPasswordResetSchema.parse(req.body)
+  const data = await resetRiderPassword(payload)
+
+  return sendSuccess(res, {
+    message: "Password reset successfully",
     data
   })
 })

@@ -343,5 +343,5 @@ export function formatVoucherDiscount(voucher: Pick<Voucher, "type" | "discountV
   if (voucher.type === "free-delivery") return "Delivery fee waived"
   if (voucher.type === "bogo") return "BOGO"
   if (voucher.type === "percentage") return `${voucher.discountValue ?? 0}% off`
-  return `${voucher.discountValue ?? 0}tk off`
+  return `${Math.round(voucher.discountValue ?? 0).toLocaleString()}tk off`
 }

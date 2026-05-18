@@ -21,8 +21,13 @@ type RiderAssignmentPayload = {
   assignmentAction?: "assigned" | "reassigned" | "unassigned";
 };
 
+type RiderRestaurantUpdatedPayload = {
+  orderId?: string;
+};
+
 export function RiderSocketBridge() {
   const riderId = useRiderAuthStore((state: { rider: { id?: string } | null }) => state.rider?.id ?? "");
+  const accessToken = useRiderAuthStore((state: { accessToken: string }) => state.accessToken);
   const queryClient = useQueryClient();
   const { copy, language } = useDeliveryCopy();
   const riderSocketCopy = useMemo(() => {
@@ -63,12 +68,12 @@ export function RiderSocketBridge() {
   }, [copy, language]);
 
   useEffect(() => {
-    if (!riderId) {
+    if (!riderId || !accessToken) {
       disconnectRiderSocket();
       return;
     }
 
-    const socket = connectRiderSocket(riderId);
+    const socket = connectRiderSocket(riderId, accessToken);
     const handleSocketConnected = () => {
       setDeliveryNetworkOnline(true);
     };
@@ -76,6 +81,9 @@ export function RiderSocketBridge() {
       if (reason !== "io client disconnect") {
         setDeliveryNetworkOnline(false);
       }
+    };
+    const handleConnectError = () => {
+      setDeliveryNetworkOnline(false);
     };
     const handleOrderUpdated = (payload: RiderSocketOrderPayload) => {
       patchRiderOrderCaches(queryClient, payload);
@@ -110,22 +118,32 @@ export function RiderSocketBridge() {
     const handleProfileUpdated = () => {
       queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     };
+    const handleRestaurantUpdated = (payload: RiderRestaurantUpdatedPayload) => {
+      queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
+      if (payload.orderId) {
+        queryClient.invalidateQueries({ queryKey: ["rider", "order", payload.orderId] });
+      }
+    };
 
     socket.on("connect", handleSocketConnected);
     socket.on("disconnect", handleSocketDisconnected);
+    socket.on("connect_error", handleConnectError);
     socket.on("rider.order.updated", handleOrderUpdated);
     socket.on("rider.assignment.updated", handleAssignmentUpdated);
     socket.on("rider.profile.updated", handleProfileUpdated);
+    socket.on("rider.restaurant.updated", handleRestaurantUpdated);
 
     return () => {
       socket.off("connect", handleSocketConnected);
       socket.off("disconnect", handleSocketDisconnected);
+      socket.off("connect_error", handleConnectError);
       socket.off("rider.order.updated", handleOrderUpdated);
       socket.off("rider.assignment.updated", handleAssignmentUpdated);
       socket.off("rider.profile.updated", handleProfileUpdated);
+      socket.off("rider.restaurant.updated", handleRestaurantUpdated);
       disconnectRiderSocket();
     };
-  }, [queryClient, riderId, riderSocketCopy]);
+  }, [accessToken, queryClient, riderId, riderSocketCopy]);
 
   return null;
 }

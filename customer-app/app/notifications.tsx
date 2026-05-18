@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -12,8 +12,29 @@ import {
   useCustomerMarkNotificationReadMutation,
   useCustomerNotificationsQuery,
 } from "@/src/hooks/use-customer-api";
+import { resolveCustomerPushRoute } from "@/src/lib/customer-routes";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
 import { palette } from "@/src/theme/palette";
+
+type NotificationTab = "all" | "orders" | "offers";
+
+const notificationTabs: { key: NotificationTab; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "orders", label: "Orders" },
+  { key: "offers", label: "Offers" },
+];
+
+function isOfferNotification(type: string) {
+  return type === "promotion" || type === "voucher" || type === "campaign";
+}
+
+function isOrderNotification(type: string) {
+  return (
+    type === "order_status" ||
+    type === "rider_assigned" ||
+    type === "rider_near"
+  );
+}
 
 function getToneStyle(type: string) {
   switch (type) {
@@ -35,6 +56,14 @@ function getToneStyle(type: string) {
         icon: "storefront-outline" as const,
         iconColor: palette.primary,
       };
+    case "promotion":
+    case "voucher":
+    case "campaign":
+      return {
+        cardTint: "#FFF0F6",
+        icon: "gift-outline" as const,
+        iconColor: palette.secondary,
+      };
     default:
       return {
         cardTint: "#EAF2FF",
@@ -53,12 +82,13 @@ export default function NotificationsScreen() {
     targetPath?: string;
   }>();
   const insets = useSafeAreaInsets();
+  const [activeTab, setActiveTab] = useState<NotificationTab>("all");
   useCustomerNotificationsQuery();
-  const notificationsQuery = useCustomerNotificationsInfiniteQuery();
+  const notificationsQuery = useCustomerNotificationsInfiniteQuery(true, 20, activeTab);
   const markReadMutation = useCustomerMarkNotificationReadMutation();
   const markAllMutation = useCustomerMarkAllNotificationsReadMutation();
   const pushedNotificationKey = params.notificationId || params.campaignId || "";
-  const notifications = useMemo(() => {
+  const allNotifications = useMemo(() => {
     const rawNotifications = notificationsQuery.data?.pages.flatMap((page) => page.items) ?? [];
     if (!pushedNotificationKey) return rawNotifications;
     return [...rawNotifications].sort((left, right) => {
@@ -69,22 +99,42 @@ export default function NotificationsScreen() {
       return Number(rightMatch) - Number(leftMatch);
     });
   }, [pushedNotificationKey, notificationsQuery.data?.pages]);
+  const notifications = useMemo(() => {
+    if (activeTab === "orders") {
+      return allNotifications.filter((notification) => isOrderNotification(notification.type));
+    }
+    if (activeTab === "offers") {
+      return allNotifications.filter((notification) => isOfferNotification(notification.type));
+    }
+    return allNotifications;
+  }, [activeTab, allNotifications]);
   const isInitialLoading = notificationsQuery.isLoading && notifications.length === 0;
   const isRefreshing = notificationsQuery.isRefetching && !notificationsQuery.isFetchingNextPage;
   const targetPath = Array.isArray(params.targetPath) ? params.targetPath[0] : params.targetPath;
+  const safePushTargetPath = useMemo(
+    () => resolveCustomerPushRoute({ path: targetPath }),
+    [targetPath],
+  );
   const openedFromPush = params.fromPush === "1";
 
   const openNotification = async (notification: {
     id: string;
     path: string;
+    type: string;
+    campaignId?: string;
     isRead: boolean;
   }) => {
     if (!notification.isRead) {
       await markReadMutation.mutateAsync(notification.id).catch(() => undefined);
     }
 
-    if (notification.path) {
-      router.push(notification.path as never);
+    const safePath = resolveCustomerPushRoute({
+      type: notification.type,
+      path: notification.path,
+      campaignId: notification.campaignId,
+    });
+    if (safePath) {
+      router.push(safePath as never);
       return;
     }
 
@@ -117,7 +167,7 @@ export default function NotificationsScreen() {
           </Pressable>
         </View>
 
-        {openedFromPush && targetPath ? (
+        {openedFromPush && safePushTargetPath ? (
           <View style={styles.pushContextCard}>
             <View style={styles.pushContextIcon}>
               <Ionicons name="open-outline" size={18} color={palette.secondary} />
@@ -130,12 +180,31 @@ export default function NotificationsScreen() {
             </View>
             <Pressable
               style={styles.pushContextAction}
-              onPress={() => router.push(targetPath as never)}
+              onPress={() => {
+                router.push(safePushTargetPath as never);
+              }}
             >
               <Text style={styles.pushContextActionText}>Open</Text>
             </Pressable>
           </View>
         ) : null}
+
+        <View style={styles.tabs}>
+          {notificationTabs.map((tab) => {
+            const isActive = activeTab === tab.key;
+            return (
+              <Pressable
+                key={tab.key}
+                style={[styles.tabChip, isActive ? styles.tabChipActive : null]}
+                onPress={() => setActiveTab(tab.key)}
+              >
+                <Text style={[styles.tabText, isActive ? styles.tabTextActive : null]}>
+                  {tab.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
 
         {isInitialLoading ? (
           <View style={styles.feedbackWrap}>
@@ -156,8 +225,20 @@ export default function NotificationsScreen() {
         ) : notifications.length === 0 ? (
           <View style={styles.feedbackWrap}>
             <EmptyStateCard
-              title="No notifications yet"
-              description="Order and restaurant updates will appear here."
+              title={
+                activeTab === "offers"
+                  ? "No offers yet"
+                  : activeTab === "orders"
+                    ? "No order updates yet"
+                    : "No notifications yet"
+              }
+              description={
+                activeTab === "offers"
+                  ? "Foodbela offers and promo updates will appear here."
+                  : activeTab === "orders"
+                    ? "Order status updates will appear here."
+                    : "Order updates and offers will appear here."
+              }
             />
           </View>
         ) : (
@@ -350,6 +431,35 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: "800",
     color: palette.surface,
+  },
+  tabs: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 18,
+    paddingBottom: 12,
+  },
+  tabChip: {
+    minHeight: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tabChipActive: {
+    borderColor: "#FFC0D4",
+    backgroundColor: "#FFF0F6",
+  },
+  tabText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+    color: palette.mutedForeground,
+  },
+  tabTextActive: {
+    color: palette.secondary,
   },
   footerLoading: {
     paddingVertical: 18,

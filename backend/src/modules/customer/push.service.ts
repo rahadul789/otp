@@ -20,6 +20,8 @@ type CustomerNotificationRecord = {
   path: string
   campaignId: string
   campaignVariant: string
+  ctaLabel: string
+  ctaPath: string
   contentType: string
   imageUrl: string
   isRead: boolean
@@ -64,6 +66,135 @@ function isNotificationEnabled(
   }
 }
 
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : ""
+}
+
+function normalizeOrderTrackingPath(path: string, orderId: string) {
+  if (orderId) return `/orders/${orderId}/tracking`
+
+  const match = path.match(/^\/orders\/([A-Za-z0-9_-]+)(?:\/tracking)?(?:[?#].*)?$/)
+  if (match?.[1]) return `/orders/${match[1]}/tracking`
+
+  return path
+}
+
+function stripVisibleOrderReferences(text: string) {
+  return text
+    .replace(/\bOrder\s+#?[A-Z0-9][A-Z0-9-]{3,}\b/gi, "Your order")
+    .replace(/\b#[A-Z0-9][A-Z0-9-]{3,}\b/g, "your order")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function getOrderStatusPushMessage(payload: CustomerPushPayload) {
+  const hint = `${stringValue(payload.data?.status)} ${payload.title} ${payload.body}`.toLowerCase()
+
+  if (hint.includes("accepted")) {
+    return {
+      title: "✅ Order accepted",
+      body: "Your order is confirmed. The kitchen will start soon."
+    }
+  }
+
+  if (hint.includes("preparing") || hint.includes("cooking")) {
+    return {
+      title: "🍳 Food is preparing",
+      body: "Your food is being prepared now."
+    }
+  }
+
+  if (hint.includes("ready")) {
+    return {
+      title: "📦 Ready for pickup",
+      body: "Your order is packed. A rider will pick it up soon."
+    }
+  }
+
+  if (hint.includes("picked up") || hint.includes("on the way")) {
+    return {
+      title: "🛵 On the way",
+      body: "Your rider picked up the order and is heading to you."
+    }
+  }
+
+  if (hint.includes("delivered")) {
+    return {
+      title: "🎉 Delivered",
+      body: "Your food has arrived. Tap to rate your order."
+    }
+  }
+
+  if (hint.includes("reject") || hint.includes("not accepted")) {
+    return {
+      title: "😕 Order not accepted",
+      body: "The restaurant could not accept your order. Please try another restaurant."
+    }
+  }
+
+  if (hint.includes("cancel")) {
+    return {
+      title: "❌ Order cancelled",
+      body: "Your order was cancelled. You can order again anytime."
+    }
+  }
+
+  return {
+    title: "🔔 Order update",
+    body: "There is a new update on your order."
+  }
+}
+
+function normalizeCustomerPushPayload(payload: CustomerPushPayload): CustomerPushPayload {
+  const data = { ...(payload.data ?? {}) }
+  const type = stringValue(data.type)
+  const orderId = stringValue(data.orderId ?? data.order_id)
+  const path = stringValue(data.path)
+  const isOrderRelated =
+    Boolean(orderId) ||
+    path.startsWith("/orders/") ||
+    ["order_status", "rider_assigned", "rider_near"].includes(type)
+
+  if (!isOrderRelated) return payload
+
+  if (path || orderId) {
+    data.path = normalizeOrderTrackingPath(path, orderId)
+  }
+
+  if (type === "order_status") {
+    return {
+      ...payload,
+      ...getOrderStatusPushMessage(payload),
+      data
+    }
+  }
+
+  if (type === "rider_assigned") {
+    return {
+      ...payload,
+      title: payload.title.includes("updated") ? "🛵 Rider updated" : "🛵 Rider assigned",
+      body: stripVisibleOrderReferences(payload.body).replace(/\bthe order\b/i, "your order"),
+      data
+    }
+  }
+
+  if (type === "rider_near") {
+    return {
+      ...payload,
+      title: "📍 Rider is nearby",
+      body: "Your rider is almost there. Please be ready to receive your order.",
+      data
+    }
+  }
+
+  return {
+    ...payload,
+    title: stripVisibleOrderReferences(payload.title),
+    body: stripVisibleOrderReferences(payload.body),
+    data
+  }
+}
+
 function mapCustomerNotification(notification: {
   _id?: mongoose.Types.ObjectId | string
   type?: string
@@ -72,6 +203,8 @@ function mapCustomerNotification(notification: {
   path?: string
   campaignId?: string
   campaignVariant?: string
+  ctaLabel?: string
+  ctaPath?: string
   contentType?: string
   imageUrl?: string
   isRead?: boolean
@@ -86,6 +219,8 @@ function mapCustomerNotification(notification: {
     path: notification.path ?? "",
     campaignId: notification.campaignId ?? "",
     campaignVariant: notification.campaignVariant ?? "",
+    ctaLabel: notification.ctaLabel ?? "",
+    ctaPath: notification.ctaPath ?? "",
     contentType: notification.contentType ?? "text",
     imageUrl: notification.imageUrl ?? "",
     isRead: Boolean(notification.isRead),
@@ -100,14 +235,19 @@ export async function createCustomerNotification(params: {
   customerId: string
   payload: CustomerPushPayload
 }) {
+  const payload = normalizeCustomerPushPayload(params.payload)
   const path =
-    typeof params.payload.data?.path === "string" ? params.payload.data.path : ""
+    typeof payload.data?.path === "string" ? payload.data.path : ""
   const type =
-    typeof params.payload.data?.type === "string" ? params.payload.data.type : "system"
+    typeof payload.data?.type === "string" ? payload.data.type : "system"
   const campaignId =
-    typeof params.payload.data?.campaignId === "string" ? params.payload.data.campaignId : ""
+    typeof payload.data?.campaignId === "string" ? payload.data.campaignId : ""
   const campaignVariant =
-    typeof params.payload.data?.variant === "string" ? params.payload.data.variant : ""
+    typeof payload.data?.variant === "string" ? payload.data.variant : ""
+  const ctaLabel =
+    typeof payload.data?.ctaLabel === "string" ? payload.data.ctaLabel : ""
+  const ctaPath =
+    typeof payload.data?.ctaPath === "string" ? payload.data.ctaPath : ""
   const customer = await CustomerModel.findById(params.customerId).select("notificationSettings")
 
   if (!isNotificationEnabled(customer?.notificationSettings, type)) {
@@ -126,13 +266,15 @@ export async function createCustomerNotification(params: {
             {
               _id: notificationId,
               type,
-              title: params.payload.title,
-              description: params.payload.body,
+              title: payload.title,
+              description: payload.body,
               path,
               campaignId,
               campaignVariant,
-              contentType: params.payload.contentType ?? "text",
-              imageUrl: params.payload.imageUrl ?? "",
+              ctaLabel,
+              ctaPath,
+              contentType: payload.contentType ?? "text",
+              imageUrl: payload.imageUrl ?? "",
               isRead: false,
               readAt: null,
               createdAt: new Date()
@@ -148,13 +290,15 @@ export async function createCustomerNotification(params: {
   const notification = mapCustomerNotification({
     _id: notificationId,
     type,
-    title: params.payload.title,
-    description: params.payload.body,
+    title: payload.title,
+    description: payload.body,
     path,
     campaignId,
     campaignVariant,
-    contentType: params.payload.contentType ?? "text",
-    imageUrl: params.payload.imageUrl ?? "",
+    ctaLabel,
+    ctaPath,
+    contentType: payload.contentType ?? "text",
+    imageUrl: payload.imageUrl ?? "",
     isRead: false,
     readAt: null,
     createdAt: new Date()
@@ -168,6 +312,7 @@ export async function createCustomerNotification(params: {
 export async function listCustomerNotifications(customerId: string, params?: {
   page?: number
   limit?: number
+  category?: "all" | "orders" | "offers"
 }) {
   const customer = await CustomerModel.findById(customerId).select("notifications")
   const notifications = [...(customer?.notifications ?? [])]
@@ -176,9 +321,18 @@ export async function listCustomerNotifications(customerId: string, params?: {
       const rightTime = new Date(right.createdAt ?? 0).getTime()
       return rightTime - leftTime
     })
-  const mappedNotifications = notifications.map((notification) =>
-    mapCustomerNotification(notification.toObject())
-  )
+  const category = params?.category ?? "all"
+  const mappedNotifications = notifications
+    .map((notification) => mapCustomerNotification(notification.toObject()))
+    .filter((notification) => {
+      if (category === "offers") {
+        return ["promotion", "voucher", "campaign"].includes(notification.type)
+      }
+      if (category === "orders") {
+        return ["order_status", "rider_assigned", "rider_near"].includes(notification.type)
+      }
+      return true
+    })
   const limit = Math.min(Math.max(params?.limit ?? 20, 1), 50)
   const page = Math.max(params?.page ?? 1, 1)
   const start = (page - 1) * limit
@@ -194,6 +348,29 @@ export async function listCustomerNotifications(customerId: string, params?: {
     hasMore: start + items.length < total,
     nextPage: start + items.length < total ? page + 1 : null
   }
+}
+
+export async function getCustomerNotificationByCampaignId(params: {
+  customerId: string
+  campaignId: string
+}) {
+  const campaignId = params.campaignId.trim()
+  if (!campaignId) return null
+
+  const customer = await CustomerModel.findOne(
+    {
+      _id: params.customerId,
+      "notifications.campaignId": campaignId,
+    },
+    {
+      notifications: {
+        $elemMatch: { campaignId },
+      },
+    }
+  ).select("notifications")
+
+  const notification = customer?.notifications?.[0]
+  return notification ? mapCustomerNotification(notification.toObject()) : null
 }
 
 export async function markCustomerNotificationAsRead(params: {
@@ -279,7 +456,11 @@ export async function sendPushToCustomer(params: {
   payload: CustomerPushPayload
   excludeExpoTokens?: Set<string>
 }) {
-  const createdNotification = await createCustomerNotification(params)
+  const payload = normalizeCustomerPushPayload(params.payload)
+  const createdNotification = await createCustomerNotification({
+    customerId: params.customerId,
+    payload
+  })
 
   if (!createdNotification) {
     return { sent: 0, disabled: 0, inAppCreated: 0, skipped: true, sentExpoTokens: [], ticketIds: [] }
@@ -313,17 +494,17 @@ export async function sendPushToCustomer(params: {
   const messages: ExpoPushMessage[] = uniqueActiveTokens.map((token) => ({
     to: token.expoPushToken,
     sound: "default",
-    title: params.payload.title,
-    body: params.payload.body,
-    ...(params.payload.imageUrl
+    title: payload.title,
+    body: payload.body,
+    ...(payload.imageUrl
       ? {
           mutableContent: true,
-          image: params.payload.imageUrl,
-          richContent: { image: params.payload.imageUrl },
+          image: payload.imageUrl,
+          richContent: { image: payload.imageUrl },
         }
       : {}),
     data: {
-      ...params.payload.data,
+      ...payload.data,
       notificationId: createdNotification.id,
     }
   }))
@@ -348,7 +529,7 @@ export async function sendPushToCustomer(params: {
     return { sent: 0, disabled: 0, inAppCreated: 1, sentExpoTokens: [], ticketIds: [] }
   }
 
-  const payload = (await response.json()) as {
+  const expoResponse = (await response.json()) as {
     data?: Array<{
       status?: string
       id?: string
@@ -362,7 +543,7 @@ export async function sendPushToCustomer(params: {
   let sent = 0
   const ticketIds: string[] = []
 
-  payload.data?.forEach((entry, index) => {
+  expoResponse.data?.forEach((entry, index) => {
     if (entry.status === "ok") {
       sent += 1
       if (entry.id) ticketIds.push(entry.id)

@@ -1,7 +1,10 @@
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
-import type { Request } from "express";
+import type { Request, RequestHandler } from "express";
 
+import { env } from "../../config/env";
 import { logger } from "../../config/logger";
+
+const passThroughLimiter: RequestHandler = (_req, _res, next) => next();
 
 function withIdentity(req: Request, fieldNames: string[]) {
   const body = req.body as Record<string, unknown> | undefined;
@@ -19,6 +22,10 @@ function buildLimiter(options: {
   message: string;
   event?: string;
 }) {
+  if (!env.RATE_LIMIT_ENABLED) {
+    return passThroughLimiter;
+  }
+
   return rateLimit({
     windowMs: options.windowMs,
     limit: options.limit,
@@ -78,6 +85,15 @@ export function createOtpSendLimiter() {
     fieldNames: ["phone"],
     message: "Too many OTP requests. Please wait before requesting another code.",
     event: "auth.otp_send.rate_limited",
+  });
+}
+
+export function createOtpSendIpLimiter() {
+  return buildLimiter({
+    windowMs: 10 * 60 * 1000,
+    limit: 12,
+    message: "Too many OTP requests from this device. Please wait before trying another number.",
+    event: "auth.otp_send_ip.rate_limited",
   });
 }
 

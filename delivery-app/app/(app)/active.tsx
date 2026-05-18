@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { startTransition, useCallback, useDeferredValue, useMemo, useState } from "react";
+import * as Haptics from "expo-haptics";
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -13,9 +14,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { useRiderOrdersQuery } from "@/src/hooks/use-rider-api";
+import { RiderDelayBanner } from "@/src/components/rider-delay-banner";
+import { RiderLocationAccessCard } from "@/src/components/rider-location-access-card";
+import { useRiderDeliveryThresholdsQuery, useRiderOrdersQuery } from "@/src/hooks/use-rider-api";
 import { useDeliveryCopy } from "@/src/lib/copy";
-import { formatDateTime } from "@/src/lib/date-time";
+import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
+import { getRiderDelayPriority, getRiderDelaySignal } from "@/src/lib/rider-delay-display";
+import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 import { RiderScreenHeader } from "@/src/components/rider-screen-header";
@@ -24,6 +29,7 @@ import { useNetworkStatus } from "@/src/hooks/use-network-status";
 export default function ActiveOrdersScreen() {
   const rider = useRiderAuthStore((state) => state.rider);
   const ordersQuery = useRiderOrdersQuery("active");
+  const deliveryThresholdsQuery = useRiderDeliveryThresholdsQuery();
   const { copy } = useDeliveryCopy();
   const isNetworkOnline = useNetworkStatus();
   const isAssignmentsPaused = rider?.isAvailableForAssignments === false;
@@ -35,6 +41,8 @@ export default function ActiveOrdersScreen() {
       : copy.common.online;
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [nowMs, setNowMs] = useState(Date.now());
+  const lastDelayAlertKeyRef = useRef("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const normalizedSearchQuery = deferredSearchQuery.trim().toLowerCase();
   const activeText = copy.active as Record<string, unknown>;
@@ -49,17 +57,70 @@ export default function ActiveOrdersScreen() {
   };
 
   const orders = useMemo(() => ordersQuery.data ?? [], [ordersQuery.data]);
+  const deliveryThresholds = deliveryThresholdsQuery.data;
+
+  useEffect(() => {
+    if (!orders.length) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 30_000);
+
+    return () => clearInterval(timer);
+  }, [orders.length]);
+
   const filteredOrders = useMemo(
-    () =>
-      orders.filter((order) =>
+    () => {
+      const matchingOrders = orders.filter((order) =>
         !normalizedSearchQuery
           ? true
           : [order.orderNumber, order.restaurant?.name, order.customer?.name, order.status]
               .filter(Boolean)
               .some((value) => value!.toLowerCase().includes(normalizedSearchQuery))
-      ),
-    [normalizedSearchQuery, orders]
+      );
+
+      return [...matchingOrders].sort((firstOrder, secondOrder) => {
+        const firstPriority = getRiderDelayPriority(
+          getRiderDelaySignal(firstOrder, deliveryThresholds, nowMs)
+        );
+        const secondPriority = getRiderDelayPriority(
+          getRiderDelaySignal(secondOrder, deliveryThresholds, nowMs)
+        );
+        if (firstPriority !== secondPriority) return secondPriority - firstPriority;
+        return new Date(secondOrder.updatedAt ?? secondOrder.createdAt ?? 0).getTime() -
+          new Date(firstOrder.updatedAt ?? firstOrder.createdAt ?? 0).getTime();
+      });
+    },
+    [deliveryThresholds, normalizedSearchQuery, nowMs, orders]
   );
+  const urgentDelayKey = useMemo(
+    () =>
+      orders
+        .map((order) => {
+          const signal = getRiderDelaySignal(order, deliveryThresholds, nowMs);
+          return getRiderDelayPriority(signal) >= 2
+            ? `${order.id}:${signal?.tone}`
+            : null;
+        })
+        .filter(Boolean)
+        .join("|"),
+    [deliveryThresholds, nowMs, orders]
+  );
+
+  useEffect(() => {
+    if (!urgentDelayKey) {
+      lastDelayAlertKeyRef.current = "";
+      return;
+    }
+    if (lastDelayAlertKeyRef.current === urgentDelayKey) return;
+    lastDelayAlertKeyRef.current = urgentDelayKey;
+
+    void Haptics.notificationAsync(
+      urgentDelayKey.includes(":critical")
+        ? Haptics.NotificationFeedbackType.Error
+        : Haptics.NotificationFeedbackType.Warning
+    );
+  }, [urgentDelayKey]);
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -87,10 +148,10 @@ export default function ActiveOrdersScreen() {
             <RiderScreenHeader
               icon="flash"
               title={copy.active.title}
-              subtitle={copy.active.subtitle}
               statusTone={statusTone}
               statusLabel={statusLabel}
             />
+            <RiderLocationAccessCard />
 
             <View style={styles.searchShell}>
               <Ionicons name="search-outline" size={18} color={palette.mutedForeground} />
@@ -98,7 +159,7 @@ export default function ActiveOrdersScreen() {
                 value={searchQuery}
                 onChangeText={handleSearchChange}
                 placeholder={activeCopy.searchPlaceholder}
-                placeholderTextColor="#9F948A"
+                placeholderTextColor={palette.placeholder}
                 style={styles.searchInput}
               />
               {searchQuery ? (
@@ -117,18 +178,18 @@ export default function ActiveOrdersScreen() {
             onRefresh={() => {
               void handleRefresh();
             }}
-            tintColor={palette.primaryStrong}
+            tintColor={palette.primary}
           />
         }
         ListEmptyComponent={
           ordersQuery.isLoading ? (
             <View style={styles.centered}>
-              <ActivityIndicator size="small" color={palette.primaryStrong} />
+              <ActivityIndicator size="small" color={palette.primary} />
             </View>
           ) : (
             <View style={styles.emptyState}>
               <View style={styles.emptyIcon}>
-                <Ionicons name="bicycle-outline" size={24} color={palette.primaryStrong} />
+                <Ionicons name="bicycle-outline" size={24} color={palette.foreground} />
               </View>
               <Text style={styles.emptyTitle}>
                 {searchQuery ? activeCopy.noMatchingTitle : copy.active.emptyTitle}
@@ -143,22 +204,44 @@ export default function ActiveOrdersScreen() {
             </View>
           )
         }
-        renderItem={({ item }) => (
-          <Pressable style={styles.card} onPress={() => router.push(`/orders/${item.id}`)}>
-            <View style={styles.row}>
-              <Text style={styles.orderNumber}>{item.orderNumber}</Text>
-              <View style={styles.tripStatusChip}>
-                <Text style={styles.tripStatusText}>{item.status}</Text>
+        renderItem={({ item }) => {
+          const statusBadge = getOrderStatusBadge(item.status);
+          const timingInfo = getOrderTimingInfo(item);
+          const delaySignal = getRiderDelaySignal(item, deliveryThresholds, nowMs);
+          return (
+            <Pressable style={styles.card} onPress={() => router.push(`/orders/${item.id}`)}>
+              <View style={styles.row}>
+                <Text style={styles.orderNumber}>{item.orderNumber}</Text>
+                <View
+                  style={[
+                    styles.tripStatusChip,
+                    {
+                      backgroundColor: statusBadge.backgroundColor,
+                      borderColor: statusBadge.borderColor,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.tripStatusText, { color: statusBadge.color }]}>
+                    {statusBadge.label}
+                  </Text>
+                </View>
               </View>
-            </View>
-            <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
-            <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
-            <Text style={styles.meta}>
-              {item.status === "PickedUp" ? "Heading to customer" : "Heading to restaurant"}
-            </Text>
-            <Text style={styles.meta}>{formatDateTime(item.updatedAt ?? item.createdAt)}</Text>
-          </Pressable>
-        )}
+              <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
+              <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
+              <Text style={styles.meta}>
+                {item.status === "PickedUp" ? "Heading to customer" : "Heading to restaurant"}
+              </Text>
+              <View style={styles.timeRow}>
+                <Ionicons name="time-outline" size={14} color={palette.mutedForeground} />
+                <Text style={styles.meta}>
+                  {timingInfo.label}: {formatDateTime(timingInfo.value)}
+                  {timingInfo.value ? ` - ${formatRelativeTime(timingInfo.value)}` : ""}
+                </Text>
+              </View>
+              <RiderDelayBanner signal={delaySignal} />
+            </Pressable>
+          );
+        }}
       />
     </SafeAreaView>
   );
@@ -166,11 +249,11 @@ export default function ActiveOrdersScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: palette.background },
-  listContent: { paddingHorizontal: 20, paddingBottom: 24, gap: 14, flexGrow: 1 },
-  headerWrap: { paddingTop: 16, paddingBottom: 14, gap: 12 },
+  listContent: { paddingHorizontal: 20, paddingBottom: 112, gap: 12, flexGrow: 1 },
+  headerWrap: { paddingTop: 16, paddingBottom: 12, gap: 12 },
   searchShell: {
     minHeight: 50,
-    borderRadius: 18,
+    borderRadius: 16,
     paddingHorizontal: 14,
     backgroundColor: palette.surface,
     borderWidth: 1,
@@ -201,7 +284,7 @@ const styles = StyleSheet.create({
   centered: { minHeight: 320, alignItems: "center", justifyContent: "center" },
   card: {
     backgroundColor: palette.surface,
-    borderRadius: 24,
+    borderRadius: 18,
     padding: 16,
     gap: 6,
     borderWidth: 1,
@@ -213,12 +296,17 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 5,
-    backgroundColor: "#FFE7F0",
+    borderWidth: 1,
   },
-  tripStatusText: { fontSize: 12, fontWeight: "800", color: palette.secondary },
+  tripStatusText: { fontSize: 12, fontWeight: "800" },
   name: { fontSize: 15, fontWeight: "700", color: palette.foreground },
   metaStrong: { fontSize: 13, fontWeight: "700", color: palette.foreground },
   meta: { fontSize: 13, color: palette.mutedForeground },
+  timeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   emptyState: {
     flex: 1,
     minHeight: 320,
@@ -229,7 +317,7 @@ const styles = StyleSheet.create({
   emptyIcon: {
     width: 56,
     height: 56,
-    borderRadius: 18,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: palette.surface,
