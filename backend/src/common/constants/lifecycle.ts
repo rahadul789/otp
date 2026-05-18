@@ -27,10 +27,14 @@ export const otpPurposes = [
   "owner_signup_verify",
   "owner_phone_change",
   "owner_payout_verify",
+  "owner_phone_signin",
+  "owner_password_reset",
   "password_reset",
   "customer_phone_signin",
   "customer_phone_change",
-  "rider_phone_signin"
+  "customer_password_reset",
+  "rider_phone_signin",
+  "rider_password_reset"
 ] as const
 
 export type OtpPurpose = (typeof otpPurposes)[number]

@@ -3,29 +3,63 @@ import { useRouter } from "expo-router";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { resolveCustomerRoute } from "@/src/lib/customer-routes";
 import { useAppBannerStore } from "@/src/store/app-banner-store";
 import { palette } from "@/src/theme/palette";
 
 const toneStyles = {
   info: {
-    backgroundColor: palette.surface,
-    borderColor: palette.border,
+    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    borderColor: "rgba(255, 124, 168, 0.18)",
+    emojiBackground: "rgba(255, 232, 240, 0.9)",
+    actionBackground: "rgba(255, 232, 240, 0.8)",
+    accentColor: palette.secondary,
     titleColor: palette.foreground,
     descriptionColor: palette.mutedForeground,
   },
   success: {
-    backgroundColor: palette.successSurface,
-    borderColor: "#CBE9D7",
+    backgroundColor: "rgba(246, 255, 249, 0.9)",
+    borderColor: "rgba(34, 197, 94, 0.18)",
+    emojiBackground: "rgba(234, 247, 238, 0.95)",
+    actionBackground: "rgba(234, 247, 238, 0.86)",
+    accentColor: palette.successText,
     titleColor: palette.successText,
     descriptionColor: palette.successText,
   },
   warning: {
-    backgroundColor: palette.warningSurface,
-    borderColor: "#F6D6A5",
+    backgroundColor: "rgba(255, 252, 247, 0.92)",
+    borderColor: "rgba(245, 158, 11, 0.24)",
+    emojiBackground: "rgba(255, 247, 232, 0.95)",
+    actionBackground: "rgba(255, 247, 232, 0.86)",
+    accentColor: palette.warningText,
     titleColor: palette.warningText,
     descriptionColor: palette.warningText,
   },
 } as const;
+
+function getBannerEmoji(banner: {
+  emoji?: string;
+  tone: keyof typeof toneStyles;
+  title: string;
+  description: string;
+}) {
+  if (banner.emoji) return banner.emoji;
+
+  const text = `${banner.title} ${banner.description}`.toLowerCase();
+
+  if (text.includes("delivered")) return "🎉";
+  if (text.includes("rider") || text.includes("way")) return "🛵";
+  if (text.includes("prepar")) return "👨‍🍳";
+  if (text.includes("pickup") || text.includes("packed")) return "🛍️";
+  if (text.includes("accepted") || text.includes("confirmed")) return "✅";
+  if (text.includes("review") || text.includes("feedback")) return "⭐";
+  if (text.includes("cart") || text.includes("added") || text.includes("reorder")) return "🛒";
+  if (text.includes("profile") || text.includes("account")) return "👤";
+  if (text.includes("sign out") || text.includes("failed") || text.includes("cancel")) return "⚠️";
+  if (banner.tone === "success") return "✨";
+  if (banner.tone === "warning") return "⚠️";
+  return "🍽️";
+}
 
 export function AppBannerHost() {
   const router = useRouter();
@@ -75,7 +109,7 @@ export function AppBannerHost() {
   }, [banner, dismissBanner, opacity, translateY]);
 
   const handlePress = () => {
-    const nextPath = banner?.path;
+    const nextPath = resolveCustomerRoute(banner?.path, null);
     dismissBanner();
 
     if (nextPath) {
@@ -86,6 +120,7 @@ export function AppBannerHost() {
   if (!banner) return null;
 
   const tone = toneStyles[banner.tone];
+  const emoji = getBannerEmoji(banner);
 
   return (
     <View
@@ -111,14 +146,33 @@ export function AppBannerHost() {
           ]}
           onPress={handlePress}
         >
-          <View style={styles.dot} />
+          <View
+            style={[
+              styles.emojiWrap,
+              { backgroundColor: tone.emojiBackground },
+            ]}
+          >
+            <Text style={styles.emoji}>{emoji}</Text>
+          </View>
           <View style={styles.copy}>
             <Text style={[styles.title, { color: tone.titleColor }]}>{banner.title}</Text>
-            <Text style={[styles.description, { color: tone.descriptionColor }]}>
+            <Text
+              numberOfLines={1}
+              style={[styles.description, { color: tone.descriptionColor }]}
+            >
               {banner.description}
             </Text>
           </View>
-          <Text style={[styles.dismiss, { color: tone.descriptionColor }]}>
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.dismiss,
+              {
+                color: tone.accentColor,
+                backgroundColor: tone.actionBackground,
+              },
+            ]}
+          >
             {banner.actionLabel ?? "Dismiss"}
           </Text>
         </Pressable>
@@ -138,42 +192,54 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   banner: {
-    borderRadius: 20,
+    minHeight: 62,
+    borderRadius: 22,
     borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
+    alignItems: "center",
+    gap: 10,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
     elevation: 6,
   },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: palette.primary,
-    marginTop: 5,
+  emojiWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emoji: {
+    fontSize: 20,
+    lineHeight: 24,
   },
   copy: {
     flex: 1,
-    gap: 3,
+    minWidth: 0,
+    gap: 1,
   },
   title: {
     fontSize: 14,
+    lineHeight: 18,
     fontWeight: "800",
   },
   description: {
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: 16,
     fontWeight: "600",
   },
   dismiss: {
+    maxWidth: 88,
+    overflow: "hidden",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     fontSize: 11,
-    fontWeight: "700",
-    marginTop: 2,
+    lineHeight: 14,
+    fontWeight: "800",
   },
 });

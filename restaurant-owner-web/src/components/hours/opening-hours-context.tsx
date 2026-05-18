@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useLocation } from "react-router-dom"
 
 import {
   mapOwnerOpeningHours,
@@ -15,7 +16,11 @@ export function OpeningHoursProvider({
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const openingHours = useAppStore((state) => state.openingHours)
   const setOpeningHours = useAppStore((state) => state.setOpeningHours)
-  const openingHoursQuery = useOwnerOpeningHoursQuery(ownerAccount.isAuthenticated)
+  const location = useLocation()
+  const shouldLoadOpeningHours = location.pathname === "/"
+  const openingHoursQuery = useOwnerOpeningHoursQuery(
+    ownerAccount.isAuthenticated && shouldLoadOpeningHours
+  )
 
   const isSameOpeningHours = React.useCallback(
     (left: typeof openingHours, right: typeof openingHours) => {

@@ -1,5 +1,6 @@
 import mongoose from "mongoose"
 
+import { OtpAbuseBlockModel, OtpSecurityEventModel } from "../modules/auth/auth.model"
 import { BkashSandboxPaymentSessionModel } from "../modules/customer/customer.model"
 import { env } from "./env"
 import { logger } from "./logger"
@@ -26,6 +27,8 @@ export async function connectDatabase() {
   )
 
   await BkashSandboxPaymentSessionModel.syncIndexes()
+  await OtpSecurityEventModel.syncIndexes()
+  await OtpAbuseBlockModel.syncIndexes()
 
   logger.info("MongoDB connected successfully")
 }

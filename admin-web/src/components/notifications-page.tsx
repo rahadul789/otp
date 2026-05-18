@@ -28,7 +28,10 @@ import { toast } from "sonner"
 import {
   listAdminCustomers,
   checkAdminNotificationCampaignReceipts,
+  deleteAdminMediaAsset,
   getAdminNotificationCampaignRecipients,
+  listAdminCustomerGroups,
+  listAdminMediaAssets,
   listAdminNotifications,
   listAdminRestaurants,
   refreshAdminNotificationCampaignConversions,
@@ -38,6 +41,8 @@ import {
   retryAdminNotificationSchedule,
   sendAdminNotification,
   uploadAdminMedia,
+  type AdminCustomerGroup,
+  type AdminMediaAsset,
   type AdminNotificationCenterItem,
   type AdminNotificationRecipientReportStatus,
   type AdminNotificationSendPayload,
@@ -59,7 +64,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -113,7 +120,9 @@ const notificationTemplates = [
     contentType: "text",
     title: "Weekend deals are live",
     body: "Your weekend cravings are covered. Explore fresh offers from restaurants near you.",
-    path: "/(tabs)/browse",
+    path: "/promo-details",
+    ctaLabel: "Browse offers",
+    ctaPath: "/(tabs)/browse",
   },
   {
     key: "customer-free-delivery",
@@ -125,7 +134,9 @@ const notificationTemplates = [
     contentType: "image_text",
     title: "Free delivery is available today",
     body: "Order from selected restaurants today and enjoy free delivery while the offer lasts.",
-    path: "/(tabs)/browse",
+    path: "/promo-details",
+    ctaLabel: "Browse restaurants",
+    ctaPath: "/(tabs)/browse",
   },
   {
     key: "customer-rain-delay",
@@ -161,7 +172,51 @@ const notificationTemplates = [
     contentType: "image_text",
     title: "New restaurants are available near you",
     body: "Fresh choices have been added around your delivery location. Open Foodbela and see what is new.",
-    path: "/(tabs)/browse",
+    path: "/promo-details",
+    ctaLabel: "View restaurants",
+    ctaPath: "/(tabs)/browse",
+  },
+  {
+    key: "customer-lunch-deal",
+    category: "customer",
+    label: "Lunch deal",
+    description: "Use this for a short mid-day discount campaign.",
+    recipientType: "customers",
+    type: "promotion",
+    contentType: "image_text",
+    title: "Lunch deals are ready",
+    body: "Find quick lunch offers from nearby restaurants before the rush.",
+    path: "/promo-details",
+    ctaLabel: "Order lunch",
+    ctaPath: "/(tabs)/browse",
+  },
+  {
+    key: "customer-first-order-treat",
+    category: "customer",
+    label: "First order treat",
+    description: "Bring new users to their first completed order.",
+    recipientType: "customers",
+    type: "voucher",
+    contentType: "image_text",
+    title: "Your first order treat is waiting",
+    body: "Open Foodbela and use your welcome offer on a nearby restaurant.",
+    path: "/promo-details",
+    ctaLabel: "Find food",
+    ctaPath: "/(tabs)/browse",
+  },
+  {
+    key: "customer-restaurant-spotlight",
+    category: "customer",
+    label: "Restaurant spotlight",
+    description: "Promote one restaurant and send users straight to its menu.",
+    recipientType: "customers",
+    type: "promotion",
+    contentType: "image_text",
+    title: "A tasty pick is nearby",
+    body: "Check out today's highlighted restaurant and order your favorite meal.",
+    path: "/promo-details",
+    ctaLabel: "View restaurant",
+    ctaPath: "/(tabs)/browse",
   },
   {
     key: "owner-opening-hours",
@@ -289,6 +344,8 @@ const notificationTemplates = [
     "recipientType" | "type" | "contentType" | "title" | "body" | "path"
   > & {
     category: NotificationTemplateCategory
+    ctaLabel?: string
+    ctaPath?: string
     description: string
     key: string
     label: string
@@ -300,6 +357,13 @@ const templateCategoryOrder: NotificationTemplateCategory[] = [
   "owner",
   "rider",
   "ops",
+]
+
+const smartCustomerGroups = [
+  { value: "has_push_token", label: "Users with push token" },
+  { value: "ordered_last_30_days", label: "Ordered in last 30 days" },
+  { value: "inactive_30_days", label: "Inactive for 30 days" },
+  { value: "high_value_customers", label: "High-value customers" },
 ]
 
 function templateCategoryLabel(category: NotificationTemplateCategory) {
@@ -315,6 +379,113 @@ function templateCategoryClass(category: NotificationTemplateCategory) {
     return "border-violet-200 bg-violet-50 text-violet-700"
   if (category === "rider") return "border-cyan-200 bg-cyan-50 text-cyan-700"
   return "border-amber-200 bg-amber-50 text-amber-700"
+}
+
+type DestinationPreset =
+  | "none"
+  | "promo_details"
+  | "restaurant_details"
+  | "browse"
+  | "cart"
+  | "orders"
+  | "profile"
+  | "voucher_help"
+  | "custom"
+
+const destinationOptions: Array<{
+  value: DestinationPreset
+  label: string
+  path: string
+  helper: string
+}> = [
+  {
+    value: "none",
+    label: "No destination",
+    path: "",
+    helper: "No extra screen opens from this action.",
+  },
+  {
+    value: "promo_details",
+    label: "Promo details",
+    path: "/promo-details",
+    helper: "A clean offer details screen with image, copy, and optional CTA.",
+  },
+  {
+    value: "restaurant_details",
+    label: "Restaurant details",
+    path: "",
+    helper: "Send customers directly to one restaurant menu.",
+  },
+  {
+    value: "browse",
+    label: "Browse restaurants",
+    path: "/(tabs)/browse",
+    helper: "Open restaurant discovery.",
+  },
+  {
+    value: "cart",
+    label: "Cart",
+    path: "/(tabs)/cart",
+    helper: "Open the customer cart.",
+  },
+  {
+    value: "orders",
+    label: "Orders",
+    path: "/(tabs)/orders",
+    helper: "Open active and past orders.",
+  },
+  {
+    value: "profile",
+    label: "Profile",
+    path: "/(tabs)/profile",
+    helper: "Open customer account settings.",
+  },
+  {
+    value: "voucher_help",
+    label: "Voucher help",
+    path: "/voucher-help",
+    helper: "Open voucher rules and help.",
+  },
+  {
+    value: "custom",
+    label: "Custom app path",
+    path: "",
+    helper: "Use only when the route already exists in the customer app.",
+  },
+]
+
+function isCustomerPromotionType(type?: string) {
+  return type === "promotion" || type === "voucher" || type === "campaign"
+}
+
+function destinationPath(value: DestinationPreset) {
+  return destinationOptions.find((option) => option.value === value)?.path ?? ""
+}
+
+function destinationFromPath(path?: string) {
+  const target = path?.trim() ?? ""
+  if (/^\/restaurants\/[A-Za-z0-9_-]+(?:[?#].*)?$/.test(target)) {
+    return "restaurant_details"
+  }
+  const match = destinationOptions.find(
+    (option) => option.value !== "custom" && option.path === target
+  )
+  return match?.value ?? (target ? "custom" : "none")
+}
+
+function destinationLabel(path?: string) {
+  const target = path?.trim() ?? ""
+  if (!target) return "No destination"
+  if (/^\/restaurants\/[A-Za-z0-9_-]+(?:[?#].*)?$/.test(target)) {
+    return "Restaurant details"
+  }
+  return (
+    destinationOptions.find((option) => option.path === target)?.label ?? target
+  )
+}
+
+function restaurantIdFromPath(path?: string) {
+  return path?.match(/^\/restaurants\/([A-Za-z0-9_-]+)(?:[?#].*)?$/)?.[1] ?? ""
 }
 
 function defaultScheduleDateTimeInput() {
@@ -542,6 +713,24 @@ function getLateDetailRows(item: AdminNotificationCenterItem) {
       value: `${metadata.deliveryLateGraceMinutes} min`,
     })
   }
+  if ("deliveryWatchAfterPickupMinutes" in metadata) {
+    rows.push({
+      label: "Delivery watch threshold",
+      value: `${metadata.deliveryWatchAfterPickupMinutes} min`,
+    })
+  }
+  if ("deliveryLateAfterPickupMinutes" in metadata) {
+    rows.push({
+      label: "Delivery late threshold",
+      value: `${metadata.deliveryLateAfterPickupMinutes} min`,
+    })
+  }
+  if ("deliveryCriticalAfterPickupMinutes" in metadata) {
+    rows.push({
+      label: "Delivery critical threshold",
+      value: `${metadata.deliveryCriticalAfterPickupMinutes} min`,
+    })
+  }
 
   return rows
 }
@@ -674,6 +863,8 @@ export function NotificationsPage() {
     title: "",
     body: "",
     path: "/(tabs)/home",
+    ctaLabel: "",
+    ctaPath: "",
     type: "system",
     contentType: "text",
     imageUrl: "",
@@ -731,6 +922,11 @@ export function NotificationsPage() {
       listAdminCustomers({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
   })
 
+  const customerGroupsQuery = useQuery({
+    queryKey: ["admin-customer-groups", "notification-targets"],
+    queryFn: listAdminCustomerGroups,
+  })
+
   const restaurantsQuery = useQuery({
     queryKey: ["admin-restaurants", "notification-targets"],
     queryFn: () =>
@@ -741,6 +937,16 @@ export function NotificationsPage() {
     queryKey: ["admin-riders", "notification-targets"],
     queryFn: () =>
       listAdminRiders({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
+  })
+
+  const notificationImagesQuery = useQuery({
+    queryKey: ["admin-media-assets", "notification-campaign"],
+    queryFn: () =>
+      listAdminMediaAssets({
+        context: "notification_campaign",
+        page: 1,
+        pageSize: 24,
+      }),
   })
 
   const sendMutation = useMutation({
@@ -759,6 +965,8 @@ export function NotificationsPage() {
         contentType: "text",
         imageUrl: "",
         imagePublicId: "",
+        ctaLabel: "",
+        ctaPath: "",
       }))
       setScheduleMode(false)
       setScheduledAt("")
@@ -863,10 +1071,29 @@ export function NotificationsPage() {
     onError: (error) =>
       toast.error(error instanceof Error ? error.message : "Failed to check receipts"),
   })
+  const deleteImageMutation = useMutation({
+    mutationFn: deleteAdminMediaAsset,
+    onSuccess: (result) => {
+      toast.success("Notification image removed")
+      setForm((current) =>
+        current.imagePublicId === result.asset.publicId ||
+        current.imageUrl === result.asset.url
+          ? { ...current, imageUrl: "", imagePublicId: "", contentType: "text" }
+          : current
+      )
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-media-assets", "notification-campaign"],
+      })
+    },
+    onError: (error) =>
+      toast.error(error instanceof Error ? error.message : "Image delete failed"),
+  })
 
   const data = notificationsQuery.data
   const summary = data?.summary
   const notifications = data?.items ?? []
+  const notificationImages = notificationImagesQuery.data?.items ?? []
+  const restaurantOptions = restaurantsQuery.data?.items ?? []
   const activeFilterCount =
     (search.trim() ? 1 : 0) + (source !== "all" ? 1 : 0) + (status !== "all" ? 1 : 0)
   const safePage = data?.page ?? page
@@ -991,6 +1218,8 @@ export function NotificationsPage() {
       title: template.title,
       body: template.body,
       path: template.path,
+      ctaLabel: template.ctaLabel ?? "",
+      ctaPath: template.ctaPath ?? "",
       type: template.type,
       contentType: template.contentType,
       pushEnabled: template.recipientType !== "owners",
@@ -1005,11 +1234,21 @@ export function NotificationsPage() {
   }, [form.recipientType])
 
   async function uploadNotificationImage(file: File) {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please upload an image file")
+      return
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      toast.error("Image must be 3 MB or smaller")
+      return
+    }
+
     setIsUploadingImage(true)
     try {
       const result = await uploadAdminMedia(
         file,
-        "foodbela/admin/notification-campaigns"
+        "foodbela/admin/notification-campaigns",
+        "notification_campaign"
       )
       setForm((current) => ({
         ...current,
@@ -1019,6 +1258,9 @@ export function NotificationsPage() {
         imagePublicId: result.publicId,
       }))
       toast.success("Notification image uploaded")
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-media-assets", "notification-campaign"],
+      })
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Notification image upload failed"
@@ -1027,6 +1269,38 @@ export function NotificationsPage() {
       setIsUploadingImage(false)
     }
   }
+
+  function selectNotificationImage(asset: AdminMediaAsset) {
+    setForm((current) => ({
+      ...current,
+      contentType:
+        current.contentType === "text" ? "image_text" : current.contentType,
+      imageUrl: asset.url,
+      imagePublicId: asset.publicId,
+    }))
+  }
+
+  const isCustomerPromotionForm =
+    form.recipientType === "customers" && isCustomerPromotionType(form.type)
+  const openDestination = destinationFromPath(form.path)
+  const ctaDestination = destinationFromPath(form.ctaPath)
+  const promoDestination = isCustomerPromotionForm
+    ? destinationFromPath(form.path) === "restaurant_details"
+      ? "restaurant_details"
+      : "promo_details"
+    : "none"
+  const promoRestaurantId = restaurantIdFromPath(form.path)
+  const selectedPromoRestaurant = restaurantOptions.find(
+    (restaurant) => restaurant.id === promoRestaurantId
+  )
+  const ctaEnabled = Boolean(form.ctaLabel?.trim() || form.ctaPath?.trim())
+  const previewTitle =
+    form.title.trim() || (isCustomerPromotionForm ? "Weekend treat is here 🍔" : "Notification title")
+  const previewBody =
+    form.body.trim() ||
+    (isCustomerPromotionForm
+      ? "Open Foodbela and grab today’s offer."
+      : "The notification message will appear here.")
 
   return (
     <>
@@ -1226,12 +1500,25 @@ export function NotificationsPage() {
                   <Select
                     value={form.recipientType}
                     onValueChange={(value) =>
-                      setForm((current) => ({
-                        ...current,
-                        recipientType:
-                          value as AdminNotificationSendPayload["recipientType"],
-                        recipientIds: [],
-                      }))
+                      setForm((current) => {
+                        const recipientType =
+                          value as AdminNotificationSendPayload["recipientType"]
+                        const nextIsPromotion =
+                          recipientType === "customers" &&
+                          isCustomerPromotionType(current.type)
+                        return {
+                          ...current,
+                          recipientType,
+                          recipientIds: [],
+                          path: nextIsPromotion
+                            ? "/promo-details"
+                            : current.path === "/promo-details"
+                              ? "/(tabs)/home"
+                              : current.path,
+                          ctaLabel: nextIsPromotion ? current.ctaLabel : "",
+                          ctaPath: nextIsPromotion ? current.ctaPath : "",
+                        }
+                      })
                     }
                   >
                     <SelectTrigger>
@@ -1313,10 +1600,23 @@ export function NotificationsPage() {
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="none">No smart segment</SelectItem>
-                          <SelectItem value="has_push_token">Users with push token</SelectItem>
-                          <SelectItem value="ordered_last_30_days">Ordered in last 30 days</SelectItem>
-                          <SelectItem value="inactive_30_days">Inactive for 30 days</SelectItem>
-                          <SelectItem value="high_value_customers">High-value customers</SelectItem>
+                          {smartCustomerGroups.map((group) => (
+                            <SelectItem key={group.value} value={group.value}>
+                              {group.label}
+                            </SelectItem>
+                          ))}
+                          {(customerGroupsQuery.data?.items ?? []).length ? (
+                            <SelectGroup>
+                              <SelectLabel>Saved groups</SelectLabel>
+                              {(customerGroupsQuery.data?.items ?? []).map(
+                                (group: AdminCustomerGroup) => (
+                                  <SelectItem key={group.id} value={`manual:${group.id}`}>
+                                    {group.name} ({group.memberCount})
+                                  </SelectItem>
+                                )
+                              )}
+                            </SelectGroup>
+                          ) : null}
                         </SelectContent>
                       </Select>
                     </div>
@@ -1571,6 +1871,70 @@ export function NotificationsPage() {
                         ) : null}
                       </div>
                     </div>
+                    <div className="rounded-lg border bg-background p-2">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-muted-foreground">
+                          Uploaded images
+                        </span>
+                        {notificationImagesQuery.isFetching ? (
+                          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+                        ) : null}
+                      </div>
+                      {notificationImages.length ? (
+                        <ScrollArea className="h-36">
+                          <div className="grid grid-cols-3 gap-2 pr-2 sm:grid-cols-4">
+                            {notificationImages.map((asset) => {
+                              const selected =
+                                asset.publicId === form.imagePublicId ||
+                                asset.url === form.imageUrl
+                              return (
+                                <div
+                                  key={asset.id}
+                                  role="button"
+                                  tabIndex={0}
+                                  className={cn(
+                                    "group relative overflow-hidden rounded-lg border bg-muted/40 outline-none ring-primary transition",
+                                    selected
+                                      ? "border-primary ring-2"
+                                      : "hover:border-primary/50"
+                                  )}
+                                  onClick={() => selectNotificationImage(asset)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault()
+                                      selectNotificationImage(asset)
+                                    }
+                                  }}
+                                >
+                                  <img
+                                    src={asset.url}
+                                    alt="Notification upload"
+                                    className="h-20 w-full object-cover"
+                                  />
+                                  <Button
+                                    type="button"
+                                    size="icon-sm"
+                                    variant="secondary"
+                                    className="absolute right-1 top-1 size-7 opacity-0 shadow-sm transition group-hover:opacity-100"
+                                    disabled={deleteImageMutation.isPending}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      deleteImageMutation.mutate(asset.id)
+                                    }}
+                                  >
+                                    <XCircle className="size-3.5" />
+                                  </Button>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </ScrollArea>
+                      ) : (
+                        <div className="rounded-md border border-dashed py-5 text-center text-xs text-muted-foreground">
+                          Uploaded notification images will appear here.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1604,24 +1968,26 @@ export function NotificationsPage() {
               </div>
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Path</Label>
-                  <Input
-                    value={form.path}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        path: event.target.value,
-                      }))
-                    }
-                    placeholder="/(tabs)/home"
-                  />
-                </div>
-                <div className="space-y-2">
                   <Label>Type</Label>
                   <Select
                     value={form.type}
                     onValueChange={(value) =>
-                      setForm((current) => ({ ...current, type: value }))
+                      setForm((current) => {
+                        const nextIsPromotion =
+                          current.recipientType === "customers" &&
+                          isCustomerPromotionType(value)
+                        return {
+                          ...current,
+                          type: value,
+                          path: nextIsPromotion
+                            ? "/promo-details"
+                            : current.path === "/promo-details"
+                              ? "/(tabs)/home"
+                              : current.path,
+                          ctaLabel: nextIsPromotion ? current.ctaLabel : "",
+                          ctaPath: nextIsPromotion ? current.ctaPath : "",
+                        }
+                      })
                     }
                   >
                     <SelectTrigger>
@@ -1636,7 +2002,317 @@ export function NotificationsPage() {
                     </SelectContent>
                   </Select>
                 </div>
+                {isCustomerPromotionForm ? (
+                  <div className="space-y-2">
+                    <Label>Push tap opens</Label>
+                    <Select
+                      value={promoDestination}
+                      onValueChange={(value) =>
+                        setForm((current) => {
+                          if (value === "restaurant_details") {
+                            const restaurantId =
+                              restaurantIdFromPath(current.path) ||
+                              restaurantOptions[0]?.id ||
+                              ""
+                            return {
+                              ...current,
+                              path: restaurantId
+                                ? `/restaurants/${restaurantId}`
+                                : current.path,
+                              ctaLabel: "",
+                              ctaPath: "",
+                            }
+                          }
+                          return {
+                            ...current,
+                            path: "/promo-details",
+                          }
+                        })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="promo_details">Promo details</SelectItem>
+                        <SelectItem value="restaurant_details">
+                          Restaurant details
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {promoDestination === "restaurant_details" ? (
+                      <Select
+                        value={promoRestaurantId || restaurantOptions[0]?.id || ""}
+                        onValueChange={(restaurantId) =>
+                          setForm((current) => ({
+                            ...current,
+                            path: `/restaurants/${restaurantId}`,
+                            ctaLabel: "",
+                            ctaPath: "",
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose restaurant" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {restaurantOptions.map((restaurant) => (
+                            <SelectItem key={restaurant.id} value={restaurant.id}>
+                              {restaurant.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        The backend adds the campaign ID automatically.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>Open destination</Label>
+                    <Select
+                      value={openDestination}
+                      onValueChange={(value) =>
+                        setForm((current) => ({
+                          ...current,
+                          path:
+                            value === "custom"
+                              ? current.path?.trim() || "/custom-path"
+                              : destinationPath(value as DestinationPreset),
+                        }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {destinationOptions
+                          .filter(
+                            (option) =>
+                              option.value !== "promo_details" &&
+                              option.value !== "restaurant_details"
+                          )
+                          .map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    {openDestination === "custom" ? (
+                      <Input
+                        value={form.path}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            path: event.target.value,
+                          }))
+                        }
+                        placeholder="/existing-customer-app-route"
+                      />
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        {
+                          destinationOptions.find(
+                            (option) => option.value === openDestination
+                          )?.helper
+                        }
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
+              {isCustomerPromotionForm ? (
+                <div className="rounded-xl border bg-muted/20 p-3">
+                  {promoDestination === "restaurant_details" ? (
+                    <div className="grid gap-3 lg:grid-cols-[1fr_300px]">
+                      <div className="rounded-lg border bg-background p-3 text-sm">
+                        <div className="font-medium">Direct restaurant promotion</div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Push tap will open the selected restaurant menu directly.
+                          Promo details CTA is disabled for this mode.
+                        </p>
+                        <div className="mt-3 rounded-lg border bg-muted/30 p-3">
+                          <p className="text-xs text-muted-foreground">
+                            Selected restaurant
+                          </p>
+                          <p className="mt-1 font-semibold">
+                            {selectedPromoRestaurant?.name ||
+                              "Choose a restaurant above"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {selectedPromoRestaurant?.city || "No city available"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border bg-background p-3 shadow-sm">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-muted-foreground">
+                            Push preview
+                          </span>
+                          <Badge variant="outline">Restaurant</Badge>
+                        </div>
+                        {form.imageUrl ? (
+                          <img
+                            src={form.imageUrl}
+                            alt="Restaurant promo preview"
+                            className="mb-3 h-28 w-full rounded-xl object-cover"
+                          />
+                        ) : (
+                          <div className="mb-3 flex h-28 items-center justify-center rounded-xl bg-rose-50 text-primary">
+                            <Store className="size-8" />
+                          </div>
+                        )}
+                        <p className="line-clamp-2 text-sm font-semibold">
+                          {previewTitle}
+                        </p>
+                        <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">
+                          {previewBody}
+                        </p>
+                        <div className="mt-3 rounded-full border bg-muted/40 px-3 py-2 text-center text-xs font-semibold">
+                          Opens {selectedPromoRestaurant?.name || "restaurant"}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                  <div className="grid gap-3 lg:grid-cols-[1fr_300px]">
+                    <div className="space-y-3">
+                      <label className="flex items-start gap-3 rounded-lg border bg-background p-3 text-sm">
+                        <Checkbox
+                          checked={ctaEnabled}
+                          onCheckedChange={(checked) =>
+                            setForm((current) =>
+                              checked === true
+                                ? {
+                                    ...current,
+                                    ctaLabel:
+                                      current.ctaLabel?.trim() ||
+                                      "Browse restaurants",
+                                    ctaPath:
+                                      current.ctaPath?.trim() || "/(tabs)/browse",
+                                  }
+                                : {
+                                    ...current,
+                                    ctaLabel: "",
+                                    ctaPath: "",
+                                  }
+                            )
+                          }
+                        />
+                        <span>
+                          Show CTA button on promo details
+                          <span className="block text-xs text-muted-foreground">
+                            Off means the offer page shows only image and text.
+                          </span>
+                        </span>
+                      </label>
+
+                      {ctaEnabled ? (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>CTA button label</Label>
+                            <Input
+                              value={form.ctaLabel ?? ""}
+                              onChange={(event) =>
+                                setForm((current) => ({
+                                  ...current,
+                                  ctaLabel: event.target.value,
+                                }))
+                              }
+                              placeholder="Order now"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>CTA destination</Label>
+                            <Select
+                              value={ctaDestination}
+                              onValueChange={(value) =>
+                                setForm((current) => ({
+                                  ...current,
+                                  ctaPath:
+                                    value === "custom"
+                                      ? current.ctaPath?.trim() || "/custom-path"
+                                      : destinationPath(value as DestinationPreset),
+                                }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {destinationOptions
+                                  .filter(
+                                    (option) =>
+                                      option.value !== "promo_details" &&
+                                      option.value !== "restaurant_details" &&
+                                      option.value !== "none"
+                                  )
+                                  .map((option) => (
+                                    <SelectItem
+                                      key={option.value}
+                                      value={option.value}
+                                    >
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                            {ctaDestination === "custom" ? (
+                              <Input
+                                value={form.ctaPath ?? ""}
+                                onChange={(event) =>
+                                  setForm((current) => ({
+                                    ...current,
+                                    ctaPath: event.target.value,
+                                  }))
+                                }
+                                placeholder="/existing-customer-app-route"
+                              />
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="rounded-2xl border bg-background p-3 shadow-sm">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-muted-foreground">
+                          Customer preview
+                        </span>
+                        <Badge variant="outline">Promo details</Badge>
+                      </div>
+                      {form.imageUrl ? (
+                        <img
+                          src={form.imageUrl}
+                          alt="Promo preview"
+                          className="mb-3 h-28 w-full rounded-xl object-cover"
+                        />
+                      ) : (
+                        <div className="mb-3 flex h-28 items-center justify-center rounded-xl bg-rose-50 text-3xl">
+                          🍔
+                        </div>
+                      )}
+                      <p className="line-clamp-2 text-sm font-semibold">
+                        {previewTitle}
+                      </p>
+                      <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">
+                        {previewBody}
+                      </p>
+                      {ctaEnabled ? (
+                        <div className="mt-3 rounded-full bg-primary px-3 py-2 text-center text-xs font-semibold text-primary-foreground">
+                          {form.ctaLabel || "Order now"}
+                        </div>
+                      ) : (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          No CTA button
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  )}
+                </div>
+              ) : null}
               <label className="flex items-center gap-2 rounded-lg border p-3 text-sm">
                 <Checkbox
                   checked={form.pushEnabled}
@@ -2019,10 +2695,10 @@ export function NotificationsPage() {
         open={Boolean(selectedItem)}
         onOpenChange={(open) => !open && setSelectedItem(null)}
       >
-        <SheetContent className="w-full overflow-y-auto p-4 sm:max-w-4xl! lg:max-w-5xl!">
+        <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
           {selectedItem ? (
             <>
-              <SheetHeader>
+              <SheetHeader className="border-b px-6 py-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <SheetTitle className="flex items-center gap-2">
@@ -2102,7 +2778,7 @@ export function NotificationsPage() {
                   </div>
                 </div>
               </SheetHeader>
-              <div className="mt-6 space-y-5">
+              <div className="flex-1 space-y-5 overflow-y-auto p-6">
                 {selectedItem.source === "ops" &&
                 getLateDetailRows(selectedItem).length > 0 ? (
                   <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-4">
@@ -2182,14 +2858,20 @@ export function NotificationsPage() {
                     </p>
                   </div>
                   <div className="rounded-lg border p-4">
-                    <p className="text-xs text-muted-foreground">Path</p>
+                    <p className="text-xs text-muted-foreground">Destination</p>
                     <p className="mt-1 font-medium break-all">
-                      {selectedItem.path || "N/A"}
+                      {destinationLabel(selectedItem.path)}
                     </p>
                     <p className="text-sm text-muted-foreground">
                       Type: {selectedItem.type || "system"} · Content:{" "}
                       {selectedItem.contentType || "text"}
                     </p>
+                    {selectedItem.ctaLabel || selectedItem.ctaPath ? (
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        CTA: {selectedItem.ctaLabel || "Button"} -{" "}
+                        {destinationLabel(selectedItem.ctaPath)}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
 

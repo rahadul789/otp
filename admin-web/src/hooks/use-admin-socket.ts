@@ -12,6 +12,7 @@ import {
   disconnectAdminSocket,
   getAdminSocket,
 } from "@/lib/socket-client"
+import { ADMIN_ACCESS_TOKEN_UPDATED_EVENT } from "@/lib/admin-session"
 
 function invalidateAdminRealtimeQueries(
   queryClient: ReturnType<typeof useQueryClient>,
@@ -26,6 +27,8 @@ function invalidateAdminRealtimeQueries(
   if (payload?.entityType === "order" || payload?.path?.startsWith("/orders")) {
     void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
     void queryClient.invalidateQueries({ queryKey: ["admin-orders-monitor"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-operational-health"] })
   }
 }
 
@@ -59,7 +62,20 @@ export function useAdminSocketBridge(enabled: boolean) {
 
     const socket = connectAdminSocket()
     const ensureJoined = () => socket.emit("admin:join", "ops")
+    const reconnectWithFreshToken = () => {
+      if (socket.connected) {
+        socket.disconnect()
+      }
+      connectAdminSocket()
+    }
+    const handleConnectError = (error: Error) => {
+      if (/token|session|unauthorized/i.test(error.message)) {
+        void queryClient.invalidateQueries()
+      }
+    }
     socket.on("connect", ensureJoined)
+    socket.on("connect_error", handleConnectError)
+    window.addEventListener(ADMIN_ACCESS_TOKEN_UPDATED_EVENT, reconnectWithFreshToken)
 
     const handleNotification = (payload: AdminNotificationCenterItem) => {
       invalidateAdminRealtimeQueries(queryClient, payload)
@@ -85,6 +101,8 @@ export function useAdminSocketBridge(enabled: boolean) {
     const handleOrderUpdated = (payload: { orderId?: string; path?: string }) => {
       void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-orders-monitor"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-operational-health"] })
       if (payload.orderId) {
         void queryClient.invalidateQueries({ queryKey: ["admin-order", payload.orderId] })
       }
@@ -97,6 +115,11 @@ export function useAdminSocketBridge(enabled: boolean) {
       socket.off("admin.notification.created", handleNotification)
       socket.off("admin.order.updated", handleOrderUpdated)
       socket.off("connect", ensureJoined)
+      socket.off("connect_error", handleConnectError)
+      window.removeEventListener(
+        ADMIN_ACCESS_TOKEN_UPDATED_EVENT,
+        reconnectWithFreshToken
+      )
     }
   }, [enabled, navigate, queryClient])
 

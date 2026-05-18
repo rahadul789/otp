@@ -23,8 +23,10 @@ import {
   useCustomerProfileUpdateMutation,
 } from "@/src/hooks/use-customer-api";
 import { getCustomerAuthErrorMessage } from "@/src/lib/auth-error-message";
+import { formatDeliveryAddress } from "@/src/lib/location-address";
 import { useIsOnline } from "@/src/hooks/use-network-status";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
+import { useLocationStore } from "@/src/store/location-store";
 import { palette } from "@/src/theme/palette";
 
 type ProfileImageValue = {
@@ -36,16 +38,17 @@ export default function ProfileEditScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const customer = useCustomerAuthStore((state) => state.customer);
+  const selectedLocation = useLocationStore((state) => state.selectedLocation);
   const isOnline = useIsOnline();
   const updateMutation = useCustomerProfileUpdateMutation();
   const uploadSignatureMutation = useCustomerMediaUploadSignatureMutation();
   const [fullName, setFullName] = useState(customer?.fullName ?? "");
-  const [email, setEmail] = useState(customer?.email ?? "");
   const [profileImage, setProfileImage] = useState<ProfileImageValue>(
     customer?.profileImage ?? {}
   );
   const [errorText, setErrorText] = useState("");
   const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [fullNameFocused, setFullNameFocused] = useState(false);
 
   const initials = useMemo(() => {
     const source = fullName.trim() || customer?.fullName?.trim() || "Customer";
@@ -60,23 +63,34 @@ export default function ProfileEditScreen() {
     return next || "CU";
   }, [customer?.fullName, fullName]);
   const trimmedFullName = fullName.trim();
-  const trimmedEmail = email.trim();
   const normalizedCustomerImage = customer?.profileImage?.url?.trim() ?? "";
   const normalizedProfileImage = profileImage?.url?.trim() ?? "";
   const hasChanges = useMemo(
     () =>
       trimmedFullName !== (customer?.fullName?.trim() ?? "") ||
-      trimmedEmail !== (customer?.email?.trim() ?? "") ||
       normalizedProfileImage !== normalizedCustomerImage,
     [
-      customer?.email,
       customer?.fullName,
       normalizedCustomerImage,
       normalizedProfileImage,
-      trimmedEmail,
       trimmedFullName,
     ]
   );
+  const deliveryPointPrimary = useMemo(() => {
+    const typedAddress = selectedLocation?.addressDetails?.trim();
+    return (
+      typedAddress ||
+      formatDeliveryAddress(selectedLocation, "Set delivery point")
+    );
+  }, [selectedLocation]);
+  const deliveryPointSecondary = useMemo(() => {
+    const typedAddress = selectedLocation?.addressDetails?.trim();
+    if (!typedAddress) {
+      return "Add flat, floor, road, or landmark for easier delivery.";
+    }
+
+    return formatDeliveryAddress(selectedLocation, "Pinned on map");
+  }, [selectedLocation]);
 
   async function handlePickImage() {
     if (!isOnline) {
@@ -174,16 +188,10 @@ export default function ProfileEditScreen() {
       return;
     }
 
-    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      setErrorText("Enter a valid email address.");
-      return;
-    }
-
     try {
       setErrorText("");
       await updateMutation.mutateAsync({
         fullName: trimmedFullName,
-        email: trimmedEmail,
         profileImage,
       });
       router.back();
@@ -227,9 +235,6 @@ export default function ProfileEditScreen() {
           ) : null}
 
           <View style={styles.heroCard}>
-            <View style={styles.heroGlowPrimary} />
-            <View style={styles.heroGlowSecondary} />
-
             <View style={styles.heroHeader}>
               <View style={styles.avatarShell}>
                 {profileImage?.url ? (
@@ -252,10 +257,9 @@ export default function ProfileEditScreen() {
               </View>
 
               <View style={styles.heroCopy}>
-                <Text style={styles.heroTitle}>Make your account feel like you</Text>
-                <Text style={styles.heroSubtitle}>
-                  Update your name, photo, and email so your account stays polished
-                  across orders and support.
+                <Text style={styles.heroTitle}>Personal info</Text>
+                <Text style={styles.heroName} numberOfLines={1}>
+                  {trimmedFullName || "Foodbela User"}
                 </Text>
               </View>
             </View>
@@ -302,31 +306,63 @@ export default function ProfileEditScreen() {
           <View style={styles.formCard}>
             <View style={styles.fieldGroup}>
               <Text style={styles.label}>Full name</Text>
-              <TextInput
-                value={fullName}
-                onChangeText={setFullName}
-                placeholder="Your full name"
-                placeholderTextColor={palette.placeholder}
-                style={styles.input}
-              />
+              <View
+                style={[
+                  styles.inputShell,
+                  fullNameFocused ? styles.inputShellFocused : null,
+                ]}
+              >
+                <View style={styles.inputIcon}>
+                  <Ionicons
+                    name="person-outline"
+                    size={18}
+                    color={palette.secondary}
+                  />
+                </View>
+                <TextInput
+                  value={fullName}
+                  onChangeText={(value) => {
+                    setFullName(value);
+                    setErrorText("");
+                  }}
+                  placeholder="Your full name"
+                  placeholderTextColor={palette.placeholder}
+                  textContentType="name"
+                  autoCapitalize="words"
+                  returnKeyType="done"
+                  onFocus={() => setFullNameFocused(true)}
+                  onBlur={() => setFullNameFocused(false)}
+                  style={styles.input}
+                />
+              </View>
             </View>
 
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Email</Text>
-              <TextInput
-                value={email}
-                onChangeText={setEmail}
-                placeholder="name@example.com"
-                placeholderTextColor={palette.placeholder}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                style={styles.input}
+            <Pressable
+              style={styles.locationLinkCard}
+              onPress={() => router.push("/location-picker")}
+            >
+              <View style={styles.locationLinkIcon}>
+                <Ionicons
+                  name="location-outline"
+                  size={18}
+                  color={palette.secondary}
+                />
+              </View>
+              <View style={styles.locationLinkCopy}>
+                <Text style={styles.locationLinkLabel}>Delivery point</Text>
+                <Text style={styles.locationLinkTitle} numberOfLines={2}>
+                  {deliveryPointPrimary}
+                </Text>
+                <Text style={styles.locationLinkSubtitle} numberOfLines={2}>
+                  {deliveryPointSecondary}
+                </Text>
+              </View>
+              <Ionicons
+                name="chevron-forward"
+                size={18}
+                color={palette.mutedForeground}
               />
-              <Text style={styles.fieldHint}>
-                Add your email and we will send order receipts there. Later we can
-                also use it for important account and support updates.
-              </Text>
-            </View>
+            </Pressable>
 
             {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
 
@@ -392,47 +428,27 @@ const styles = StyleSheet.create({
     height: 42,
   },
   heroCard: {
-    overflow: "hidden",
-    borderRadius: 30,
+    borderRadius: 26,
     backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: palette.border,
-    padding: 20,
-    gap: 18,
+    borderColor: "rgba(31, 36, 48, 0.08)",
+    padding: 16,
+    gap: 16,
     shadowColor: palette.shadow,
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.1,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  heroGlowPrimary: {
-    position: "absolute",
-    top: -22,
-    right: -10,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "#FFE5EE",
-  },
-  heroGlowSecondary: {
-    position: "absolute",
-    bottom: -26,
-    left: -16,
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: "#FFF0C7",
+    elevation: 3,
   },
   heroHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 16,
-    zIndex: 1,
   },
   avatarShell: {
-    width: 94,
-    height: 94,
-    borderRadius: 47,
+    width: 82,
+    height: 82,
+    borderRadius: 28,
     overflow: "hidden",
     backgroundColor: "#F7EEF4",
     borderWidth: 1,
@@ -465,21 +481,21 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   heroTitle: {
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "800",
+    color: palette.mutedForeground,
+    textTransform: "uppercase",
+  },
+  heroName: {
+    fontSize: 23,
+    lineHeight: 29,
     fontWeight: "800",
     color: palette.foreground,
-  },
-  heroSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "500",
-    color: palette.mutedForeground,
   },
   photoActionRow: {
     flexDirection: "row",
     gap: 10,
-    zIndex: 1,
   },
   photoButton: {
     minHeight: 46,
@@ -515,12 +531,12 @@ const styles = StyleSheet.create({
     color: palette.foreground,
   },
   formCard: {
-    borderRadius: 30,
+    borderRadius: 26,
     backgroundColor: palette.surface,
     borderWidth: 1,
-    borderColor: palette.border,
-    padding: 20,
-    gap: 18,
+    borderColor: "rgba(31, 36, 48, 0.08)",
+    padding: 16,
+    gap: 16,
   },
   fieldGroup: {
     gap: 8,
@@ -531,19 +547,78 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: palette.foreground,
   },
-  input: {
+  inputShell: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: "#E9E6EE",
     backgroundColor: "#FBFAFD",
+    paddingHorizontal: 12,
+  },
+  inputShellFocused: {
+    borderColor: "#FFD4C3",
+    backgroundColor: "#FFF9F5",
+  },
+  inputIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 14,
+    backgroundColor: "#FFF0E9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  input: {
+    flex: 1,
+    minWidth: 0,
     paddingHorizontal: 14,
     paddingVertical: 14,
     fontSize: 15,
+    fontWeight: "700",
     color: palette.foreground,
   },
-  fieldHint: {
-    fontSize: 12,
+  locationLinkCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#F0E2D8",
+    backgroundColor: "#FFFCFE",
+  },
+  locationLinkIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF0F6",
+  },
+  locationLinkCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  locationLinkLabel: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
+    color: palette.mutedForeground,
+    textTransform: "uppercase",
+  },
+  locationLinkTitle: {
+    fontSize: 14,
     lineHeight: 18,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  locationLinkSubtitle: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
     color: palette.mutedForeground,
   },
   errorText: {

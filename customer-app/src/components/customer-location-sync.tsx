@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { useCustomerSavedLocationsQuery } from "@/src/hooks/use-customer-api";
+import { formatCustomerAddressLine } from "@/src/lib/location-address";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { useLocationStore } from "@/src/store/location-store";
 
@@ -19,7 +20,8 @@ export function CustomerLocationSync() {
       backendLocations.map((location) => ({
         id: location.id,
         label: location.label,
-        address: location.address,
+        address: formatCustomerAddressLine(location.address, "Selected location"),
+        addressDetails: location.addressDetails,
         latitude: location.latitude,
         longitude: location.longitude,
         source: location.source,

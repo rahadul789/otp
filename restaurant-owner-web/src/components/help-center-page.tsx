@@ -468,7 +468,7 @@ export function HelpCenterPage() {
   const supportCasesQuery = useOwnerSupportCasesListQuery(true, {
     sortBy: "updated",
     page: 1,
-    pageSize: 100,
+    pageSize: 25,
   })
   const createSupportCase = useCreateOwnerSupportCaseMutation()
   const platformContent = platformContentQuery.data

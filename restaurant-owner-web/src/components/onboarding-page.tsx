@@ -44,6 +44,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import {
@@ -390,6 +391,7 @@ export function OnboardingPage() {
 
   const shouldUseSavedDraft = Boolean(onboardingState.draftSavedAt)
   const draftOwnerName = ownerAccount.ownerName
+  const ownerPhoneForDefaults = normalizeBangladeshPhone(ownerAccount.phone)
   const [draftStoreSettings, setDraftStoreSettings] = React.useState(() =>
     shouldUseSavedDraft
       ? storeSettings
@@ -439,6 +441,21 @@ export function OnboardingPage() {
           isVerified: false,
           verifiedAt: null,
         } satisfies PayoutMethod)
+  )
+  const [useOwnerPhoneForContact, setUseOwnerPhoneForContact] =
+    React.useState(() => {
+      const existingPhone = normalizeBangladeshPhone(
+        shouldUseSavedDraft ? storeSettings.phone : ownerPhoneForDefaults
+      )
+      return !existingPhone || existingPhone === ownerPhoneForDefaults
+    })
+  const [useOwnerPhoneForBkash, setUseOwnerPhoneForBkash] = React.useState(
+    () => {
+      const existingNumber = normalizeBangladeshPhone(
+        shouldUseSavedDraft ? payoutMethod.accountNumber : ownerPhoneForDefaults
+      )
+      return !existingNumber || existingNumber === ownerPhoneForDefaults
+    }
   )
   const [tagInput, setTagInput] = React.useState("")
   const [cuisineInput, setCuisineInput] = React.useState("")
@@ -524,14 +541,55 @@ export function OnboardingPage() {
     setDraftStoreSettings(storeSettings)
     setDraftOpeningHours(ensureOpeningHoursDefaults(openingHours))
     setDraftPayoutMethod(payoutMethod)
+    setUseOwnerPhoneForContact(
+      normalizeBangladeshPhone(storeSettings.phone) === ownerPhoneForDefaults
+    )
+    setUseOwnerPhoneForBkash(
+      payoutMethod.type === "bkash" &&
+        normalizeBangladeshPhone(payoutMethod.accountNumber) ===
+          ownerPhoneForDefaults
+    )
     setHasHydratedDraft(true)
   }, [
     hasHydratedDraft,
     onboardingState.draftSavedAt,
     openingHours,
+    ownerPhoneForDefaults,
     payoutMethod,
     storeSettings,
   ])
+
+  React.useEffect(() => {
+    if (!useOwnerPhoneForContact || !ownerPhoneForDefaults) return
+
+    setDraftStoreSettings((current) =>
+      normalizeBangladeshPhone(current.phone) === ownerPhoneForDefaults
+        ? current
+        : {
+            ...current,
+            phone: ownerPhoneForDefaults,
+          }
+    )
+  }, [ownerPhoneForDefaults, useOwnerPhoneForContact])
+
+  React.useEffect(() => {
+    if (
+      !useOwnerPhoneForBkash ||
+      !ownerPhoneForDefaults ||
+      draftPayoutMethod.type !== "bkash"
+    ) {
+      return
+    }
+
+    setDraftPayoutMethod((current) =>
+      normalizeBangladeshPhone(current.accountNumber) === ownerPhoneForDefaults
+        ? current
+        : {
+            ...current,
+            accountNumber: ownerPhoneForDefaults,
+          }
+    )
+  }, [draftPayoutMethod.type, ownerPhoneForDefaults, useOwnerPhoneForBkash])
 
   function hideMapLoaderAfterMinimumDelay() {
     const startedAt = mapLoadStartedAt ?? Date.now()
@@ -566,7 +624,7 @@ export function OnboardingPage() {
       setOwnerAccount((current) => ({
         ...current,
         ownerName: draft.basicInfo?.fullName || current.ownerName,
-        phone: draft.basicInfo?.phone || current.phone,
+        phone: current.phone,
         email: draft.basicInfo?.email || current.email,
       }))
       setStoreSettings((current) => buildStoreSettingsFromDraft(draft, current))
@@ -781,7 +839,7 @@ export function OnboardingPage() {
     setOwnerAccount((current) => ({
       ...current,
       ownerName: draftOwnerName.trim(),
-      phone: normalizeBangladeshPhone(draftStoreSettings.phone),
+      phone: current.phone,
       email: draftStoreSettings.email.trim(),
     }))
     setStoreSettings({
@@ -944,10 +1002,46 @@ export function OnboardingPage() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">Phone Number</label>
+            <label className="text-sm font-medium">Restaurant contact number</label>
+            <label
+              htmlFor="use-owner-contact-phone"
+              className="flex items-start gap-3 rounded-2xl border bg-muted/15 p-3 text-sm"
+            >
+              <Checkbox
+                id="use-owner-contact-phone"
+                checked={useOwnerPhoneForContact}
+                onCheckedChange={(checked) => {
+                  const nextValue = checked === true
+                  setUseOwnerPhoneForContact(nextValue)
+                  setDraftStoreSettings((current) => ({
+                    ...current,
+                    phone: nextValue ? ownerPhoneForDefaults : "",
+                  }))
+                }}
+              />
+              <span>
+                <span className="block font-medium">
+                  Use owner phone for customer contact
+                </span>
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  Foodbela or customers may use this number if support needs to
+                  contact the restaurant.
+                </span>
+              </span>
+            </label>
             <Input
-              value={draftStoreSettings.phone}
-              disabled
+              value={
+                useOwnerPhoneForContact
+                  ? ownerPhoneForDefaults
+                  : draftStoreSettings.phone
+              }
+              onChange={(event) =>
+                setDraftStoreSettings((current) => ({
+                  ...current,
+                  phone: sanitizeBangladeshPhoneInput(event.target.value),
+                }))
+              }
+              disabled={useOwnerPhoneForContact}
               inputMode="numeric"
               maxLength={11}
               placeholder={formatBangladeshPhonePlaceholder()}
@@ -1625,11 +1719,15 @@ export function OnboardingPage() {
                   type="button"
                   onClick={() => {
                     clearPayoutSkip()
+                    const nextType = option.value as PayoutMethod["type"]
                     setDraftPayoutMethod((current) => ({
                       ...current,
-                      type: option.value as PayoutMethod["type"],
+                      type: nextType,
                       accountName: "",
-                      accountNumber: "",
+                      accountNumber:
+                        nextType === "bkash" && useOwnerPhoneForBkash
+                          ? ownerPhoneForDefaults
+                          : "",
                       bankName: "",
                       branchName: "",
                     }))
@@ -1690,8 +1788,42 @@ export function OnboardingPage() {
                   ? "bKash Number"
                   : "Account Number"}
               </label>
+              {draftPayoutMethod.type === "bkash" ? (
+                <label
+                  htmlFor="use-owner-bkash-phone"
+                  className="flex items-start gap-3 rounded-2xl border bg-muted/15 p-3 text-sm"
+                >
+                  <Checkbox
+                    id="use-owner-bkash-phone"
+                    checked={useOwnerPhoneForBkash}
+                    disabled={payoutSkipped}
+                    onCheckedChange={(checked) => {
+                      const nextValue = checked === true
+                      setUseOwnerPhoneForBkash(nextValue)
+                      clearPayoutSkip()
+                      setDraftPayoutMethod((current) => ({
+                        ...current,
+                        accountNumber: nextValue ? ownerPhoneForDefaults : "",
+                      }))
+                    }}
+                  />
+                  <span>
+                    <span className="block font-medium">
+                      Use owner phone as bKash number
+                    </span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      If payout should go to a different bKash wallet, uncheck
+                      this and enter that wallet number.
+                    </span>
+                  </span>
+                </label>
+              ) : null}
               <Input
-                value={draftPayoutMethod.accountNumber}
+                value={
+                  draftPayoutMethod.type === "bkash" && useOwnerPhoneForBkash
+                    ? ownerPhoneForDefaults
+                    : draftPayoutMethod.accountNumber
+                }
                 onChange={(event) => {
                   clearPayoutSkip()
                   setDraftPayoutMethod((current) => ({
@@ -1711,7 +1843,10 @@ export function OnboardingPage() {
                     ? formatBangladeshPhonePlaceholder()
                     : "0123456789012"
                 }
-                disabled={payoutSkipped}
+                disabled={
+                  payoutSkipped ||
+                  (draftPayoutMethod.type === "bkash" && useOwnerPhoneForBkash)
+                }
               />
               {revealErrors && errors.accountNumber ? (
                 <p className="text-sm text-destructive">

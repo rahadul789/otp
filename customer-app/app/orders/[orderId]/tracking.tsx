@@ -1,14 +1,17 @@
 import { Ionicons } from "@expo/vector-icons";
 import LottieView from "lottie-react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { memo, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Linking,
+  Modal,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import {
@@ -18,307 +21,87 @@ import {
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { LiveOrderMap } from "@/src/components/orders/live-order-map";
+import { styles } from "@/src/components/orders/order-tracking.styles";
+import { PreparationRuntime } from "@/src/components/orders/preparation-runtime";
+import { ReorderCartSwitchModal } from "@/src/components/orders/reorder-cart-switch-modal";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import {
   useCustomerOrderDetailsQuery,
+  useCustomerReorderMutation,
   useCustomerRestaurantDetailsQuery,
+  useCustomerReviewMutation,
 } from "@/src/hooks/use-customer-api";
-import { formatDateTimeAmPm, formatTimeAmPm } from "@/src/lib/date-time";
-import { formatDistanceValue } from "@/src/lib/distance";
+import { formatCurrency } from "@/src/lib/currency";
+import {
+  getCustomerOrderStatusMeta,
+  getLiveOrderJourneyIndex,
+  getLiveOrderTrackingState,
+  LIVE_ORDER_JOURNEY_STEPS,
+} from "@/src/lib/customer-order-display";
+import {
+  formatDateMedium,
+  formatDurationMinutes,
+  formatTimeAmPm,
+} from "@/src/lib/date-time";
+import { formatCustomerAddressLine } from "@/src/lib/location-address";
+import { formatShortOrderIdLabel } from "@/src/lib/order-id";
 import { useIsOnline } from "@/src/hooks/use-network-status";
+import { useAppBannerStore } from "@/src/store/app-banner-store";
 import { palette } from "@/src/theme/palette";
 
-type CustomerOrderDetails = NonNullable<
-  ReturnType<typeof useCustomerOrderDetailsQuery>["data"]
->;
-
-type PreparationEstimate = {
-  state: "countdown" | "almost_ready" | "delayed" | "ready";
-  rangeLabel: string;
-  supportingText: string;
-  targetTimeLabel: string;
-  lateByMinutes: number;
-  averagePrepMinutes: number;
+type OrderTimelineSource = {
+  createdAt?: string;
+  history?: { status: string; createdAt?: string | null }[];
+  timestamps?: {
+    placedAt?: string;
+    acceptedAt?: string;
+    preparingAt?: string;
+    readyForPickupAt?: string;
+    pickedUpAt?: string;
+    deliveredAt?: string;
+    cancelledAt?: string;
+  };
 };
 
-const PREPARATION_LIVE_STATUSES = new Set(["Accepted", "Preparing"]);
-const PREPARATION_EARLY_FACTOR = 0.92;
-const PREPARATION_LATE_FACTOR = 1.08;
-const PREPARATION_TICK_MS = 15000;
+const TIMESTAMP_KEY_BY_STATUS = {
+  New: "placedAt",
+  Accepted: "acceptedAt",
+  Preparing: "preparingAt",
+  ReadyForPickup: "readyForPickupAt",
+  PickedUp: "pickedUpAt",
+  Delivered: "deliveredAt",
+} as const;
 
-function getPreparationAnchor(order: CustomerOrderDetails) {
+function getOrderStatusTime(order: OrderTimelineSource, status: string) {
+  const timestampKey =
+    TIMESTAMP_KEY_BY_STATUS[status as keyof typeof TIMESTAMP_KEY_BY_STATUS];
+
   return (
-    order.timestamps?.acceptedAt ??
-    order.timestamps?.preparingAt ??
-    order.timestamps?.placedAt ??
-    order.createdAt
+    (timestampKey ? order.timestamps?.[timestampKey] : undefined) ??
+    order.history?.find((entry) => entry.status === status)?.createdAt ??
+    (status === "New" ? order.createdAt : undefined)
   );
-}
-
-function getPreparationEstimate(
-  order: CustomerOrderDetails,
-  preparationTimeMinutes: number | null | undefined,
-  now: number,
-): PreparationEstimate | null {
-  if (!PREPARATION_LIVE_STATUSES.has(order.status)) {
-    return null;
-  }
-
-  if (
-    typeof preparationTimeMinutes !== "number" ||
-    !Number.isFinite(preparationTimeMinutes) ||
-    preparationTimeMinutes <= 0
-  ) {
-    return null;
-  }
-
-  const anchor = new Date(getPreparationAnchor(order)).getTime();
-  if (Number.isNaN(anchor)) {
-    return null;
-  }
-
-  const earliestMinutes = Math.max(
-    3,
-    Math.round(preparationTimeMinutes * PREPARATION_EARLY_FACTOR),
-  );
-  const latestMinutes = Math.max(
-    earliestMinutes + 2,
-    Math.round(preparationTimeMinutes * PREPARATION_LATE_FACTOR),
-  );
-
-  const earliestReadyAt = anchor + earliestMinutes * 60_000;
-  const latestReadyAt = anchor + latestMinutes * 60_000;
-  const minRemaining = Math.ceil((earliestReadyAt - now) / 60_000);
-  const maxRemaining = Math.ceil((latestReadyAt - now) / 60_000);
-
-  if (maxRemaining > 1) {
-    return {
-      state: "countdown",
-      rangeLabel: `${Math.max(1, minRemaining)}-${Math.max(
-        Math.max(1, minRemaining),
-        maxRemaining,
-      )} min left`,
-      supportingText: "",
-      targetTimeLabel: formatTimeAmPm(new Date(latestReadyAt)),
-      lateByMinutes: 0,
-      averagePrepMinutes: preparationTimeMinutes,
-    };
-  }
-
-  if (latestReadyAt >= now) {
-    return {
-      state: "almost_ready",
-      rangeLabel: "Almost ready",
-      supportingText:
-        "The kitchen is finishing your order now. Pickup should start shortly.",
-      targetTimeLabel: formatTimeAmPm(new Date(latestReadyAt)),
-      lateByMinutes: 0,
-      averagePrepMinutes: preparationTimeMinutes,
-    };
-  }
-
-  const lateByMinutes = Math.max(1, Math.ceil((now - latestReadyAt) / 60_000));
-
-  return {
-    state: "delayed",
-    rangeLabel: `Running ${lateByMinutes} min late`,
-    supportingText:
-      lateByMinutes >= 10
-        ? "This order is taking longer than the restaurant's usual prep window. Support can help if you need an update."
-        : "The kitchen is taking a little longer than usual, but your order is still being finished.",
-    targetTimeLabel: formatTimeAmPm(new Date(latestReadyAt)),
-    lateByMinutes,
-    averagePrepMinutes: preparationTimeMinutes,
-  };
-}
-
-const PreparationRuntime = memo(function PreparationRuntime({
-  order,
-  preparationTimeMinutes,
-  children,
-}: {
-  order: CustomerOrderDetails;
-  preparationTimeMinutes?: number | null;
-  children: (estimate: PreparationEstimate | null) => React.ReactNode;
-}) {
-  const shouldTrack = PREPARATION_LIVE_STATUSES.has(order.status);
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!shouldTrack) {
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, PREPARATION_TICK_MS);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, [shouldTrack]);
-
-  const estimate = useMemo(
-    () => getPreparationEstimate(order, preparationTimeMinutes, now),
-    [now, order, preparationTimeMinutes],
-  );
-
-  return <>{children(estimate)}</>;
-});
-
-function getProgress(status: string) {
-  switch (status) {
-    case "New":
-      return 0.12;
-    case "Accepted":
-      return 0.28;
-    case "Preparing":
-      return 0.52;
-    case "ReadyForPickup":
-      return 0.68;
-    case "PickedUp":
-      return 0.88;
-    case "Delivered":
-      return 1;
-    default:
-      return 0.1;
-  }
-}
-
-const JOURNEY_STEPS = [
-  { key: "New", label: "Order placed" },
-  { key: "Accepted", label: "Accepted" },
-  { key: "Preparing", label: "Preparing" },
-  { key: "ReadyForPickup", label: "Ready for pickup" },
-  { key: "PickedUp", label: "On the way" },
-  { key: "Delivered", label: "Delivered" },
-] as const;
-
-function getJourneyIndex(status: string) {
-  switch (status) {
-    case "New":
-      return 0;
-    case "Accepted":
-      return 1;
-    case "Preparing":
-      return 2;
-    case "ReadyForPickup":
-      return 3;
-    case "PickedUp":
-      return 4;
-    case "Delivered":
-      return 5;
-    case "Cancelled":
-    case "Rejected":
-      return -1;
-    default:
-      return 0;
-  }
-}
-
-function getTrackingState(order: CustomerOrderDetails) {
-  const terminalReason = order.terminalReason ?? "";
-
-  switch (order.status) {
-    case "New":
-      return {
-        title: "Order placed",
-        subtitle: "Waiting for restaurant confirmation.",
-        icon: "receipt-outline" as const,
-        tint: "#F3F7FF",
-        accent: palette.sky,
-      };
-    case "Accepted":
-      return {
-        title: "Restaurant confirmed",
-        subtitle: "Cooking will begin shortly.",
-        icon: "checkmark-done-circle-outline" as const,
-        tint: "#EEF4FF",
-        accent: palette.sky,
-      };
-    case "Preparing":
-      return {
-        title: "Preparing your food",
-        subtitle: "Live rider updates start after pickup.",
-        icon: "restaurant-outline" as const,
-        tint: "#FFF0F7",
-        accent: palette.amber,
-      };
-    case "ReadyForPickup":
-      return {
-        title: "Ready for pickup",
-        subtitle: "Waiting for rider pickup.",
-        icon: "bag-handle-outline" as const,
-        tint: "#FFF0F7",
-        accent: palette.amber,
-      };
-    case "Delivered":
-      return {
-        title: "Delivered successfully",
-        subtitle: "Delivered to your address.",
-        icon: "checkmark-circle" as const,
-        tint: palette.successSurface,
-        accent: palette.successText,
-      };
-    case "Cancelled":
-      if (order.cancelledBy === "customer") {
-        return {
-          title: "You cancelled this order",
-          subtitle: "This order was cancelled before the restaurant accepted it.",
-          icon: "close-circle-outline" as const,
-          tint: "#F7F0EA",
-          accent: palette.foreground,
-        };
-      }
-      if (
-        order.cancelledBy === "system" ||
-        terminalReason === "system_auto_cancel_unaccepted" ||
-        terminalReason.toLowerCase().includes("auto-cancel")
-      ) {
-        return {
-          title: "Order auto-cancelled",
-          subtitle: "The restaurant did not accept this order in time.",
-          icon: "timer-outline" as const,
-          tint: "#FFF7E8",
-          accent: palette.amber,
-        };
-      }
-      if (order.cancelledBy === "owner" || order.cancelledBy === "restaurant") {
-        return {
-          title: "Restaurant cancelled this order",
-          subtitle: "The restaurant could not continue with this order.",
-          icon: "storefront-outline" as const,
-          tint: "#FFF0F6",
-          accent: palette.primary,
-        };
-      }
-      return {
-        title: "This order was cancelled",
-        subtitle: "This order is no longer active.",
-        icon: "close-circle-outline" as const,
-        tint: "#F7F0EA",
-        accent: palette.foreground,
-      };
-    case "Rejected":
-      return {
-        title: "Restaurant could not accept this order",
-        subtitle: terminalReason || "This order was not accepted.",
-        icon: "storefront-outline" as const,
-        tint: "#FFF0F6",
-        accent: palette.primary,
-      };
-    default:
-      return null;
-  }
 }
 
 export default function OrderTrackingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ orderId?: string }>();
+  const [isDetailsOpen, setDetailsOpen] = useState(false);
+  const [selectedRating, setSelectedRating] = useState(0);
+  const [reviewComment, setReviewComment] = useState("");
+  const [reorderConflictMeta, setReorderConflictMeta] = useState<{
+    currentRestaurantName: string;
+    incomingRestaurantName: string;
+    previewItemName: string;
+  } | null>(null);
+  const detailsSheetProgress = useRef(new Animated.Value(0)).current;
   const orderId =
     typeof params.orderId === "string" ? params.orderId : undefined;
   const orderQuery = useCustomerOrderDetailsQuery(orderId);
+  const reviewMutation = useCustomerReviewMutation(orderId);
+  const reorderMutation = useCustomerReorderMutation();
+  const showBanner = useAppBannerStore((state) => state.showBanner);
   const isOnline = useIsOnline();
   const order = orderQuery.data;
   const restaurantId = order?.restaurantId;
@@ -351,24 +134,88 @@ export default function OrderTrackingScreen() {
         }
       : null;
 
-  const trackingDistance = useMemo(
-    () =>
-      formatDistanceValue(order?.riderTracking?.remainingDistanceKm ?? null),
-    [order?.riderTracking?.remainingDistanceKm],
+  const itemRows = useMemo(
+    () => order?.itemsSnapshot ?? [],
+    [order?.itemsSnapshot],
   );
+  const openDetailsSheet = () => {
+    setDetailsOpen(true);
+  };
+  const closeDetailsSheet = () => {
+    Animated.timing(detailsSheetProgress, {
+      toValue: 0,
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) {
+        setDetailsOpen(false);
+      }
+    });
+  };
+  const detailsBackdropOpacity = detailsSheetProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const detailsSheetTranslateY = detailsSheetProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [28, 0],
+  });
+
+  useEffect(() => {
+    if (!isDetailsOpen) return;
+
+    detailsSheetProgress.setValue(0);
+    Animated.timing(detailsSheetProgress, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [detailsSheetProgress, isDetailsOpen]);
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(tabs)/orders");
+  };
 
   if (orderQuery.isLoading) {
     return (
       <SafeAreaView style={styles.safeArea} edges={["top"]}>
-        <View style={styles.loadingWrap}>
-          <View style={styles.loadingCard}>
-            <ActivityIndicator size="small" color={palette.primary} />
-            <Text style={styles.loadingTitle}>Loading live tracking</Text>
-            <Text style={styles.loadingText}>
-              Pulling your latest rider and delivery updates.
-            </Text>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.content,
+            { paddingBottom: 32 + Math.max(insets.bottom, 16) },
+          ]}
+        >
+          <View style={styles.header}>
+            <Pressable style={styles.backButton} onPress={handleBack}>
+              <Ionicons
+                name="chevron-back"
+                size={20}
+                color={palette.foreground}
+              />
+            </Pressable>
+            <View style={styles.headerCopy}>
+              <Text style={styles.kicker}>Order details</Text>
+              <Text style={styles.orderIdText}>Loading order</Text>
+            </View>
           </View>
-        </View>
+          <View style={styles.loadingPanel}>
+            <ActivityIndicator size="small" color={palette.primary} />
+            <View style={styles.loadingCopy}>
+              <Text style={styles.loadingTitle}>Loading live tracking</Text>
+              <Text style={styles.loadingText}>
+                Pulling your latest rider and delivery updates.
+              </Text>
+            </View>
+          </View>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -388,32 +235,15 @@ export default function OrderTrackingScreen() {
     );
   }
 
-  const isTrackingStale = Boolean(order.riderTracking?.freshness?.isStale);
-  const trackingState = getTrackingState(order);
+  const trackingState = getLiveOrderTrackingState(order);
   const remainingMinutes =
     order.riderTracking?.remainingDurationMinutes ?? null;
-  const progress = getProgress(order.status);
-  const statusTone =
-    order.status === "Delivered"
-      ? styles.statusPillSuccess
-      : order.status === "PickedUp"
-        ? styles.statusPillLive
-        : styles.statusPillDefault;
-  const statusTextTone =
-    order.status === "Delivered"
-      ? styles.statusPillTextSuccess
-      : order.status === "PickedUp"
-        ? styles.statusPillTextLive
-        : null;
-  const latestSignalTime = formatTimeAmPm(
-    order.riderTracking?.lastUpdatedAt ?? order.createdAt,
-  );
-  const hasLiveRiderLocation = Boolean(riderLocation);
-  const canShowLiveMap = order.status === "PickedUp" && hasLiveRiderLocation;
+  const statusMeta = getCustomerOrderStatusMeta(order.status);
+  const canShowLiveMap = order.status === "PickedUp";
   const hasAssignedRider = Boolean(
     order.riderSnapshot?.name || order.riderSnapshot?.phone,
   );
-  const journeyIndex = getJourneyIndex(order.status);
+  const journeyIndex = getLiveOrderJourneyIndex(order.status);
   const restaurantPreparationTimeMinutes =
     typeof restaurant?.preparationTimeMinutes === "number"
       ? restaurant.preparationTimeMinutes
@@ -424,19 +254,27 @@ export default function OrderTrackingScreen() {
       ? "Rider on the way"
       : "Waiting for assignment");
   const riderPhone = order.riderSnapshot?.phone?.trim() || "";
-  const riderSubtitle =
-    riderPhone ||
-    (order.status === "PickedUp"
-      ? hasLiveRiderLocation
-        ? "Live updates are on."
-        : "Waiting for the first location signal."
-      : "Details appear after pickup.");
-  const restaurantAddressText =
+  const restaurantName = restaurant?.name || "Restaurant";
+  const canReviewOrder = order.status === "Delivered" && !order.customerReview;
+  const restaurantAddressText = formatCustomerAddressLine(
     typeof restaurant?.address === "string"
       ? restaurant.address
       : [restaurant?.address?.address, restaurant?.address?.city]
           .filter(Boolean)
-          .join(", ") || "Restaurant pickup details will appear here.";
+          .join(", "),
+    "Restaurant pickup details will appear here.",
+  );
+  const deliveryAddressText = formatCustomerAddressLine(
+    order.customerSnapshot?.deliveryAddress?.addressLine,
+    "Delivery address unavailable",
+  );
+  const isDeliveredOrder = order.status === "Delivered";
+  const totalItemCount = itemRows.reduce(
+    (sum, item) => sum + Math.max(item.quantity ?? 0, 0),
+    0,
+  );
+  const isCurrentOrderReordering =
+    reorderMutation.isPending && reorderMutation.variables?.order._id === order._id;
   const handleCallRider = () => {
     if (!riderPhone) {
       return;
@@ -444,7 +282,61 @@ export default function OrderTrackingScreen() {
 
     void Linking.openURL(`tel:${riderPhone}`);
   };
+  const handleSubmitReview = () => {
+    if (!selectedRating) {
+      return;
+    }
 
+    reviewMutation.mutate({
+      rating: selectedRating,
+      comment: reviewComment.trim() || undefined,
+    });
+  };
+  const handleReorder = async (forceReplace = false) => {
+    const result = await reorderMutation.mutateAsync({
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        restaurantId: order.restaurantId,
+        itemsSnapshot: order.itemsSnapshot,
+      },
+      forceReplace,
+    });
+
+    if (result.status === "conflict") {
+      setReorderConflictMeta({
+        currentRestaurantName: result.currentRestaurantName,
+        incomingRestaurantName: result.incomingRestaurantName,
+        previewItemName: result.previewItemName,
+      });
+      return;
+    }
+
+    if (result.status === "empty") {
+      showBanner({
+        title: "Could not reorder this order",
+        description:
+          result.skippedCount > 0
+            ? "Those items are no longer available with their previous configuration."
+            : "We could not rebuild this order right now.",
+        tone: "warning",
+      });
+      return;
+    }
+
+    showBanner({
+      title:
+        result.skippedCount > 0
+          ? "Reorder ready with available items"
+          : "Reorder ready",
+      description:
+        result.skippedCount > 0
+          ? `${result.addedItemCount} item${result.addedItemCount === 1 ? "" : "s"} restored. ${result.skippedCount} could not be added.`
+          : `Your cart now has ${result.addedItemCount} item${result.addedItemCount === 1 ? "" : "s"} from this delivered order.`,
+      tone: result.skippedCount > 0 ? "warning" : "success",
+    });
+    router.push("/(tabs)/cart");
+  };
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
       <ScrollView
@@ -455,7 +347,7 @@ export default function OrderTrackingScreen() {
         ]}
       >
         <View style={styles.header}>
-          <Pressable style={styles.backButton} onPress={() => router.back()}>
+          <Pressable style={styles.backButton} onPress={handleBack}>
             <Ionicons
               name="chevron-back"
               size={20}
@@ -463,12 +355,27 @@ export default function OrderTrackingScreen() {
             />
           </Pressable>
           <View style={styles.headerCopy}>
-            <Text style={styles.kicker}>Live tracking</Text>
-            <Text style={styles.title}>{order.orderNumber}</Text>
-            <Text style={styles.subtitle}>
-              {order.customerSnapshot?.deliveryAddress?.label ||
-                "Your delivery address"}
-            </Text>
+            <Text style={styles.kicker}>Order details</Text>
+            <View style={styles.orderHeaderRow}>
+              <Text style={styles.orderIdText}>
+                {formatShortOrderIdLabel(order.orderNumber)}
+              </Text>
+              <View
+                style={[
+                  styles.statusPill,
+                  { backgroundColor: statusMeta.background },
+                ]}
+              >
+                <Ionicons
+                  name={statusMeta.icon}
+                  size={13}
+                  color={statusMeta.color}
+                />
+                <Text style={[styles.statusPillText, { color: statusMeta.color }]}>
+                  {statusMeta.label}
+                </Text>
+              </View>
+            </View>
           </View>
         </View>
 
@@ -478,51 +385,7 @@ export default function OrderTrackingScreen() {
           </View>
         ) : null}
 
-        {order.status === "PickedUp" ? (
-          <View
-            style={[
-              styles.networkHint,
-              isTrackingStale
-                ? styles.networkHintStale
-                : styles.networkHintLive,
-            ]}
-          >
-            <Ionicons
-              name={
-                hasLiveRiderLocation
-                  ? isTrackingStale
-                    ? "cloud-offline-outline"
-                    : "radio-outline"
-                  : "locate-outline"
-              }
-              size={18}
-              color={
-                hasLiveRiderLocation
-                  ? isTrackingStale
-                    ? "#B45309"
-                    : palette.secondary
-                  : palette.primary
-              }
-            />
-            <View style={styles.networkHintCopy}>
-              <Text style={styles.networkHintTitle}>
-                {hasLiveRiderLocation
-                  ? isTrackingStale
-                    ? "Tracking paused"
-                    : "Tracking live"
-                  : "Waiting for rider location"}
-              </Text>
-              <Text style={styles.networkHintSubtitle}>
-                {hasLiveRiderLocation
-                  ? isTrackingStale
-                    ? `Last rider signal ${latestSignalTime}. Updates will resume automatically.`
-                    : `Last rider signal ${latestSignalTime}.`
-                  : "Pickup completed. Waiting for the rider's first location signal."}
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
+        {!isDeliveredOrder ? (
         <View style={styles.trackingCard}>
           {canShowLiveMap ? (
             customerLocation ? (
@@ -641,7 +504,7 @@ export default function OrderTrackingScreen() {
                 <Ionicons
                   name="sparkles-outline"
                   size={14}
-                  color={palette.amber}
+                  color="#9A4F00"
                 />
                 <Text style={styles.preparingPillText}>
                   Your food is preparing
@@ -662,7 +525,9 @@ export default function OrderTrackingScreen() {
                     <Text style={styles.preparingRange}>
                       {estimate?.rangeLabel ??
                         (remainingMinutes !== null
-                          ? `${Math.max(remainingMinutes, 1)} min left`
+                          ? `${formatDurationMinutes(
+                              Math.max(remainingMinutes, 1),
+                            )} left`
                           : "Preparing now")}
                     </Text>
                     <Text style={styles.preparingRangeMeta}>
@@ -705,36 +570,45 @@ export default function OrderTrackingScreen() {
               </View>
               {hasAssignedRider ? (
                 <View style={styles.readyPickupAssignedChip}>
-                  <View style={styles.readyPickupAssignedAvatar}>
-                    <Ionicons
-                      name="person-outline"
-                      size={14}
-                      color={palette.foreground}
-                    />
-                  </View>
+                  <View style={styles.readyPickupAssignedLeft}>
+                    <View style={styles.readyPickupAssignedAvatar}>
+                      <Ionicons
+                        name="bicycle-outline"
+                        size={17}
+                        color={palette.secondary}
+                      />
+                    </View>
                   <View style={styles.readyPickupAssignedCopy}>
                     <Text style={styles.readyPickupAssignedLabel}>
                       Assigned rider
                     </Text>
                     <View style={styles.readyPickupAssignedMetaRow}>
-                      <Text style={styles.readyPickupAssignedValue}>
+                      <Text style={styles.readyPickupAssignedValue} numberOfLines={1}>
                         {order.riderSnapshot?.name || "Rider assigned"}
-                        {riderPhone ? ` • ${riderPhone}` : ""}
                       </Text>
                       {riderPhone ? (
-                        <Pressable
-                          style={styles.callButton}
-                          onPress={handleCallRider}
-                        >
-                          <Ionicons
-                            name="call-outline"
-                            size={14}
-                            color={palette.foreground}
-                          />
-                        </Pressable>
+                        <>
+                          <View style={styles.readyPickupAssignedDot} />
+                          <Text style={styles.readyPickupAssignedPhone} numberOfLines={1}>
+                            {riderPhone}
+                          </Text>
+                        </>
                       ) : null}
                     </View>
                   </View>
+                  </View>
+                  {riderPhone ? (
+                    <Pressable
+                      style={styles.readyPickupCallButton}
+                      onPress={handleCallRider}
+                    >
+                      <Ionicons
+                        name="call-outline"
+                        size={16}
+                        color={palette.secondary}
+                      />
+                    </Pressable>
+                  ) : null}
                 </View>
               ) : null}
               <LottieView
@@ -770,15 +644,67 @@ export default function OrderTrackingScreen() {
             </View>
           ) : null}
         </View>
+        ) : null}
 
-        {journeyIndex >= 0 ? (
+        {isDeliveredOrder ? (
+          <View style={styles.deliveredSummaryCard}>
+            <View style={styles.deliveredSummaryTopRow}>
+              <View style={styles.deliveredSummaryCopy}>
+                <View style={styles.deliveredSummaryIcon}>
+                  <Ionicons
+                    name="checkmark-done-outline"
+                    size={18}
+                    color={palette.secondary}
+                  />
+                </View>
+                <View style={styles.deliveredSummaryTextWrap}>
+                  <Text style={styles.deliveredSummaryTitle}>
+                    Delivered successfully
+                  </Text>
+                  <Text style={styles.deliveredSummaryMeta}>
+                    {totalItemCount} item{totalItemCount === 1 ? "" : "s"} from {restaurantName}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.deliveredSummaryTotalBox}>
+                <Text style={styles.deliveredSummaryTotalLabel}>Total</Text>
+                <Text style={styles.deliveredSummaryTotalValue}>
+                  {formatCurrency(order.pricing?.total ?? 0)}
+                </Text>
+                <Pressable
+                  style={[
+                    styles.deliveredReorderButton,
+                    isCurrentOrderReordering ? styles.deliveredReorderButtonDisabled : null,
+                  ]}
+                  disabled={isCurrentOrderReordering}
+                  onPress={() => {
+                    void handleReorder();
+                  }}
+                >
+                  {isCurrentOrderReordering ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons name="refresh-outline" size={14} color="#fff" />
+                      <Text style={styles.deliveredReorderButtonText}>Reorder</Text>
+                    </>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        ) : null}
+
+        {journeyIndex >= 0 && !isDeliveredOrder ? (
           <View style={styles.journeyCard}>
             <Text style={styles.journeyTitle}>Order journey</Text>
 
             <View style={styles.journeyRow}>
-              {JOURNEY_STEPS.map((step, index) => {
+              {LIVE_ORDER_JOURNEY_STEPS.map((step, index) => {
                 const isCompleted = index < journeyIndex;
                 const isCurrent = index === journeyIndex;
+                const isDeliveredCurrent =
+                  order.status === "Delivered" && step.key === "Delivered";
 
                 return (
                   <View key={step.key} style={styles.journeyStep}>
@@ -786,23 +712,29 @@ export default function OrderTrackingScreen() {
                       <View
                         style={[
                           styles.journeyMarker,
-                          isCompleted ? styles.journeyMarkerDone : null,
-                          isCurrent ? styles.journeyMarkerCurrent : null,
+                          isCompleted || isDeliveredCurrent
+                            ? styles.journeyMarkerDone
+                            : null,
+                          isCurrent && !isDeliveredCurrent
+                            ? styles.journeyMarkerCurrent
+                            : null,
                         ]}
                       >
                         <Text
                           style={[
                             styles.journeyMarkerText,
-                            isCompleted
+                            isCompleted || isDeliveredCurrent
                               ? styles.journeyMarkerTextOnSolid
                               : null,
-                            isCurrent ? styles.journeyMarkerTextCurrent : null,
+                            isCurrent && !isDeliveredCurrent
+                              ? styles.journeyMarkerTextCurrent
+                              : null,
                           ]}
                         >
                           {index + 1}
                         </Text>
                       </View>
-                      {index < JOURNEY_STEPS.length - 1 ? (
+                      {index < LIVE_ORDER_JOURNEY_STEPS.length - 1 ? (
                         <View
                           style={[
                             styles.journeyLine,
@@ -830,165 +762,17 @@ export default function OrderTrackingScreen() {
           </View>
         ) : null}
 
-        <View style={styles.summaryCard}>
-          <View style={styles.summaryTopRow}>
-            <View style={styles.summaryBadge}>
-              <Ionicons
-                name="receipt-outline"
-                size={18}
-                color={palette.primary}
-              />
-            </View>
-            <View style={styles.summaryCopy}>
-              <View style={[styles.statusPill, statusTone]}>
-                <Text style={[styles.statusPillText, statusTextTone]}>
-                  {order.status}
-                </Text>
-              </View>
-              <Text style={styles.summaryMeta}>
-                Placed {formatDateTimeAmPm(order.createdAt)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.metricRow}>
-            <PreparationRuntime
-              order={order}
-              preparationTimeMinutes={restaurantPreparationTimeMinutes}
-            >
-              {(estimate) => (
-                <View style={styles.metricPill}>
-                  <Text style={styles.metricValue}>
-                    {order.status === "Delivered"
-                      ? "Delivered"
-                      : order.status === "PickedUp"
-                        ? remainingMinutes !== null
-                          ? `${Math.max(remainingMinutes, 1)} min`
-                          : "Updating"
-                        : (estimate?.rangeLabel ??
-                          (remainingMinutes !== null
-                            ? `${Math.max(remainingMinutes, 1)} min`
-                            : "Updating"))}
-                  </Text>
-                  <Text style={styles.metricLabel}>
-                    {order.status === "Delivered"
-                      ? "Status"
-                      : order.status === "PickedUp"
-                        ? "Arrival estimate"
-                        : estimate?.state === "delayed"
-                          ? "Kitchen delay"
-                          : "Kitchen estimate"}
-                  </Text>
-                </View>
-              )}
-            </PreparationRuntime>
-            <View style={styles.metricPill}>
-              <Text style={styles.metricValue}>
-                {order.status === "PickedUp"
-                  ? trackingDistance ||
-                    formatTimeAmPm(
-                      order.riderTracking?.lastUpdatedAt ?? order.createdAt,
-                    )
-                  : restaurantPreparationTimeMinutes !== null
-                    ? `${restaurantPreparationTimeMinutes} min`
-                    : formatTimeAmPm(
-                        order.riderTracking?.lastUpdatedAt ?? order.createdAt,
-                      )}
-              </Text>
-              <Text style={styles.metricLabel}>
-                {order.status === "PickedUp"
-                  ? trackingDistance
-                    ? "Remaining distance"
-                    : "Latest signal"
-                  : "Avg prep time"}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.progressTrack}>
-            <View
-              style={[
-                styles.progressFill,
-                {
-                  width: `${Math.max(10, Math.round(progress * 100))}%`,
-                  backgroundColor:
-                    order.status === "Delivered"
-                      ? palette.successText
-                      : palette.secondary,
-                },
-              ]}
-            />
-          </View>
-
-          <PreparationRuntime
-            order={order}
-            preparationTimeMinutes={restaurantPreparationTimeMinutes}
+        <View style={styles.detailsButtonRow}>
+          <Pressable
+            style={[styles.detailsButton, styles.detailsButtonFull]}
+            onPress={openDetailsSheet}
           >
-            {(estimate) => (
-              <View style={styles.summaryFooter}>
-                <View
-                  style={[
-                    styles.summaryFooterChip,
-                    estimate?.state === "delayed"
-                      ? styles.summaryFooterChipWarning
-                      : null,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      order.status === "PickedUp"
-                        ? "time-outline"
-                        : estimate?.state === "delayed"
-                          ? "alert-circle-outline"
-                          : "restaurant-outline"
-                    }
-                    size={14}
-                    color={
-                      estimate?.state === "delayed"
-                        ? "#B45309"
-                        : palette.mutedForeground
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.summaryFooterText,
-                      estimate?.state === "delayed"
-                        ? styles.summaryFooterTextWarning
-                        : null,
-                    ]}
-                  >
-                    {order.status === "PickedUp"
-                      ? `Last update ${latestSignalTime}`
-                      : estimate?.state === "delayed"
-                        ? "Prep is taking longer than usual."
-                        : estimate
-                          ? `Ready around ${estimate.targetTimeLabel}`
-                          : `Last update ${latestSignalTime}`}
-                  </Text>
-                </View>
-                <Pressable
-                  style={styles.summaryFooterButton}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/orders/[orderId]",
-                      params: { orderId: order._id },
-                    })
-                  }
-                >
-                  <Text style={styles.summaryFooterButtonText}>
-                    Open details
-                  </Text>
-                  <Ionicons
-                    name="arrow-forward"
-                    size={14}
-                    color={palette.foreground}
-                  />
-                </Pressable>
-              </View>
-            )}
-          </PreparationRuntime>
+            <Ionicons name="receipt-outline" size={15} color="#fff" />
+            <Text style={styles.detailsButtonText}>Order details</Text>
+          </Pressable>
         </View>
 
+        {!isDeliveredOrder ? (
         <View style={styles.routeCard}>
           <View style={styles.routeHeader}>
             <Text style={styles.routeTitle}>Delivery route</Text>
@@ -1004,9 +788,7 @@ export default function OrderTrackingScreen() {
             <View style={styles.routeStops}>
               <View style={styles.routeStop}>
                 <Text style={styles.routeStopLabel}>Pickup from</Text>
-                <Text style={styles.routeStopTitle}>
-                  {restaurant?.name || "Restaurant"}
-                </Text>
+                <Text style={styles.routeStopTitle}>{restaurantName}</Text>
                 <Text style={styles.routeStopMeta}>
                   {restaurantAddressText}
                 </Text>
@@ -1016,1022 +798,296 @@ export default function OrderTrackingScreen() {
                 <Text style={styles.routeStopLabel}>Deliver to</Text>
                 <Text style={styles.routeStopTitle}>
                   {order.customerSnapshot?.deliveryAddress?.label ||
-                    "Selected location"}
+                    "Your location"}
                 </Text>
-                <Text style={styles.routeStopMeta}>
-                  {order.customerSnapshot?.deliveryAddress?.addressLine ||
-                    "Delivery address unavailable"}
-                </Text>
+                <Text style={styles.routeStopMeta}>{deliveryAddressText}</Text>
               </View>
             </View>
           </View>
         </View>
+        ) : null}
 
-        <View style={styles.infoGrid}>
-          <View style={[styles.infoCard, styles.infoCardHalf]}>
-            <View style={styles.infoRow}>
-              <Ionicons
-                name={
-                  order.status === "PickedUp"
-                    ? "bicycle-outline"
-                    : "restaurant-outline"
-                }
-                size={16}
-                color={palette.foreground}
-              />
-              <View style={styles.infoCopy}>
-                {order.status === "PickedUp" ? (
-                  <>
-                    <Text style={styles.infoLabel}>Rider</Text>
-                    <Text style={styles.infoValue}>{riderTitle}</Text>
-                    <View style={styles.infoMetaRow}>
-                      <Text style={[styles.infoMeta, styles.infoMetaFlexible]}>
-                        {riderSubtitle}
-                      </Text>
-                      {riderPhone ? (
-                        <Pressable
-                          style={styles.callButton}
-                          onPress={handleCallRider}
-                        >
-                          <Ionicons
-                            name="call-outline"
-                            size={14}
-                            color={palette.foreground}
-                          />
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.infoLabel}>Kitchen timing</Text>
-                    <Text style={styles.infoValue}>
-                      {restaurantPreparationTimeMinutes !== null
-                        ? `${restaurantPreparationTimeMinutes} min average`
-                        : "Average prep time unavailable"}
-                    </Text>
-                    <PreparationRuntime
-                      order={order}
-                      preparationTimeMinutes={restaurantPreparationTimeMinutes}
-                    >
-                      {(estimate) => (
-                        <Text style={styles.infoMeta}>
-                          {estimate?.state === "delayed"
-                            ? "Running behind usual prep time."
-                            : estimate?.state === "almost_ready"
-                              ? "Finishing up now."
-                              : estimate?.state === "countdown"
-                                ? `Expected ready around ${estimate.targetTimeLabel}.`
-                                : "Timing updates will appear here."}
-                        </Text>
-                      )}
-                    </PreparationRuntime>
-                  </>
-                )}
+        {order.customerReview ? (
+          <View style={styles.reviewCard}>
+            <View style={styles.reviewHeaderRow}>
+              <View>
+                <Text style={styles.reviewTitle}>Your review</Text>
+                <Text style={styles.reviewHint}>Already shared</Text>
               </View>
-            </View>
-          </View>
-
-          <View style={[styles.infoCard, styles.infoCardHalf]}>
-            <View style={styles.infoRow}>
-              <Ionicons
-                name="card-outline"
-                size={16}
-                color={palette.secondary}
-              />
-              <View style={styles.infoCopy}>
-                <Text style={styles.infoLabel}>Payment</Text>
-                <Text style={styles.infoValue}>{order.paymentMethod}</Text>
-                <Text style={styles.infoMeta}>
-                  {typeof order.pricing?.total === "number"
-                    ? `BDT ${order.pricing.total.toFixed(2)} total`
-                    : "Payment summary available in order details"}
+              <View style={styles.reviewDoneBadge}>
+                <Ionicons name="star" size={14} color={palette.amber} />
+                <Text style={styles.reviewDoneBadgeText}>
+                  {order.customerReview.rating}/5
                 </Text>
               </View>
             </View>
+            <Text style={styles.reviewDoneText}>
+              {order.customerReview.comment ||
+                "You submitted a rating without a comment."}
+            </Text>
           </View>
-        </View>
+        ) : null}
 
-        <View style={styles.actionsCard}>
-          <Pressable
-            style={styles.primaryButton}
-            onPress={() =>
-              router.push({
-                pathname: "/orders/[orderId]",
-                params: { orderId: order._id },
-              })
-            }
-          >
-            <Ionicons
-              name="receipt-outline"
-              size={18}
-              color={palette.background}
+        {canReviewOrder ? (
+          <View style={styles.reviewCard}>
+            <View style={styles.reviewHeaderRow}>
+              <View>
+                <Text style={styles.reviewTitle}>Rate this order</Text>
+                <Text style={styles.reviewHint}>
+                  Tell us how your food and delivery felt.
+                </Text>
+              </View>
+            </View>
+            <View style={styles.reviewStarsRow}>
+              {Array.from({ length: 5 }).map((_, index) => {
+                const ratingValue = index + 1;
+                const isActive = ratingValue <= selectedRating;
+
+                return (
+                  <Pressable
+                    key={`star-${ratingValue}`}
+                    style={styles.reviewStarButton}
+                    onPress={() => setSelectedRating(ratingValue)}
+                  >
+                    <Ionicons
+                      name={isActive ? "star" : "star-outline"}
+                      size={23}
+                      color={isActive ? palette.amber : palette.mutedForeground}
+                    />
+                  </Pressable>
+                );
+              })}
+            </View>
+            <TextInput
+              value={reviewComment}
+              onChangeText={setReviewComment}
+              placeholder="Add a short note (optional)"
+              placeholderTextColor={palette.placeholder}
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+              style={styles.reviewInput}
             />
-            <Text style={styles.primaryButtonText}>Open order details</Text>
-          </Pressable>
-
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={() => router.replace("/(tabs)/orders")}
-          >
-            <Ionicons
-              name="albums-outline"
-              size={16}
-              color={palette.foreground}
-            />
-            <Text style={styles.secondaryButtonText}>See all orders</Text>
-          </Pressable>
-        </View>
+            <Pressable
+              style={[
+                styles.submitReviewButton,
+                selectedRating === 0 || reviewMutation.isPending
+                  ? styles.submitReviewButtonDisabled
+                  : null,
+              ]}
+              disabled={selectedRating === 0 || reviewMutation.isPending}
+              onPress={handleSubmitReview}
+            >
+              {reviewMutation.isPending ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.submitReviewButtonText}>Submit review</Text>
+              )}
+            </Pressable>
+          </View>
+        ) : null}
       </ScrollView>
+
+      <Modal
+        visible={isDetailsOpen}
+        transparent
+        animationType="none"
+        onRequestClose={closeDetailsSheet}
+      >
+        <View style={styles.modalBackdrop}>
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.modalOverlay, { opacity: detailsBackdropOpacity }]}
+          />
+          <Pressable
+            style={styles.modalBackdropTouch}
+            onPress={closeDetailsSheet}
+          />
+          <Animated.View
+            style={[
+              styles.detailsSheet,
+              { transform: [{ translateY: detailsSheetTranslateY }] },
+            ]}
+          >
+            <View style={styles.detailsHandle} />
+            <View style={styles.detailsHeader}>
+              <View>
+                <Text style={styles.detailsTitle}>Order items</Text>
+                <Text style={styles.detailsSubtitle}>
+                  {restaurantName} - {formatShortOrderIdLabel(order.orderNumber)}
+                </Text>
+                <Text style={styles.detailsDateText}>
+                  Placed {formatDateMedium(order.createdAt)}
+                </Text>
+              </View>
+              <Pressable
+                style={styles.detailsCloseButton}
+                onPress={closeDetailsSheet}
+              >
+                <Ionicons name="close" size={18} color={palette.foreground} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={styles.detailsList}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{
+                paddingBottom: Math.max(insets.bottom, 16),
+              }}
+            >
+              {journeyIndex >= 0 ? (
+                <View style={styles.detailsTimelineCard}>
+                  <Text style={styles.detailsTimelineTitle}>Order timeline</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.detailsTimelineRow}
+                  >
+                    {LIVE_ORDER_JOURNEY_STEPS.map((step, index) => {
+                      const statusTime = getOrderStatusTime(order, step.key);
+                      const isCompleted = Boolean(statusTime) || index < journeyIndex;
+                      const isCurrent = index === journeyIndex;
+                      const isDeliveredCurrent =
+                        order.status === "Delivered" && step.key === "Delivered";
+
+                      return (
+                        <View key={step.key} style={styles.detailsTimelineStep}>
+                          <View style={styles.journeyMarkerRow}>
+                            <View
+                              style={[
+                                styles.journeyMarker,
+                                isCompleted || isDeliveredCurrent
+                                  ? styles.journeyMarkerDone
+                                  : null,
+                                isCurrent && !isDeliveredCurrent
+                                  ? styles.journeyMarkerCurrent
+                                  : null,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.journeyMarkerText,
+                                  isCompleted || isDeliveredCurrent
+                                    ? styles.journeyMarkerTextOnSolid
+                                    : null,
+                                  isCurrent && !isDeliveredCurrent
+                                    ? styles.journeyMarkerTextCurrent
+                                    : null,
+                                ]}
+                              >
+                                {index + 1}
+                              </Text>
+                            </View>
+                            {index < LIVE_ORDER_JOURNEY_STEPS.length - 1 ? (
+                              <View
+                                style={[
+                                  styles.detailsTimelineLine,
+                                  isCompleted ? styles.journeyLineDone : null,
+                                ]}
+                              />
+                            ) : null}
+                          </View>
+                          <Text
+                            numberOfLines={2}
+                            style={[
+                              styles.detailsTimelineLabel,
+                              isCompleted || isCurrent
+                                ? styles.journeyStepLabelActive
+                                : null,
+                            ]}
+                          >
+                            {step.label}
+                          </Text>
+                          <Text style={styles.detailsTimelineTime}>
+                            {statusTime ? formatTimeAmPm(statusTime) : "Pending"}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              ) : null}
+
+              {itemRows.map((item, index) => {
+                const quantity = item.quantity ?? 0;
+                const unitPrice = item.unitPrice ?? 0;
+
+                return (
+                  <View
+                    key={`${item.itemId ?? item.name}-${index}`}
+                    style={styles.detailsItemRow}
+                  >
+                    <View style={styles.detailsItemIcon}>
+                      <Ionicons
+                        name="restaurant-outline"
+                        size={16}
+                        color={palette.primary}
+                      />
+                    </View>
+                    <View style={styles.detailsItemCopy}>
+                      <View style={styles.detailsItemTopRow}>
+                        <Text style={styles.detailsItemName} numberOfLines={1}>
+                          {item.name || "Menu item"}
+                        </Text>
+                        <Text style={styles.detailsItemPrice}>
+                          {formatCurrency(quantity * unitPrice)}
+                        </Text>
+                      </View>
+                      <Text style={styles.detailsItemMeta}>
+                        {quantity} x {formatCurrency(unitPrice)}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              })}
+
+              <View style={styles.detailsDivider} />
+
+              <View style={styles.paymentSummary}>
+                <View style={styles.paymentRow}>
+                  <Text style={styles.paymentLabel}>Items subtotal</Text>
+                  <Text style={styles.paymentValue}>
+                    {formatCurrency(order.pricing?.subtotal ?? 0)}
+                  </Text>
+                </View>
+                <View style={styles.paymentRow}>
+                  <Text style={styles.paymentLabel}>Delivery fee</Text>
+                  <Text style={styles.paymentValue}>
+                    {formatCurrency(order.pricing?.deliveryFee ?? 0)}
+                  </Text>
+                </View>
+                {(order.pricing?.discountAmount ?? 0) > 0 ? (
+                  <View style={styles.paymentRow}>
+                    <Text style={styles.paymentLabel}>Discount</Text>
+                    <Text style={styles.paymentDiscount}>
+                      -{formatCurrency(order.pricing?.discountAmount ?? 0)}
+                    </Text>
+                  </View>
+                ) : null}
+                <View style={styles.detailsDivider} />
+                <View style={styles.paymentRow}>
+                  <Text style={styles.paymentValueStrong}>Total</Text>
+                  <Text style={styles.paymentValueStrong}>
+                    {formatCurrency(order.pricing?.total ?? 0)}
+                  </Text>
+                </View>
+              </View>
+
+            </ScrollView>
+          </Animated.View>
+        </View>
+      </Modal>
+      <ReorderCartSwitchModal
+        visible={Boolean(reorderConflictMeta)}
+        previewItemName={reorderConflictMeta?.previewItemName ?? "Delivered items"}
+        currentRestaurantName={reorderConflictMeta?.currentRestaurantName ?? "your current cart"}
+        incomingRestaurantName={reorderConflictMeta?.incomingRestaurantName ?? restaurantName}
+        onClose={() => setReorderConflictMeta(null)}
+        onConfirm={() => {
+          setReorderConflictMeta(null);
+          void handleReorder(true);
+        }}
+      />
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: palette.background,
-  },
-  content: {
-    gap: 14,
-    paddingBottom: 32,
-  },
-  header: {
-    paddingHorizontal: 18,
-    paddingTop: 8,
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "flex-start",
-  },
-  backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surface,
-    borderWidth: 1,
-    borderColor: palette.border,
-  },
-  headerCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  liveBadge: {
-    minHeight: 38,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: palette.surface,
-    borderWidth: 1,
-    borderColor: palette.border,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  liveBadgeText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "800",
-    color: palette.primary,
-  },
-  liveBadgeTextLive: {
-    color: palette.secondary,
-  },
-  kicker: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    color: palette.primary,
-  },
-  title: {
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  subtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  summaryCard: {
-    marginHorizontal: 18,
-    padding: 16,
-    borderRadius: 26,
-    backgroundColor: palette.surface,
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.9,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 5,
-  },
-  summaryTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  summaryBadge: {
-    width: 58,
-    height: 58,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.primarySoft,
-  },
-  summaryCopy: {
-    flex: 1,
-    gap: 6,
-  },
-  statusPill: {
-    alignSelf: "flex-start",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  statusPillDefault: {
-    backgroundColor: palette.primarySoft,
-  },
-  statusPillLive: {
-    backgroundColor: "#EEF4FF",
-  },
-  statusPillSuccess: {
-    backgroundColor: palette.successSurface,
-  },
-  statusPillText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.primary,
-  },
-  statusPillTextLive: {
-    color: palette.sky,
-  },
-  statusPillTextSuccess: {
-    color: palette.successText,
-  },
-  summaryMeta: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  metricRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  metricPill: {
-    flex: 1,
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    backgroundColor: palette.surfaceMuted,
-    gap: 2,
-  },
-  metricValue: {
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  metricLabel: {
-    fontSize: 12,
-    lineHeight: 16,
-    color: palette.mutedForeground,
-    fontWeight: "600",
-  },
-  progressTrack: {
-    height: 10,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    borderRadius: 999,
-  },
-  summaryFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
-  },
-  summaryFooterChip: {
-    flex: 1,
-    minHeight: 36,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  summaryFooterChipWarning: {
-    backgroundColor: "#FFF7ED",
-  },
-  summaryFooterText: {
-    fontSize: 12,
-    lineHeight: 16,
-    color: palette.mutedForeground,
-    fontWeight: "600",
-  },
-  summaryFooterTextWarning: {
-    color: "#92400E",
-  },
-  summaryFooterButton: {
-    minHeight: 36,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: "#F8F1FF",
-    borderWidth: 1,
-    borderColor: "#EBD9FF",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  summaryFooterButtonText: {
-    fontSize: 12,
-    lineHeight: 16,
-    color: palette.foreground,
-    fontWeight: "700",
-  },
-  networkHint: {
-    marginHorizontal: 18,
-    borderRadius: 20,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    flexDirection: "row",
-    gap: 10,
-  },
-  networkHintLive: {
-    backgroundColor: "#F8F1FF",
-    borderColor: "#EBD9FF",
-  },
-  networkHintStale: {
-    backgroundColor: "#FFF7ED",
-    borderColor: "#F6D6A5",
-  },
-  networkHintCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  networkHintTitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  networkHintSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  offlineNoticeWrap: {
-    marginHorizontal: 18,
-  },
-  trackingCard: {
-    marginHorizontal: 18,
-    borderRadius: 28,
-    overflow: "hidden",
-  },
-  journeyCard: {
-    marginHorizontal: 18,
-    borderRadius: 22,
-    backgroundColor: palette.surface,
-    paddingHorizontal: 15,
-    paddingVertical: 14,
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.72,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  journeyTitle: {
-    fontSize: 17,
-    lineHeight: 22,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  journeyHint: {
-    fontSize: 12,
-    lineHeight: 16,
-    color: palette.mutedForeground,
-  },
-  journeyRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-  },
-  journeyStep: {
-    flex: 1,
-    gap: 8,
-  },
-  journeyMarkerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  journeyMarker: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surfaceMuted,
-    borderWidth: 1,
-    borderColor: "#E7DAD3",
-  },
-  journeyMarkerDone: {
-    backgroundColor: palette.secondary,
-    borderColor: palette.secondary,
-  },
-  journeyMarkerCurrent: {
-    backgroundColor: "#FFF7FA",
-    borderColor: palette.secondary,
-  },
-  journeyMarkerText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "800",
-    color: palette.mutedForeground,
-  },
-  journeyMarkerTextOnSolid: {
-    color: "#fff",
-  },
-  journeyMarkerTextCurrent: {
-    color: palette.secondary,
-  },
-  journeyLine: {
-    flex: 1,
-    height: 2,
-    marginHorizontal: 6,
-    backgroundColor: "#EADFD9",
-  },
-  journeyLineDone: {
-    backgroundColor: palette.secondary,
-  },
-  journeyStepLabel: {
-    fontSize: 11,
-    lineHeight: 15,
-    color: palette.mutedForeground,
-    fontWeight: "700",
-    maxWidth: 58,
-  },
-  journeyStepLabelActive: {
-    color: palette.foreground,
-  },
-  waitingCard: {
-    minHeight: 300,
-    borderRadius: 28,
-    backgroundColor: "#F3F7FF",
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    alignItems: "center",
-    gap: 10,
-  },
-  waitingPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#FFFFFFCC",
-  },
-  waitingPillText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.sky,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  waitingSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: palette.mutedForeground,
-    textAlign: "center",
-    maxWidth: 280,
-  },
-  waitingAnimation: {
-    width: "100%",
-    height: 200,
-  },
-  confirmedCard: {
-    minHeight: 288,
-    borderRadius: 28,
-    backgroundColor: "#EEF4FF",
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12,
-  },
-  confirmedPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#FFFFFFCC",
-  },
-  confirmedPillText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.sky,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  confirmedSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: palette.mutedForeground,
-    textAlign: "center",
-    maxWidth: 280,
-  },
-  prepEtaCallout: {
-    minWidth: 156,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFFCC",
-    gap: 2,
-  },
-  prepEtaTitle: {
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  prepEtaSubtitle: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  confirmedBadge: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFFB8",
-  },
-  preparingCard: {
-    minHeight: 304,
-    borderRadius: 28,
-    backgroundColor: "#FFF0F7",
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    alignItems: "center",
-    gap: 10,
-  },
-  preparingPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#FFFFFFCC",
-  },
-  preparingPillText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: "#D97706",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  preparingAnimation: {
-    width: "100%",
-    height: 190,
-  },
-  preparingRange: {
-    fontSize: 28,
-    lineHeight: 30,
-    fontWeight: "800",
-    color: palette.primary,
-  },
-  preparingRangeMeta: {
-    maxWidth: 280,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-    textAlign: "center",
-  },
-  supportButton: {
-    minHeight: 38,
-    marginTop: 4,
-    paddingHorizontal: 14,
-    borderRadius: 999,
-    backgroundColor: "#FFFFFFD9",
-    borderWidth: 1,
-    borderColor: "#F3D2E0",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  supportButtonText: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  readyPickupCard: {
-    minHeight: 304,
-    borderRadius: 28,
-    backgroundColor: "#FFF6F1",
-    paddingHorizontal: 20,
-    paddingVertical: 18,
-    alignItems: "center",
-    gap: 10,
-  },
-  readyPickupPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#FFFFFFCC",
-  },
-  readyPickupPillText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.primary,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  readyPickupSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: palette.mutedForeground,
-    textAlign: "center",
-    maxWidth: 290,
-  },
-  readyPickupAssignedChip: {
-    width: "100%",
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: "#FFFFFFD6",
-    borderWidth: 1,
-    borderColor: "#F2D7C8",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  readyPickupAssignedAvatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#F7E6DC",
-  },
-  readyPickupAssignedCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  readyPickupAssignedMetaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  readyPickupAssignedLabel: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.primary,
-    textTransform: "uppercase",
-    letterSpacing: 0.7,
-  },
-  readyPickupAssignedValue: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  readyPickupAnimation: {
-    width: "100%",
-    height: 190,
-  },
-  readyPickupMeta: {
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: "700",
-    color: palette.foreground,
-    textAlign: "center",
-  },
-  pickupWaitingCard: {
-    minHeight: 320,
-    borderRadius: 28,
-    backgroundColor: "#FFF6F1",
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  pickupWaitingPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#FFFFFFCC",
-  },
-  pickupWaitingPillText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.primary,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  pickupWaitingAnimation: {
-    width: "100%",
-    height: 170,
-  },
-  pickupWaitingTitle: {
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: "800",
-    color: palette.foreground,
-    textAlign: "center",
-  },
-  pickupWaitingSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: palette.mutedForeground,
-    textAlign: "center",
-    maxWidth: 300,
-  },
-  pickupWaitingMeta: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.primary,
-    fontWeight: "700",
-    textAlign: "center",
-  },
-  stateCard: {
-    minHeight: 240,
-    borderRadius: 28,
-    paddingHorizontal: 24,
-    paddingVertical: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  stateIconWrap: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stateTitle: {
-    fontSize: 20,
-    lineHeight: 26,
-    fontWeight: "800",
-    color: palette.foreground,
-    textAlign: "center",
-  },
-  stateSubtitle: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: palette.mutedForeground,
-    textAlign: "center",
-  },
-  routeCard: {
-    marginHorizontal: 18,
-    borderRadius: 22,
-    backgroundColor: palette.surface,
-    padding: 16,
-    gap: 14,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.75,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  routeHeader: {
-    gap: 2,
-  },
-  routeTitle: {
-    fontSize: 17,
-    lineHeight: 22,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  routeSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  routeSteps: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  routeRail: {
-    width: 18,
-    alignItems: "center",
-    paddingTop: 6,
-  },
-  routeDotPrimary: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: palette.primary,
-  },
-  routeLine: {
-    width: 2,
-    flex: 1,
-    marginVertical: 6,
-    backgroundColor: "#F0E7DF",
-  },
-  routeDotSecondary: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: palette.secondary,
-  },
-  routeStops: {
-    flex: 1,
-    gap: 14,
-  },
-  routeStop: {
-    gap: 2,
-  },
-  routeStopLabel: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    color: palette.primary,
-  },
-  routeStopTitle: {
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  routeStopMeta: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  infoGrid: {
-    marginHorizontal: 18,
-    gap: 10,
-  },
-  infoCard: {
-    borderRadius: 22,
-    backgroundColor: palette.surface,
-    padding: 14,
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.75,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  infoCardHalf: {
-    marginHorizontal: 0,
-  },
-  infoRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-  },
-  infoCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  infoMetaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  infoMetaFlexible: {
-    flex: 1,
-  },
-  infoLabel: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    color: palette.primary,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  infoValue: {
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  infoMeta: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  callButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFF7FA",
-    borderWidth: 1,
-    borderColor: "#F3D2E0",
-  },
-  actionsCard: {
-    marginHorizontal: 18,
-    backgroundColor: palette.surface,
-    borderRadius: 22,
-    padding: 14,
-    gap: 10,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.75,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  primaryButton: {
-    minHeight: 52,
-    borderRadius: 999,
-    backgroundColor: palette.foreground,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  primaryButtonText: {
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: "800",
-    color: palette.background,
-  },
-  secondaryButton: {
-    minHeight: 46,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  secondaryButtonText: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  loadingWrap: {
-    flex: 1,
-    justifyContent: "center",
-    paddingHorizontal: 20,
-  },
-  loadingCard: {
-    borderRadius: 28,
-    backgroundColor: palette.surface,
-    paddingHorizontal: 22,
-    paddingVertical: 24,
-    alignItems: "center",
-    gap: 10,
-  },
-  loadingTitle: {
-    fontSize: 20,
-    lineHeight: 26,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  loadingText: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: palette.mutedForeground,
-    textAlign: "center",
-  },
-  emptyWrap: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 20,
-  },
-});

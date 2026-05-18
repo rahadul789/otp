@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useLocation } from "react-router-dom"
 
 import {
   mapOwnerVoucher,
@@ -15,7 +16,12 @@ export function PromotionsProvider({
 }) {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const setVouchers = useAppStore((state) => state.setVouchers)
-  const vouchersQuery = useOwnerVouchersQuery(ownerAccount.isAuthenticated)
+  const location = useLocation()
+  const shouldLoadVouchers =
+    location.pathname === "/" || location.pathname === "/analytics"
+  const vouchersQuery = useOwnerVouchersQuery(
+    ownerAccount.isAuthenticated && shouldLoadVouchers
+  )
 
   React.useEffect(() => {
     if (!vouchersQuery.data) return

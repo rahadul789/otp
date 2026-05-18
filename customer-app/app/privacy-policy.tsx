@@ -6,31 +6,34 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Screen } from "@/src/components/screen";
 import { palette } from "@/src/theme/palette";
 
-const policyItems = [
+const privacyItems = [
   {
     id: "location",
-    title: "Location access",
-    subtitle: "We use your delivery location to show nearby restaurants, calculate delivery distance, and help riders reach you correctly.",
+    title: "Delivery location",
+    body: "Used to show nearby restaurants, calculate distance, and guide delivery.",
     icon: "location-outline" as const,
-    tint: "#FFE8F0",
-    iconColor: palette.secondary,
+    tint: "#FFF1E8",
   },
   {
     id: "orders",
     title: "Order details",
-    subtitle: "Your order items, delivery notes, and payment choice are used to complete orders, support tracking, and order history.",
+    body: "Used for checkout, live tracking, receipts, refunds, and order history.",
     icon: "receipt-outline" as const,
-    tint: "#FFF2D8",
-    iconColor: palette.primary,
+    tint: "#EEF5FF",
   },
   {
     id: "account",
-    title: "Account information",
-    subtitle: "Your phone, name, email, and saved locations help with sign in, receipts, support, and faster checkout.",
+    title: "Account profile",
+    body: "Your phone number and name help with sign in, support, and delivery contact.",
     icon: "person-outline" as const,
-    tint: "#EAF2FF",
-    iconColor: palette.sky,
+    tint: "#FFF7D6",
   },
+];
+
+const controlItems = [
+  "You can update your name from Personal info.",
+  "You can update your delivery point from Profile.",
+  "You can send account requests from this app.",
 ];
 
 export default function PrivacyPolicyScreen() {
@@ -47,44 +50,95 @@ export default function PrivacyPolicyScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.topBar}>
-          <Pressable style={styles.backButton} onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={20} color={palette.foreground} />
+          <Pressable style={styles.iconButton} onPress={() => router.back()}>
+            <Ionicons
+              name="chevron-back"
+              size={20}
+              color={palette.foreground}
+            />
           </Pressable>
+          <Text style={styles.topTitle}>Privacy policy</Text>
+          <View style={styles.iconButtonGhost} />
         </View>
 
-        <View style={styles.hero}>
-          <View style={styles.heroGlowPrimary} />
-          <View style={styles.heroGlowSecondary} />
-          <Text style={styles.kicker}>Privacy</Text>
-          <Text style={styles.title}>Privacy policy</Text>
+        <View style={styles.headerPanel}>
+          <View style={styles.headerIcon}>
+            <Ionicons
+              name="shield-checkmark-outline"
+              size={25}
+              color={palette.secondary}
+            />
+          </View>
+          <Text style={styles.title}>Your data stays purposeful</Text>
           <Text style={styles.subtitle}>
-            A simple overview of how location, order, and account details are used inside the app.
+            Foodbela uses only the details needed to run ordering, delivery,
+            support, and account safety.
           </Text>
         </View>
 
         <View style={styles.section}>
-          {policyItems.map((item) => (
-            <View key={item.id} style={styles.policyCard}>
-              <View style={[styles.policyIconWrap, { backgroundColor: item.tint }]}>
-                <Ionicons name={item.icon} size={18} color={item.iconColor} />
+          <Text style={styles.sectionTitle}>Information we use</Text>
+          <View style={styles.list}>
+            {privacyItems.map((item, index) => (
+              <View
+                key={item.id}
+                style={[
+                  styles.infoRow,
+                  index === privacyItems.length - 1 ? styles.infoRowLast : null,
+                ]}
+              >
+                <View style={[styles.rowIcon, { backgroundColor: item.tint }]}>
+                  <Ionicons
+                    name={item.icon}
+                    size={18}
+                    color={palette.foreground}
+                  />
+                </View>
+                <View style={styles.rowCopy}>
+                  <Text style={styles.rowTitle}>{item.title}</Text>
+                  <Text style={styles.rowBody}>{item.body}</Text>
+                </View>
               </View>
-              <View style={styles.policyCopy}>
-                <Text style={styles.policyTitle}>{item.title}</Text>
-                <Text style={styles.policySubtitle}>{item.subtitle}</Text>
-              </View>
-            </View>
-          ))}
+            ))}
+          </View>
         </View>
 
-        <View style={styles.noteCard}>
-          <Text style={styles.noteTitle}>Need help with account privacy?</Text>
-          <Text style={styles.noteText}>
-            You can open support anytime if you want help with account changes, receipts, saved locations, or data-related questions.
-          </Text>
-          <Pressable style={styles.linkButton} onPress={() => router.push("/support")}>
-            <Text style={styles.linkButtonText}>Open support</Text>
-            <Ionicons name="arrow-forward" size={15} color={palette.foreground} />
-          </Pressable>
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Your control</Text>
+          <View style={styles.controlPanel}>
+            {controlItems.map((item) => (
+              <View key={item} style={styles.controlRow}>
+                <View style={styles.checkIcon}>
+                  <Ionicons name="checkmark" size={14} color="#fff" />
+                </View>
+                <Text style={styles.controlText}>{item}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.actionPanel}>
+          <View style={styles.actionCopy}>
+            <Text style={styles.actionTitle}>Need privacy help?</Text>
+            <Text style={styles.actionText}>
+              Support can help with account changes, delivery point, and
+              privacy questions.
+            </Text>
+          </View>
+          <View style={styles.actionRow}>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => router.push("/account-request")}
+            >
+              <Text style={styles.secondaryButtonText}>Requests</Text>
+            </Pressable>
+            <Pressable
+              style={styles.primaryButton}
+              onPress={() => router.push("/support")}
+            >
+              <Text style={styles.primaryButtonText}>Support</Text>
+            </Pressable>
+          </View>
         </View>
       </ScrollView>
     </Screen>
@@ -99,8 +153,15 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
   },
-  backButton: {
+  topTitle: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  iconButton: {
     width: 42,
     height: 42,
     borderRadius: 21,
@@ -110,120 +171,176 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  hero: {
-    overflow: "hidden",
-    borderRadius: 30,
+  iconButtonGhost: {
+    width: 42,
+    height: 42,
+  },
+  headerPanel: {
+    borderRadius: 28,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
-    padding: 22,
-    gap: 10,
+    padding: 20,
+    gap: 12,
+    shadowColor: palette.shadow,
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
   },
-  heroGlowPrimary: {
-    position: "absolute",
-    top: -26,
-    right: -16,
-    width: 128,
-    height: 128,
-    borderRadius: 64,
+  headerIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "#FFE7F1",
   },
-  heroGlowSecondary: {
-    position: "absolute",
-    bottom: -28,
-    left: -18,
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "#FFF0C8",
-  },
-  kicker: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    color: palette.secondary,
-  },
   title: {
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: "800",
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: "900",
     color: palette.foreground,
   },
   subtitle: {
     fontSize: 14,
     lineHeight: 22,
+    fontWeight: "500",
     color: palette.mutedForeground,
   },
   section: {
-    gap: 12,
+    gap: 10,
   },
-  policyCard: {
-    flexDirection: "row",
-    gap: 12,
-    borderRadius: 24,
+  sectionTitle: {
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  list: {
+    borderRadius: 26,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
-    padding: 14,
+    overflow: "hidden",
   },
-  policyIconWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  infoRow: {
+    flexDirection: "row",
+    gap: 12,
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: palette.border,
+  },
+  infoRowLast: {
+    borderBottomWidth: 0,
+  },
+  rowIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
   },
-  policyCopy: {
+  rowCopy: {
     flex: 1,
-    gap: 4,
+    gap: 3,
   },
-  policyTitle: {
-    fontSize: 15,
-    lineHeight: 20,
+  rowTitle: {
+    fontSize: 14,
+    lineHeight: 19,
     fontWeight: "800",
     color: palette.foreground,
   },
-  policySubtitle: {
+  rowBody: {
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
+    fontWeight: "500",
     color: palette.mutedForeground,
   },
-  noteCard: {
+  controlPanel: {
     borderRadius: 24,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
-    padding: 16,
-    gap: 8,
+    padding: 15,
+    gap: 12,
   },
-  noteTitle: {
-    fontSize: 15,
+  controlRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  checkIcon: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.mint,
+    marginTop: 1,
+  },
+  controlText: {
+    flex: 1,
+    fontSize: 13,
     lineHeight: 20,
+    fontWeight: "600",
+    color: palette.foreground,
+  },
+  actionPanel: {
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: "#FFF1E8",
+    padding: 16,
+    gap: 14,
+  },
+  actionCopy: {
+    gap: 4,
+  },
+  actionTitle: {
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  actionText: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "500",
+    color: palette.mutedForeground,
+  },
+  actionRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  secondaryButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryButtonText: {
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: "800",
     color: palette.foreground,
   },
-  noteText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: palette.mutedForeground,
-  },
-  linkButton: {
-    marginTop: 2,
-    alignSelf: "flex-start",
-    flexDirection: "row",
+  primaryButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 18,
+    backgroundColor: palette.secondary,
     alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    backgroundColor: palette.background,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    justifyContent: "center",
   },
-  linkButtonText: {
-    fontSize: 13,
+  primaryButtonText: {
+    fontSize: 14,
     lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
+    fontWeight: "800",
+    color: "#fff",
   },
 });

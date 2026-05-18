@@ -9,6 +9,7 @@ import {
   type GestureResponderEvent,
 } from "react-native";
 
+import { formatDurationMinutes } from "@/src/lib/date-time";
 import { formatDistanceValue } from "@/src/lib/distance";
 import { palette } from "@/src/theme/palette";
 
@@ -184,7 +185,11 @@ export function RestaurantHeroCard({
             <Metric icon="star" value={`${avgRating} (${reviewCount})`} compact={compact} />
           ) : null}
           {hasPreparationTime ? (
-            <Metric icon="time-outline" value={`${preparationTimeMinutes} min`} compact={compact} />
+            <Metric
+              icon="time-outline"
+              value={formatDurationMinutes(preparationTimeMinutes)}
+              compact={compact}
+            />
           ) : null}
           {hasDistance ? <Metric icon="navigate-outline" value={distanceLabel} compact={compact} /> : null}
         </View>

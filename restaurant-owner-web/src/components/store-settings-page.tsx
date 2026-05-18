@@ -55,6 +55,7 @@ import {
   sanitizeBangladeshPhoneInput,
 } from "@/lib/phone"
 import { formatTime12Hour } from "@/lib/time"
+import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import {
   mapOwnerPayoutMethod,
   mapOwnerStoreSettings,
@@ -137,6 +138,9 @@ function validateStoreSettings(settings: StoreSettings): StoreSettingsFormErrors
   const errors: StoreSettingsFormErrors = {}
 
   if (!settings.name.trim()) errors.name = "Restaurant name is required."
+  if (!isValidBangladeshPhone(settings.phone)) {
+    errors.phone = "Enter a valid 11-digit restaurant contact number."
+  }
   if (settings.orderSettings.preparationTimeMinutes <= 0) {
     errors.preparationTimeMinutes = "Preparation time must be greater than 0."
   }
@@ -523,6 +527,26 @@ export function StoreSettingsPage() {
               {errors.name ? (
                 <p className="text-sm text-destructive">{errors.name}</p>
               ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Restaurant Contact Number</label>
+              <Input
+                value={draft.phone}
+                onChange={(event) =>
+                  update("phone", sanitizeBangladeshPhoneInput(event.target.value))
+                }
+                inputMode="numeric"
+                maxLength={11}
+                placeholder={formatBangladeshPhonePlaceholder()}
+              />
+              {errors.phone ? (
+                <p className="text-sm text-destructive">{errors.phone}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Riders use this number for pickup and order-related contact. Owner login phone stays separate.
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -1017,6 +1041,7 @@ export function StoreSettingsPage() {
                   updateStoreSettingsMutation.mutate(
                       {
                         name: draft.name.trim(),
+                        phone: sanitizeBangladeshPhoneInput(draft.phone),
                         description: draft.description.trim(),
                         preparationTimeMinutes:
                           draft.orderSettings.preparationTimeMinutes,
@@ -1091,6 +1116,7 @@ export function StoreSettingsPage() {
                               nextMethod.accountNumber,
                             referenceId: payload.payoutMethod._id,
                             pendingPassword: "",
+                            resendAvailableInSeconds: resolveOtpResendSeconds(payload.resendAvailableInSeconds),
                           })
                           setVerificationModalOpen(true)
                           toast.info(

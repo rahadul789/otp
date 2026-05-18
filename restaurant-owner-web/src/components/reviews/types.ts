@@ -1,6 +1,15 @@
 export type ReviewSource = "App" | "Web"
 export type ReviewStatus = "new" | "replied" | "flagged"
-export type ReviewDatePreset = "today" | "last7Days" | "custom"
+export type ReviewDatePreset =
+  | "today"
+  | "yesterday"
+  | "last7Days"
+  | "last30Days"
+  | "last90Days"
+  | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
+  | "custom"
 
 export type ReviewUser = {
   name: string
@@ -171,4 +180,3 @@ export function getInitialReviews(): Review[] {
     },
   ]
 }
-

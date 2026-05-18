@@ -14,12 +14,10 @@ import {
   type AdminReportsPreset,
   type AdminReportsResponse,
 } from "@/lib/admin-api"
+import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
@@ -34,14 +32,6 @@ function formatNumber(value: number) {
 function formatDate(value?: string | null) {
   if (!value) return "N/A"
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value))
-}
-
-function todayInputValue(offsetDays = 0) {
-  const date = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
 }
 
 function MetricCard({
@@ -73,8 +63,8 @@ function MetricCard({
 
 export function ReportsPage() {
   const [preset, setPreset] = React.useState<AdminReportsPreset>("last30Days")
-  const [from, setFrom] = React.useState(todayInputValue(-29))
-  const [to, setTo] = React.useState(todayInputValue(0))
+  const [from, setFrom] = React.useState("")
+  const [to, setTo] = React.useState("")
 
   const reportsQuery = useQuery({
     queryKey: ["admin-reports", preset, from, to],
@@ -83,10 +73,17 @@ export function ReportsPage() {
 
   const data = reportsQuery.data
 
+  React.useEffect(() => {
+    if (preset !== "custom") {
+      setFrom("")
+      setTo("")
+    }
+  }, [preset])
+
   const resetFilters = () => {
     setPreset("last30Days")
-    setFrom(todayInputValue(-29))
-    setTo(todayInputValue(0))
+    setFrom("")
+    setTo("")
   }
 
   const exportCsv = () => {
@@ -98,6 +95,10 @@ export function ReportsPage() {
       ["overview", "averageOrderValue", data.overview.averageOrderValue],
       ["overview", "platformCommission", data.overview.platformCommission],
       ["overview", "restaurantPayable", data.overview.restaurantPayable],
+      ["overview", "platformDiscountCost", data.overview.platformDiscountCost],
+      ["overview", "riderPayrollExpense", data.overview.riderPayrollExpense],
+      ["overview", "platformOperatingExpense", data.overview.platformOperatingExpense],
+      ["overview", "estimatedPlatformMargin", data.overview.estimatedPlatformMargin],
       ["reconciliation", "difference", data.reconciliation.difference],
       ...data.sales.trend.map((point) => ["sales_trend", point.date, point.revenue]),
       ...data.sales.hourly.map((point) => ["hourly", point.label, point.revenue]),
@@ -142,32 +143,18 @@ export function ReportsPage() {
       </div>
 
       <Card>
-        <CardContent className="grid gap-3 pt-2 md:grid-cols-2 xl:grid-cols-[0.9fr_0.7fr_0.7fr_auto]">
-          <div className="space-y-2">
-            <Label>Timeframe</Label>
-            <Select value={preset} onValueChange={(value) => setPreset(value as AdminReportsPreset)}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="yesterday">Yesterday</SelectItem>
-                <SelectItem value="last7Days">Last 7 days</SelectItem>
-                <SelectItem value="last30Days">Last 30 days</SelectItem>
-                <SelectItem value="last90Days">Last 90 days</SelectItem>
-                <SelectItem value="thisMonth">This month</SelectItem>
-                <SelectItem value="lastMonth">Last month</SelectItem>
-                <SelectItem value="lifetime">Lifetime</SelectItem>
-                <SelectItem value="custom">Custom</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>From</Label>
-            <Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} disabled={preset !== "custom"} />
-          </div>
-          <div className="space-y-2">
-            <Label>To</Label>
-            <Input type="date" value={to} onChange={(event) => setTo(event.target.value)} disabled={preset !== "custom"} />
-          </div>
+        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(280px,1fr)_auto]">
+          <AdminDateRangeFilter<AdminReportsPreset>
+            value={preset}
+            from={from}
+            to={to}
+            label="Timeframe"
+            onPresetChange={setPreset}
+            onRangeChange={(range) => {
+              setFrom(range.from)
+              setTo(range.to)
+            }}
+          />
           <div className="flex items-end">
             <Badge variant="outline" className="h-10 px-3">
               {data
@@ -220,11 +207,16 @@ function ReportsContent({ data }: { data: AdminReportsResponse }) {
         <MetricCard label="New customers" value={formatNumber(data.overview.newCustomers)} helper={`${formatNumber(data.overview.totalCustomers)} total customers`} />
       </div>
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard
           label="Platform gross income"
           value={formatCurrency(data.overview.platformGrossIncome)}
           helper="Commission + delivery fee"
+        />
+        <MetricCard
+          label="Platform-funded voucher cost"
+          value={formatCurrency(data.overview.platformDiscountCost)}
+          helper="Referral rewards and platform-funded promos"
         />
         <MetricCard
           label="Rider payroll expense"
@@ -320,7 +312,8 @@ function ReportsContent({ data }: { data: AdminReportsResponse }) {
                 <AmountRow label="Commission base before discount" value={data.sales.ledger.commissionBase} />
                 <AmountRow label="Platform commission" value={data.sales.ledger.platformCommission} />
                 <AmountRow label="Restaurant payable" value={data.sales.ledger.restaurantPayable} />
-                <AmountRow label="Discount cost" value={data.sales.ledger.discountCost} />
+                <AmountRow label="Owner-funded discount cost" value={data.sales.ledger.discountCost} />
+                <AmountRow label="Platform-funded voucher cost" value={data.sales.ledger.platformDiscountCost} />
                 <AmountRow label="Available payout" value={data.sales.ledger.available} />
                 <AmountRow label="Pending payout" value={data.sales.ledger.pending} />
                 <AmountRow label="Paid out" value={data.sales.ledger.paidOut} />
@@ -402,9 +395,13 @@ function ReportsContent({ data }: { data: AdminReportsResponse }) {
               <AmountRow label="Platform commission" value={data.sales.platformMargin.platformCommission} />
               <AmountRow label="Delivery fees" value={data.sales.platformMargin.deliveryFees} />
               <AmountRow label="Platform gross income" value={data.sales.platformMargin.platformGrossIncome} />
-              <AmountRow label="Platform promo expense" value={data.sales.platformMargin.platformDiscountCost} />
+              <AmountRow label="Platform-funded voucher/referral expense" value={data.sales.platformMargin.platformDiscountCost} />
               <AmountRow label="Rider payroll expense" value={data.sales.platformMargin.riderPayrollExpense} />
+              <AmountRow label="Total operating expense" value={data.sales.platformMargin.platformOperatingExpense} />
               <AmountRow label="Estimated platform margin" value={data.sales.platformMargin.estimatedPlatformMargin} />
+              <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                Platform-funded vouchers include referral reward vouchers and admin promos funded by Foodbela. These do not reduce restaurant payout.
+              </div>
             </CardContent>
           </Card>
           <Card>

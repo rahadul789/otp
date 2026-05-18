@@ -8,10 +8,16 @@ export const customerAnalyticsEventTypes = [
   "cart_add",
   "cart_view",
   "checkout_start",
+  "payment_initiated",
+  "payment_completed",
+  "payment_failed",
+  "payment_cancelled",
   "signup_started",
   "signup_completed",
   "order_created",
   "search",
+  "campaign_open",
+  "voucher_applied",
   "custom",
 ] as const;
 
@@ -38,8 +44,19 @@ type TrackCustomerEventInput = {
 };
 
 const anonymousIdStorageKey = "customer-app:analytics:anonymous-id";
+const attributionStorageKey = "customer-app:analytics:last-attribution";
 const sessionId = buildId("session");
 let anonymousIdPromise: Promise<string> | null = null;
+
+export type CustomerAnalyticsAttribution = {
+  source?: string;
+  medium?: string;
+  campaignId?: string;
+  voucherId?: string;
+  referrer?: string;
+  path?: string;
+  capturedAt?: string;
+};
 
 function buildId(prefix: string) {
   const cryptoObject = globalThis.crypto as
@@ -79,12 +96,59 @@ async function getAnonymousId() {
   return anonymousIdPromise;
 }
 
+function hasAttributionValue(input: CustomerAnalyticsAttribution) {
+  return Boolean(
+    input.source ||
+      input.medium ||
+      input.campaignId ||
+      input.voucherId ||
+      input.referrer,
+  );
+}
+
+async function getRememberedAttribution() {
+  try {
+    const rawValue = await secureStateStorage.getItem(attributionStorageKey);
+    if (!rawValue) return null;
+    const parsed = JSON.parse(rawValue) as CustomerAnalyticsAttribution;
+    return hasAttributionValue(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function rememberCustomerAttribution(
+  input: CustomerAnalyticsAttribution,
+) {
+  if (!hasAttributionValue(input)) return;
+
+  try {
+    await secureStateStorage.setItem(
+      attributionStorageKey,
+      JSON.stringify({
+        ...input,
+        capturedAt: input.capturedAt ?? new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // Attribution is helpful for analytics, but it must never interrupt the app.
+  }
+}
+
 export async function trackCustomerEvent(input: TrackCustomerEventInput) {
   try {
     const anonymousId = await getAnonymousId();
+    const attribution = await getRememberedAttribution();
+    const metadata = attribution
+      ? {
+          attribution,
+          ...(input.metadata ?? {}),
+        }
+      : input.metadata;
 
     await apiPost("/customer/analytics/events", {
       ...input,
+      metadata,
       anonymousId,
       sessionId,
       sourceApp: "customer-app",

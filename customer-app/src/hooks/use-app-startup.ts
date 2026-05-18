@@ -1,28 +1,15 @@
 import * as Location from "expo-location";
 import { useEffect, useRef } from "react";
 
+import {
+  buildCustomerAddressFromGeocode,
+  buildCustomerLabelFromGeocode,
+} from "@/src/lib/location-address";
 import { useLocationStore } from "@/src/store/location-store";
-
-function buildAddress(
-  address?: Partial<Location.LocationGeocodedAddress> | null
-) {
-  if (!address) return "Netrokona service area";
-
-  return (
-    [
-      address.name,
-      address.street,
-      address.district,
-      address.city,
-      address.region,
-    ]
-      .filter(Boolean)
-      .join(", ") || "Netrokona service area"
-  );
-}
 
 export function useAppStartup() {
   const hasStartedRef = useRef(false);
+  const isLocationHydrated = useLocationStore((state) => state.isHydrated);
   const setStartupStatus = useLocationStore((state) => state.setStartupStatus);
   const setPermissionGranted = useLocationStore(
     (state) => state.setPermissionGranted
@@ -33,28 +20,73 @@ export function useAppStartup() {
   const setSelectedLocation = useLocationStore(
     (state) => state.setSelectedLocation
   );
-  const upsertSavedLocation = useLocationStore((state) => state.upsertSavedLocation);
 
   useEffect(() => {
+    if (!isLocationHydrated) return;
     if (hasStartedRef.current) return;
     hasStartedRef.current = true;
+    let isMounted = true;
+
+    const clearStaleGpsLocation = () => {
+      const state = useLocationStore.getState();
+      const selectedLocation = state.selectedLocation;
+      setCurrentCoordinates(null);
+      if (selectedLocation?.source === "gps") {
+        const fallbackLocation =
+          state.savedLocations.find((location) => location.source !== "gps") ??
+          null;
+        setSelectedLocation(fallbackLocation);
+        return fallbackLocation;
+      }
+      return selectedLocation;
+    };
 
     async function bootstrapLocation() {
-      setStartupStatus("loading_location");
-
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        setPermissionGranted(false);
-        setStartupStatus("permission_denied");
-        return;
-      }
-
-      setPermissionGranted(true);
-
       try {
+        setStartupStatus("loading_location");
+
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (!isMounted) return;
+
+        if (status !== "granted") {
+          setPermissionGranted(false);
+          const selectedLocation = clearStaleGpsLocation();
+          setStartupStatus(selectedLocation ? "ready" : "permission_denied");
+          return;
+        }
+
+        setPermissionGranted(true);
+
+        const lastKnownPosition = await Location.getLastKnownPositionAsync({
+          maxAge: 5 * 60 * 1000,
+          requiredAccuracy: 1500,
+        });
+
+        if (lastKnownPosition && isMounted) {
+          const coords = {
+            latitude: lastKnownPosition.coords.latitude,
+            longitude: lastKnownPosition.coords.longitude,
+          };
+          setCurrentCoordinates(coords);
+
+          const selectedLocation = useLocationStore.getState().selectedLocation;
+          if (!selectedLocation || selectedLocation.source === "gps") {
+            setSelectedLocation({
+              id: "current-location",
+              label: "Current location",
+              address: "Current precise location",
+              latitude: coords.latitude,
+              longitude: coords.longitude,
+              source: "gps" as const,
+            });
+          }
+          setStartupStatus("ready");
+        }
+
         const position = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         });
+        if (!isMounted) return;
 
         const coords = {
           latitude: position.coords.latitude,
@@ -67,9 +99,14 @@ export function useAppStartup() {
 
         try {
           const reverse = await Location.reverseGeocodeAsync(coords);
+          if (!isMounted) return;
+
           const first = reverse[0];
-          addressText = buildAddress(first);
-          addressLabel = first?.name || "Current location";
+          addressText = buildCustomerAddressFromGeocode(
+            first,
+            "Netrokona service area",
+          );
+          addressLabel = buildCustomerLabelFromGeocode(first, "Current location");
         } catch {
           addressText = "Current precise location";
         }
@@ -83,20 +120,31 @@ export function useAppStartup() {
           source: "gps" as const,
         };
 
-        setSelectedLocation(location);
-        upsertSavedLocation(location);
+        const selectedLocation = useLocationStore.getState().selectedLocation;
+        if (!selectedLocation || selectedLocation.source === "gps") {
+          setSelectedLocation(location);
+        }
         setStartupStatus("ready");
       } catch {
-        setStartupStatus("location_unavailable");
+        if (!isMounted) return;
+
+        const selectedLocation = clearStaleGpsLocation();
+        setStartupStatus(
+          selectedLocation ? "ready" : "location_unavailable",
+        );
       }
     }
 
-    bootstrapLocation();
+    void bootstrapLocation();
+
+    return () => {
+      isMounted = false;
+    };
   }, [
+    isLocationHydrated,
     setCurrentCoordinates,
     setPermissionGranted,
     setSelectedLocation,
     setStartupStatus,
-    upsertSavedLocation,
   ]);
 }

@@ -145,6 +145,9 @@ export function OrderDetailsDialog({
               icon: PackageCheck,
             }
           : null
+  const canCancelOrder =
+    currentOrder.currentStatus === "Accepted" ||
+    currentOrder.currentStatus === "Preparing"
   const autoCancelRemainingSeconds =
     currentOrder.autoCancel?.applies && currentOrder.autoCancel.autoCancelAt
       ? Math.max(
@@ -164,7 +167,7 @@ export function OrderDetailsDialog({
       <html>
         <head><title>${currentOrder.orderNumber}</title></head>
         <body style="font-family: Arial, sans-serif; padding: 24px;">
-          <h2>Foodex - Meet Point</h2>
+          <h2>Foodbela - Meet Point</h2>
           <p><strong>Order:</strong> ${currentOrder.orderNumber}</p>
           <p><strong>Customer:</strong> ${currentOrder.customer.name}</p>
           <p><strong>Phone:</strong> ${currentOrder.customer.phone}</p>
@@ -523,6 +526,20 @@ export function OrderDetailsDialog({
                   <Ban className="size-4" />
                 )}
                 {isRejectPending ? "Rejecting..." : "Reject Order"}
+              </Button>
+            ) : null}
+            {canCancelOrder ? (
+              <Button
+                variant="outline"
+                onClick={() => onUpdateStatus(currentOrder.id, "Cancelled")}
+                disabled={isStatusPending || isRejectPending}
+              >
+                {isStatusPending ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : (
+                  <Ban className="size-4" />
+                )}
+                {isStatusPending ? "Cancelling..." : "Cancel Order"}
               </Button>
             ) : null}
             {primaryAction ? (

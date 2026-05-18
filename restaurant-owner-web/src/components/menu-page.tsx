@@ -124,7 +124,7 @@ function getStatusBadge(status: MenuItemStatus) {
         variant="outline"
         className="border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
       >
-        Hidden
+        Inactive
       </Badge>
     )
   }
@@ -395,7 +395,12 @@ export function MenuPage() {
 
   const menuItemsQuery = useOwnerMenuItemsQuery(ownerAccount.isAuthenticated, {
     search: debouncedSearch.trim() || undefined,
-    status: statusFilter !== "all" ? statusFilter : undefined,
+    availability:
+      statusFilter === "Active"
+        ? "available"
+        : statusFilter === "Hidden"
+          ? "unavailable"
+          : undefined,
     categoryId: categoryFilter !== "all" ? categoryFilter : undefined,
     popularFilter: popularFilter !== "all" ? popularFilter : undefined,
     sortBy,
@@ -506,8 +511,8 @@ export function MenuPage() {
       categoryId: payload.categoryId,
       name: payload.name,
       description: payload.description,
-      status: payload.status === "Active" ? "active" : "archived",
-      availability: "available",
+      status: "active",
+      availability: payload.status === "Active" ? "available" : "unavailable",
       kind: hasVariants ? "variant" : "simple",
       basePrice,
       variants,
@@ -582,7 +587,7 @@ export function MenuPage() {
     updateMenuItemMutation.mutate(
       {
         id,
-        status: checked ? "active" : "archived",
+        availability: checked ? "available" : "unavailable",
       },
       {
         onSuccess: () =>
@@ -618,7 +623,7 @@ export function MenuPage() {
         updateMenuItemMutation.mutate(
           {
             id,
-            status: action === "activate" ? "active" : "archived",
+            availability: action === "activate" ? "available" : "unavailable",
           },
           {
             onSuccess: () =>
@@ -740,7 +745,7 @@ export function MenuPage() {
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="Active">Active</SelectItem>
-                <SelectItem value="Hidden">Hidden</SelectItem>
+                <SelectItem value="Hidden">Inactive</SelectItem>
               </SelectContent>
             </Select>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>

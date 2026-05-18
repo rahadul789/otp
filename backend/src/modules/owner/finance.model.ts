@@ -30,6 +30,9 @@ const ledgerEntrySchema = new Schema(
 )
 
 ledgerEntrySchema.index({ restaurantId: 1, settlementStatus: 1, createdAt: -1 })
+ledgerEntrySchema.index({ restaurantId: 1, entryType: 1, orderId: 1 })
+ledgerEntrySchema.index({ restaurantId: 1, entryType: 1, settlementStatus: 1, availableAt: 1 })
+ledgerEntrySchema.index({ restaurantId: 1, entryType: 1, createdAt: -1 })
 
 const payoutBatchSchema = new Schema(
   {
@@ -42,6 +45,19 @@ const payoutBatchSchema = new Schema(
       default: "pending"
     },
     batchReference: { type: String, default: "" },
+    provider: {
+      type: String,
+      enum: ["manual", "bkash", "bank"],
+      default: "manual"
+    },
+    providerReference: { type: String, default: "" },
+    providerPayoutId: { type: String, default: "" },
+    providerTransactionId: { type: String, default: "" },
+    paymentProofUrl: { type: String, default: "" },
+    processingNote: { type: String, default: "" },
+    approvedByAdminId: { type: String, default: "" },
+    approvedAt: { type: Date, default: null },
+    processedByAdminId: { type: String, default: "" },
     failureReason: { type: String, default: "" },
     requestedAt: { type: Date, required: true },
     processedAt: { type: Date, default: null }
@@ -50,6 +66,7 @@ const payoutBatchSchema = new Schema(
 )
 
 payoutBatchSchema.index({ restaurantId: 1, createdAt: -1 })
+payoutBatchSchema.index({ restaurantId: 1, status: 1, createdAt: -1 })
 
 const restaurantMetricsSchema = new Schema(
   {

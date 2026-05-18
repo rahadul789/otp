@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# local/dev state
+.expo/
+.env
+.env*.local
+
+# generated/native build output
+android/
+ios/
+dist/
+web-build/
+
+# credentials and server-only secrets
+*-firebase-adminsdk-*.json
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem

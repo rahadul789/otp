@@ -1,10 +1,15 @@
 import * as React from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 import { format } from "date-fns"
 import {
+  AlertTriangle,
   Ban,
   CalendarClock,
-  CalendarIcon,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -40,9 +45,9 @@ import {
   type AdminRestaurantOrderDateFilterPreset,
   type AdminRiderAssignmentOption,
 } from "@/lib/admin-api"
+import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
 import {
   Card,
   CardContent,
@@ -69,11 +74,6 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
@@ -117,10 +117,19 @@ type PaymentStatusFilter =
   | "refund_pending"
   | "refunded"
 type AssignmentFilter = "all" | "assigned" | "unassigned" | "stale"
+type AttentionFilter = "all" | "riderDelay"
 type OrderSort = "newest" | "oldest" | "highestValue" | "recentlyUpdated"
 type OrderPreset = Extract<
   AdminRestaurantOrderDateFilterPreset,
-  "today" | "last7Days" | "last30Days" | "thisMonth" | "custom"
+  | "today"
+  | "yesterday"
+  | "last7Days"
+  | "last30Days"
+  | "last90Days"
+  | "thisMonth"
+  | "lastMonth"
+  | "lifetime"
+  | "custom"
 >
 type AdminOrderNextStatus =
   | "Accepted"
@@ -179,23 +188,6 @@ function formatDate(value?: string | null) {
   return date.toLocaleString()
 }
 
-function parseDateValue(value: string) {
-  if (!value) return undefined
-  const [year, month, day] = value.split("-").map(Number)
-  if (!year || !month || !day) return undefined
-  const date = new Date(year, month - 1, day)
-  return Number.isNaN(date.getTime()) ? undefined : date
-}
-
-function formatDateValue(date: Date) {
-  return format(date, "yyyy-MM-dd")
-}
-
-function getDateButtonLabel(value: string, fallback: string) {
-  const date = parseDateValue(value)
-  return date ? format(date, "MMM d, yyyy") : fallback
-}
-
 function formatCurrency(value: number) {
   return `Tk ${Math.round(Number.isFinite(value) ? value : 0).toLocaleString()}`
 }
@@ -238,6 +230,16 @@ function getPaymentBadgeClass(status: string) {
   if (status === "refund_pending")
     return "border-amber-200 bg-amber-50 text-amber-700"
   return ""
+}
+
+function getLateBadgeClass(order: Pick<AdminOrderListItem, "lateTone">) {
+  return order.lateTone === "critical"
+    ? "border-rose-200 bg-rose-50 text-rose-700"
+    : "border-amber-200 bg-amber-50 text-amber-700"
+}
+
+function isRiderDelayedOrder(order: AdminOrderListItem) {
+  return order.isLate && ["ReadyForPickup", "PickedUp"].includes(order.status)
 }
 
 function isRefundCandidate(order: {
@@ -355,40 +357,6 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="text-muted-foreground">{label}</span>
       <span className="max-w-72 text-right font-medium">{value}</span>
     </div>
-  )
-}
-
-function DatePickerButton({
-  label,
-  value,
-  onChange,
-}: {
-  label: string
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          className="w-full justify-start font-normal sm:w-44"
-        >
-          <CalendarIcon className="size-4 text-muted-foreground" />
-          {getDateButtonLabel(value, label)}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-auto p-0">
-        <Calendar
-          mode="single"
-          selected={parseDateValue(value)}
-          onSelect={(date) => {
-            if (date) onChange(formatDateValue(date))
-          }}
-        />
-      </PopoverContent>
-    </Popover>
   )
 }
 
@@ -1327,10 +1295,12 @@ export function OrdersPage() {
   const [paymentStatus, setPaymentStatus] =
     React.useState<PaymentStatusFilter>("all")
   const [assignment, setAssignment] = React.useState<AssignmentFilter>("all")
+  const [attention, setAttention] = React.useState<AttentionFilter>("all")
   const [sortBy, setSortBy] = React.useState<OrderSort>("newest")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(10)
   const [selectedOrderId, setSelectedOrderId] = React.useState("")
+  const [delayedDrawerOpen, setDelayedDrawerOpen] = React.useState(false)
   const [statusTarget, setStatusTarget] = React.useState<null | {
     order: OrderTarget
     nextStatus: AdminOrderNextStatus
@@ -1359,10 +1329,12 @@ export function OrdersPage() {
       paymentMethod,
       paymentStatus,
       assignment,
+      attention,
       sortBy,
       page,
       pageSize,
     ],
+    enabled: preset !== "custom" || (Boolean(from) && Boolean(to)),
     queryFn: () =>
       listAdminOrders({
         search: debouncedSearch,
@@ -1373,14 +1345,26 @@ export function OrdersPage() {
         paymentMethod,
         paymentStatus,
         assignment,
+        attention,
         sortBy,
         page,
         pageSize,
       }),
+    placeholderData: keepPreviousData,
+    staleTime: 15_000,
   })
 
-  const orders = ordersQuery.data?.items ?? []
+  const orders = React.useMemo(
+    () => ordersQuery.data?.items ?? [],
+    [ordersQuery.data?.items]
+  )
   const summary = ordersQuery.data?.summary ?? {}
+  const delayedRiderOrders = React.useMemo(
+    () => orders.filter(isRiderDelayedOrder),
+    [orders]
+  )
+  const delayedDrawerOrders =
+    attention === "riderDelay" ? orders : delayedRiderOrders
   const totalOrders = ordersQuery.data?.total ?? 0
   const pageCount = ordersQuery.data?.pageCount ?? 1
   const safePage = Math.min(page, pageCount)
@@ -1396,6 +1380,7 @@ export function OrdersPage() {
     paymentMethod !== "all" ||
     paymentStatus !== "all" ||
     assignment !== "all" ||
+    attention !== "all" ||
     sortBy !== "newest"
 
   React.useEffect(() => {
@@ -1414,6 +1399,7 @@ export function OrdersPage() {
     paymentMethod,
     paymentStatus,
     assignment,
+    attention,
     sortBy,
     pageSize,
   ])
@@ -1440,8 +1426,18 @@ export function OrdersPage() {
     setPaymentMethod("all")
     setPaymentStatus("all")
     setAssignment("all")
+    setAttention("all")
     setSortBy("newest")
     setPage(1)
+  }
+
+  function showDelayedRiderOrders() {
+    setStatus("live")
+    setAssignment("all")
+    setAttention("riderDelay")
+    setSortBy("recentlyUpdated")
+    setPage(1)
+    setDelayedDrawerOpen(true)
   }
 
   function exportOrdersCsv() {
@@ -1501,7 +1497,7 @@ export function OrdersPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <StatCard
           label="Filtered orders"
           value={`${summary.total ?? ordersQuery.data?.total ?? 0}`}
@@ -1523,6 +1519,11 @@ export function OrdersPage() {
           helper="Needs rider assignment"
         />
         <StatCard
+          label="Rider delays"
+          value={`${summary.delayedRiderOrders ?? delayedRiderOrders.length}`}
+          helper="Pickup/trip attention"
+        />
+        <StatCard
           label="Refund queue"
           value={`${summary.refundPending ?? 0}`}
           helper="Paid cancelled orders"
@@ -1539,6 +1540,23 @@ export function OrdersPage() {
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant={attention === "riderDelay" ? "default" : "outline"}
+                onClick={showDelayedRiderOrders}
+                className="w-full sm:w-auto"
+              >
+                <AlertTriangle className="size-4" />
+                Delayed riders
+                {(summary.delayedRiderOrders ?? delayedRiderOrders.length) > 0 ? (
+                  <Badge
+                    variant="secondary"
+                    className="ml-1 rounded-full bg-white/20 px-1.5 text-[10px]"
+                  >
+                    {summary.delayedRiderOrders ?? delayedRiderOrders.length}
+                  </Badge>
+                ) : null}
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -1591,21 +1609,18 @@ export function OrdersPage() {
                     className="pl-8"
                   />
                 </div>
-                <Select
+                <AdminDateRangeFilter<OrderPreset>
                   value={preset}
-                  onValueChange={(value) => setPreset(value as OrderPreset)}
-                >
-                  <SelectTrigger className="w-full sm:w-40">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="today">Today</SelectItem>
-                    <SelectItem value="last7Days">Last 7 days</SelectItem>
-                    <SelectItem value="last30Days">Last 30 days</SelectItem>
-                    <SelectItem value="thisMonth">This month</SelectItem>
-                    <SelectItem value="custom">Custom</SelectItem>
-                  </SelectContent>
-                </Select>
+                  from={from}
+                  to={to}
+                  label="Date"
+                  triggerClassName="sm:w-44"
+                  onPresetChange={setPreset}
+                  onRangeChange={(range) => {
+                    setFrom(range.from)
+                    setTo(range.to)
+                  }}
+                />
                 <Select
                   value={status}
                   onValueChange={(value) =>
@@ -1703,32 +1718,6 @@ export function OrdersPage() {
                   Reset filter
                 </Button>
               </div>
-              {preset === "custom" ? (
-                <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-                  <DatePickerButton
-                    label="From date"
-                    value={from}
-                    onChange={setFrom}
-                  />
-                  <DatePickerButton
-                    label="To date"
-                    value={to}
-                    onChange={setTo}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    disabled={!from && !to}
-                    onClick={() => {
-                      setFrom("")
-                      setTo("")
-                    }}
-                    className="w-full sm:w-auto"
-                  >
-                    Clear dates
-                  </Button>
-                </div>
-              ) : null}
             </div>
           </div>
 
@@ -1797,11 +1786,7 @@ export function OrdersPage() {
                           {order.isLate ? (
                             <Badge
                               variant="outline"
-                              className={
-                                order.lateTone === "critical"
-                                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                                  : "border-amber-200 bg-amber-50 text-amber-700"
-                              }
+                              className={getLateBadgeClass(order)}
                             >
                               {order.lateReason}
                             </Badge>
@@ -1971,6 +1956,117 @@ export function OrdersPage() {
           </div>
         </div>
       </div>
+
+      <Sheet open={delayedDrawerOpen} onOpenChange={setDelayedDrawerOpen}>
+        <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
+          <SheetHeader className="border-b px-6 py-5">
+            <SheetTitle className="flex items-center gap-2">
+              <AlertTriangle className="size-5 text-rose-600" />
+              Delayed rider orders
+            </SheetTitle>
+            <SheetDescription>
+              Pickup, assignment, stale tracking, and delivery delay signals.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="border-b bg-muted/30 px-6 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className="rounded-full">
+                {totalOrders} matching
+              </Badge>
+              <Badge variant="outline" className="rounded-full border-rose-200 bg-rose-50 text-rose-700">
+                {summary.delayedRiderOrders ?? delayedDrawerOrders.length} delayed
+              </Badge>
+              {attention === "riderDelay" ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setAttention("all")
+                    setDelayedDrawerOpen(false)
+                  }}
+                >
+                  Clear delayed filter
+                </Button>
+              ) : null}
+            </div>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="space-y-3 p-4">
+              {ordersQuery.isPending ? (
+                <div className="flex h-40 items-center justify-center">
+                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : delayedDrawerOrders.length ? (
+                delayedDrawerOrders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="rounded-2xl border bg-card p-4 shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold">{order.orderNumber}</div>
+                        <div className="mt-1 truncate text-sm text-muted-foreground">
+                          {order.restaurantName} to {order.customerName}
+                        </div>
+                      </div>
+                      <Badge variant="outline" className={getLateBadgeClass(order)}>
+                        {order.lateReason || "Delayed"}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                      <div>
+                        <span className="font-medium text-foreground">Status:</span>{" "}
+                        {order.status}
+                      </div>
+                      <div>
+                        <span className="font-medium text-foreground">Late:</span>{" "}
+                        {formatMinutesLabel(order.lateMinutes)}
+                      </div>
+                      <div>
+                        <span className="font-medium text-foreground">Rider:</span>{" "}
+                        {order.riderName || "Not assigned"}
+                      </div>
+                      <div>
+                        <span className="font-medium text-foreground">Tracking:</span>{" "}
+                        {order.riderTracking?.freshness?.state ?? "N/A"}
+                      </div>
+                    </div>
+                    <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      {order.status === "ReadyForPickup" ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setAssignTarget(toOrderTarget(order))}
+                        >
+                          <Truck className="size-4" />
+                          {order.riderId ? "Reassign" : "Assign"}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => {
+                          setSelectedOrderId(order.id)
+                          setDelayedDrawerOpen(false)
+                        }}
+                      >
+                        <Eye className="size-4" />
+                        Details
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                  No rider delay found for the current filters.
+                </div>
+              )}
+            </div>
+          </ScrollArea>
+        </SheetContent>
+      </Sheet>
 
       <OrderStatusDialog
         target={statusTarget}

@@ -6,6 +6,7 @@ import {
   LifeBuoy,
   LayoutDashboard,
   Percent,
+  Settings,
   ShoppingBag,
   Star,
   Tags,
@@ -26,7 +27,7 @@ export type NavigationGroup = {
 }
 
 export const restaurantProfile = {
-  companyName: "Foodex",
+  companyName: "Foodbela",
   name: "Meet Point",
   subtitle: "Eat & Smile",
 }
@@ -99,6 +100,11 @@ export const sidebarGroups: NavigationGroup[] = [
   {
     label: "Settings",
     items: [
+      {
+        title: "Store Settings",
+        to: "/settings",
+        icon: Settings,
+      },
       {
         title: "Notifications",
         to: "/notifications",

@@ -12,6 +12,41 @@ import {
 import { useNetworkStatus } from "@/src/hooks/use-network-status";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 
+function logRiderPushDebug(message: string, details?: unknown) {
+  if (!__DEV__) return;
+
+  if (details !== undefined) {
+    console.log(message, details);
+    return;
+  }
+
+  console.log(message);
+}
+
+function resolveNotificationPath(path?: unknown) {
+  if (typeof path !== "string" || !path.startsWith("/")) {
+    return "/(app)/available";
+  }
+
+  const allowedStaticPaths = new Set([
+    "/(app)/available",
+    "/(app)/active",
+    "/(app)/history",
+    "/(app)/profile",
+  ]);
+
+  if (allowedStaticPaths.has(path)) {
+    return path;
+  }
+
+  const orderMatch = path.match(/^\/orders\/([A-Za-z0-9_-]{6,80})$/);
+  if (orderMatch) {
+    return path;
+  }
+
+  return "/(app)/available";
+}
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
@@ -33,7 +68,7 @@ async function getExpoProjectId() {
 
 async function registerForPushNotificationsAsync() {
   if (!Device.isDevice) {
-    console.log("[rider-push] Physical device not available for push registration.");
+    logRiderPushDebug("[rider-push] Physical device not available for push registration.");
     return null;
   }
 
@@ -55,7 +90,7 @@ async function registerForPushNotificationsAsync() {
   }
 
   if (finalStatus !== "granted") {
-    console.log("[rider-push] Notification permission not granted.");
+    logRiderPushDebug("[rider-push] Notification permission not granted.");
     return null;
   }
 
@@ -65,10 +100,10 @@ async function registerForPushNotificationsAsync() {
     const token = await Notifications.getExpoPushTokenAsync(
       projectId ? { projectId } : undefined
     );
-    console.log("[rider-push] Expo push token acquired.", token.data);
+    logRiderPushDebug("[rider-push] Expo push token acquired.");
     return token.data;
   } catch (error) {
-    console.log("[rider-push] Failed to get Expo push token.", error);
+    logRiderPushDebug("[rider-push] Failed to get Expo push token.", error);
     return null;
   }
 }
@@ -83,18 +118,13 @@ export function RiderPushBridge({ children }: PropsWithChildren) {
 
   useEffect(() => {
     void Notifications.setAutoServerRegistrationEnabledAsync(false).catch((error) => {
-      console.log("[rider-push] Failed to disable Expo auto server registration.", error);
+      logRiderPushDebug("[rider-push] Failed to disable Expo auto server registration.", error);
     });
   }, []);
 
   useEffect(() => {
     const openPath = (path?: unknown) => {
-      if (typeof path === "string" && path) {
-        router.replace(path as never);
-        return;
-      }
-
-      router.replace("/(app)/available");
+      router.replace(resolveNotificationPath(path) as never);
     };
 
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(
@@ -127,7 +157,7 @@ export function RiderPushBridge({ children }: PropsWithChildren) {
     }
 
     if (!isOnline) {
-      console.log("[rider-push] Device appears offline. Push registration skipped for now.");
+      logRiderPushDebug("[rider-push] Device appears offline. Push registration skipped for now.");
       return;
     }
 
@@ -136,7 +166,7 @@ export function RiderPushBridge({ children }: PropsWithChildren) {
 
       if (!expoPushToken || tokenRef.current === expoPushToken) {
         if (!expoPushToken) {
-          console.log("[rider-push] Push token unavailable. Registration skipped.");
+          logRiderPushDebug("[rider-push] Push token unavailable. Registration skipped.");
         }
         return;
       }
@@ -149,11 +179,11 @@ export function RiderPushBridge({ children }: PropsWithChildren) {
       });
 
       tokenRef.current = expoPushToken;
-      console.log("[rider-push] Push token registered with backend.");
+      logRiderPushDebug("[rider-push] Push token registered with backend.");
     };
 
     void run().catch((error) => {
-      console.log("[rider-push] Push registration failed.", error);
+      logRiderPushDebug("[rider-push] Push registration failed.", error);
     });
   }, [isOnline, registerMutation, rider?.id, unregisterMutation]);
 

@@ -40,6 +40,8 @@ import {
 } from "react-router-dom"
 
 import { AppSidebar } from "@/components/app-sidebar"
+import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
+import { DataActivityIndicator } from "@/components/data-activity-indicator"
 import { useTheme } from "@/components/theme-provider"
 import { useAdminSocketBridge } from "@/hooks/use-admin-socket"
 import { Badge } from "@/components/ui/badge"
@@ -61,15 +63,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Sheet,
   SheetContent,
@@ -96,11 +90,11 @@ import {
 } from "@/lib/admin-api"
 import {
   clearAdminSession,
+  ADMIN_SESSION_EXPIRED_EVENT,
   getAdminProfile,
-  getAdminRefreshToken,
   type AdminProfile,
 } from "@/lib/admin-session"
-import { adminRouteTitleByPath } from "@/lib/navigation"
+import { adminRouteTitleByPath, adminSidebarGroups } from "@/lib/navigation"
 import { useAdminRefreshPolicy } from "@/lib/refresh-policy"
 import { cn } from "@/lib/utils"
 
@@ -147,6 +141,8 @@ type ModuleConfig = {
 }
 
 const AdminAuthContext = React.createContext<AdminAuthContextValue | null>(null)
+const NAV_NOTIFICATION_INITIAL_LIMIT = 15
+const NAV_NOTIFICATION_LOAD_STEP = 15
 const RestaurantsPage = React.lazy(() =>
   import("@/components/restaurants-page").then((module) => ({
     default: module.RestaurantsPage,
@@ -207,6 +203,16 @@ const ReportsPage = React.lazy(() =>
     default: module.ReportsPage,
   }))
 )
+const CustomerAnalyticsPage = React.lazy(() =>
+  import("@/components/customer-analytics-page").then((module) => ({
+    default: module.CustomerAnalyticsPage,
+  }))
+)
+const ReferralsPage = React.lazy(() =>
+  import("@/components/referrals-page").then((module) => ({
+    default: module.ReferralsPage,
+  }))
+)
 const SettingsPage = React.lazy(() =>
   import("@/components/settings-page").then((module) => ({
     default: module.SettingsPage,
@@ -215,6 +221,11 @@ const SettingsPage = React.lazy(() =>
 const NotificationsPage = React.lazy(() =>
   import("@/components/notifications-page").then((module) => ({
     default: module.NotificationsPage,
+  }))
+)
+const SessionsPage = React.lazy(() =>
+  import("@/components/sessions-page").then((module) => ({
+    default: module.SessionsPage,
   }))
 )
 const OperationsHealthPage = React.lazy(() =>
@@ -612,15 +623,6 @@ function formatDashboardNumber(value?: number) {
   return Math.round(value || 0).toLocaleString()
 }
 
-function dashboardDateInput(offsetDays = 0) {
-  const date = new Date()
-  date.setDate(date.getDate() + offsetDays)
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
-  return `${year}-${month}-${day}`
-}
-
 function formatDashboardDate(value?: string) {
   if (!value) return "N/A"
   const date = new Date(value)
@@ -696,12 +698,8 @@ function AdminAuthProvider({ children }: { children: React.ReactNode }) {
   )
 
   const signOut = React.useCallback(async () => {
-    const refreshToken = getAdminRefreshToken()
-
     try {
-      if (refreshToken) {
-        await logoutAdmin(refreshToken)
-      }
+      await logoutAdmin()
     } catch {
       clearAdminSession()
     }
@@ -709,6 +707,20 @@ function AdminAuthProvider({ children }: { children: React.ReactNode }) {
     clearAdminSession()
     setAdminProfile(null)
     queryClient.clear()
+  }, [queryClient])
+
+  React.useEffect(() => {
+    function handleSessionExpired() {
+      clearAdminSession()
+      setAdminProfile(null)
+      queryClient.clear()
+      toast.error("Admin session expired. Please sign in again.")
+    }
+
+    window.addEventListener(ADMIN_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    return () => {
+      window.removeEventListener(ADMIN_SESSION_EXPIRED_EVENT, handleSessionExpired)
+    }
   }, [queryClient])
 
   const value = React.useMemo(
@@ -793,6 +805,99 @@ function canMarkNavNotificationRead(item: AdminNotificationCenterItem) {
   return item.source === "customer" || item.source === "owner" || item.source === "ops"
 }
 
+const adminSearchItems = adminSidebarGroups.flatMap((group) =>
+  group.items.map((item) => ({
+    ...item,
+    group: group.label,
+    keywords: `${item.title} ${group.label}`.toLowerCase(),
+  }))
+)
+
+function AdminGlobalSearch({
+  value,
+  onChange,
+  onNavigate,
+  placeholder,
+}: {
+  value: string
+  onChange: (value: string) => void
+  onNavigate: (path: string) => void
+  placeholder: string
+}) {
+  const [isFocused, setIsFocused] = React.useState(false)
+  const query = value.trim().toLowerCase()
+  const results = React.useMemo(() => {
+    if (!query) return []
+    return adminSearchItems
+      .filter((item) => item.keywords.includes(query))
+      .slice(0, 6)
+  }, [query])
+
+  function openResult(path: string) {
+    onNavigate(path)
+    onChange("")
+    setIsFocused(false)
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter" && results[0]) {
+      event.preventDefault()
+      openResult(results[0].to)
+    }
+    if (event.key === "Escape") {
+      onChange("")
+      setIsFocused(false)
+    }
+  }
+
+  return (
+    <div className="relative">
+      <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        className="h-9 pl-8"
+      />
+      {isFocused && query ? (
+        <div className="absolute top-full right-0 left-0 z-50 mt-2 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg">
+          {results.length ? (
+            results.map((item) => {
+              const ItemIcon = item.icon
+              return (
+                <button
+                  key={item.to}
+                  type="button"
+                  className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-accent"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => openResult(item.to)}
+                >
+                  <ItemIcon className="size-4 text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">
+                      {item.title}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {item.group}
+                    </span>
+                  </span>
+                </button>
+              )
+            })
+          ) : (
+            <div className="px-3 py-3 text-sm text-muted-foreground">
+              No matching admin page
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function AdminLayout() {
   const location = useLocation()
   const navigate = useNavigate()
@@ -801,16 +906,20 @@ function AdminLayout() {
   const { theme, setTheme } = useTheme()
   const { policy: refreshPolicy } = useAdminRefreshPolicy()
   const [search, setSearch] = React.useState("")
+  const [navNotificationLimit, setNavNotificationLimit] = React.useState(
+    NAV_NOTIFICATION_INITIAL_LIMIT
+  )
   const navNotificationsQuery = useQuery({
-    queryKey: ["admin-notifications", "top-nav"],
+    queryKey: ["admin-notifications", "top-nav", navNotificationLimit],
     queryFn: () =>
       listAdminNotifications({
         page: 1,
-        pageSize: 15,
+        pageSize: navNotificationLimit,
         status: "all",
-    }),
+      }),
     enabled: Boolean(adminProfile),
     refetchInterval: refreshPolicy.notificationsMs || false,
+    placeholderData: (previousData) => previousData,
   })
   const markAllNotificationsReadMutation = useMutation({
     mutationFn: markAllAdminNotificationsRead,
@@ -849,6 +958,9 @@ function AdminLayout() {
   const pageTitle = adminRouteTitleByPath[location.pathname] ?? "Dashboard"
   const isFullBleedRoute = location.pathname === "/live-map"
   const navNotificationItems = navNotificationsQuery.data?.items ?? []
+  const navNotificationTotal = navNotificationsQuery.data?.total ?? 0
+  const canLoadMoreNavNotifications =
+    navNotificationItems.length < navNotificationTotal
   const navUnreadCount =
     (navNotificationsQuery.data?.summary.customerUnread ?? 0) +
     (navNotificationsQuery.data?.summary.ownerUnread ?? 0)
@@ -892,13 +1004,12 @@ function AdminLayout() {
               </div>
 
               <div className="hidden min-w-0 flex-1 items-center justify-center px-4 lg:flex">
-                <div className="relative w-full max-w-xl">
-                  <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
+                <div className="w-full max-w-xl">
+                  <AdminGlobalSearch
                     value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Search users, restaurants, orders, riders..."
-                    className="h-9 pl-8"
+                    onChange={setSearch}
+                    onNavigate={navigate}
+                    placeholder="Search admin pages..."
                   />
                 </div>
               </div>
@@ -938,8 +1049,11 @@ function AdminLayout() {
                       ) : null}
                     </Button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-96">
-                    <DropdownMenuLabel className="flex items-center justify-between gap-3">
+                  <DropdownMenuContent
+                    align="end"
+                    className="w-[min(92vw,28rem)] overflow-hidden p-0"
+                  >
+                    <DropdownMenuLabel className="flex items-center justify-between gap-3 px-3 py-2">
                       <span>Notifications</span>
                       <span className="flex items-center gap-1">
                         <Button
@@ -978,84 +1092,105 @@ function AdminLayout() {
                         </Button>
                       </span>
                     </DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <ScrollArea className="max-h-[420px]">
-                      <div className="py-1">
-                        {navNotificationsQuery.isLoading ? (
-                          <DropdownMenuItem disabled>
-                            <Loader2 className="size-4 animate-spin" />
-                            Loading notifications...
+                    <DropdownMenuSeparator className="m-0" />
+                    <div className="max-h-[calc(100vh-180px)] overflow-y-auto overscroll-contain py-1 md:max-h-[460px]">
+                      {navNotificationsQuery.isLoading ? (
+                        <DropdownMenuItem disabled>
+                          <Loader2 className="size-4 animate-spin" />
+                          Loading notifications...
+                        </DropdownMenuItem>
+                      ) : null}
+                      {!navNotificationsQuery.isLoading &&
+                      navNotificationItems.length === 0 ? (
+                        <DropdownMenuItem disabled>
+                          No platform notifications yet.
+                        </DropdownMenuItem>
+                      ) : null}
+                      {navNotificationItems.map((item) => {
+                        const Icon = navNotificationIcon(item)
+                        return (
+                          <DropdownMenuItem
+                            key={`${item.source}-${item.id}`}
+                            className="items-start gap-3 py-3"
+                            onClick={() => handleNavNotificationOpen(item)}
+                          >
+                            <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                              <Icon className="size-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center gap-2">
+                                <span className="truncate text-sm font-medium">
+                                  {item.title}
+                                </span>
+                                {!item.isRead ? (
+                                  <span className="size-2 shrink-0 rounded-full bg-rose-500" />
+                                ) : null}
+                              </span>
+                              <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                                {item.description}
+                              </span>
+                              <span className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                                <Badge
+                                  variant="outline"
+                                  className="h-5 px-1.5 text-[10px]"
+                                >
+                                  {navNotificationSourceLabel(item.source)}
+                                </Badge>
+                                {formatNavNotificationTime(
+                                  item.createdAt || item.scheduledAt
+                                )}
+                              </span>
+                            </span>
                           </DropdownMenuItem>
-                        ) : null}
-                        {!navNotificationsQuery.isLoading &&
-                        navNotificationItems.length === 0 ? (
-                          <DropdownMenuItem disabled>
-                            No platform notifications yet.
-                          </DropdownMenuItem>
-                        ) : null}
-                        {navNotificationItems.map((item) => {
-                          const Icon = navNotificationIcon(item)
-                          return (
-                            <DropdownMenuItem
-                              key={`${item.source}-${item.id}`}
-                              className="items-start gap-3 py-3"
-                              onClick={() => handleNavNotificationOpen(item)}
+                        )
+                      })}
+                      {navNotificationTotal > 0 ? (
+                        <div className="space-y-2 border-t px-2 py-2">
+                          <p className="text-center text-[11px] text-muted-foreground">
+                            Showing {navNotificationItems.length} of{" "}
+                            {navNotificationTotal}
+                          </p>
+                          {canLoadMoreNavNotifications ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="w-full"
+                              disabled={navNotificationsQuery.isFetching}
+                              onClick={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                setNavNotificationLimit(
+                                  (value) => value + NAV_NOTIFICATION_LOAD_STEP
+                                )
+                              }}
                             >
-                              <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                                <Icon className="size-4" />
-                              </span>
-                              <span className="min-w-0 flex-1">
-                                <span className="flex items-center gap-2">
-                                  <span className="truncate text-sm font-medium">
-                                    {item.title}
-                                  </span>
-                                  {!item.isRead ? (
-                                    <span className="size-2 shrink-0 rounded-full bg-rose-500" />
-                                  ) : null}
-                                </span>
-                                <span className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                                  {item.description}
-                                </span>
-                                <span className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                                  <Badge
-                                    variant="outline"
-                                    className="h-5 px-1.5 text-[10px]"
-                                  >
-                                    {navNotificationSourceLabel(item.source)}
-                                  </Badge>
-                                  {formatNavNotificationTime(
-                                    item.createdAt || item.scheduledAt
-                                  )}
-                                </span>
-                              </span>
-                            </DropdownMenuItem>
-                          )
-                        })}
-                      </div>
-                    </ScrollArea>
-                    <DropdownMenuItem
-                      onClick={() => navigate("/notifications")}
-                      className="justify-center font-medium"
-                    >
-                      View notification center
-                    </DropdownMenuItem>
+                              {navNotificationsQuery.isFetching ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                <Plus className="size-3.5" />
+                              )}
+                              Load more
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
             </div>
 
             <div className="border-t px-4 py-2 lg:hidden">
-              <div className="relative">
-                <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search platform"
-                  className="h-9 pl-8"
-                />
-              </div>
+              <AdminGlobalSearch
+                value={search}
+                onChange={setSearch}
+                onNavigate={navigate}
+                placeholder="Search admin pages"
+              />
             </div>
           </header>
+          <DataActivityIndicator />
 
           <section className="flex-1 overflow-auto">
             <div
@@ -1082,6 +1217,7 @@ function SignInPage() {
   const [email, setEmail] = React.useState("admin@example.com")
   const [password, setPassword] = React.useState("")
   const [authError, setAuthError] = React.useState("")
+  const isBootstrapEnabled = import.meta.env.VITE_ENABLE_ADMIN_BOOTSTRAP === "true"
   const isRateLimitError = /^too many /i.test(authError.trim())
 
   const signInMutation = useMutation({
@@ -1166,18 +1302,20 @@ function SignInPage() {
                   "Sign in"
                 )}
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={bootstrapMutation.isPending}
-                onClick={() => bootstrapMutation.mutate()}
-              >
-                {bootstrapMutation.isPending ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  "Bootstrap"
-                )}
-              </Button>
+              {isBootstrapEnabled ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={bootstrapMutation.isPending}
+                  onClick={() => bootstrapMutation.mutate()}
+                >
+                  {bootstrapMutation.isPending ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    "Bootstrap"
+                  )}
+                </Button>
+              ) : null}
             </div>
           </form>
         </CardContent>
@@ -1189,8 +1327,8 @@ function SignInPage() {
 function DashboardPage() {
   const navigate = useNavigate()
   const [preset, setPreset] = React.useState<AdminReportsPreset>("today")
-  const [from, setFrom] = React.useState(() => dashboardDateInput(-6))
-  const [to, setTo] = React.useState(() => dashboardDateInput())
+  const [from, setFrom] = React.useState("")
+  const [to, setTo] = React.useState("")
   const [drawer, setDrawer] = React.useState<DashboardDrawerKey | null>(null)
   const [autoRefresh, setAutoRefresh] = React.useState(false)
   const { policy: refreshPolicy } = useAdminRefreshPolicy()
@@ -1204,6 +1342,13 @@ function DashboardPage() {
     }),
     [from, isCustomRange, preset, to]
   )
+
+  React.useEffect(() => {
+    if (!isCustomRange) {
+      setFrom("")
+      setTo("")
+    }
+  }, [isCustomRange])
   const dashboardQuery = useQuery({
     queryKey: ["admin-dashboard-reports", reportsParams],
     queryFn: () => getAdminReports(reportsParams),
@@ -1212,9 +1357,10 @@ function DashboardPage() {
     queryKey: ["admin-dashboard-orders"],
     queryFn: () =>
       listAdminOrders({
-        pageSize: 100,
+        pageSize: 30,
         sortBy: "recentlyUpdated",
       }),
+    staleTime: 15_000,
   })
   const restaurantsQuery = useQuery({
     queryKey: ["admin-dashboard-restaurants"],
@@ -1222,16 +1368,18 @@ function DashboardPage() {
       listAdminRestaurants({
         visibility: "visible",
         sortBy: "mostOrders",
-        pageSize: 100,
+        pageSize: 30,
       }),
+    staleTime: 60_000,
   })
   const ridersQuery = useQuery({
     queryKey: ["admin-dashboard-riders"],
     queryFn: () =>
       listAdminRiders({
-        pageSize: 100,
+        pageSize: 30,
         sortBy: "mostActive",
       }),
+    staleTime: 30_000,
   })
   const data = dashboardQuery.data
   const orders = ordersQuery.data?.items ?? []
@@ -1271,8 +1419,8 @@ function DashboardPage() {
     : "Loading timeframe"
   const resetFilters = () => {
     setPreset("today")
-    setFrom(dashboardDateInput(-6))
-    setTo(dashboardDateInput())
+    setFrom("")
+    setTo("")
   }
   const liveMetrics: DashboardMetric[] = data
     ? [
@@ -1692,10 +1840,11 @@ function DashboardPage() {
             ["Delivery fees", data?.overview.deliveryFees],
             ["Platform gross income", data?.overview.platformGrossIncome],
             [
-              "Platform promo expense",
+              "Platform-funded voucher/referral expense",
               data?.sales.platformMargin.platformDiscountCost,
             ],
             ["Rider payroll expense", data?.overview.riderPayrollExpense],
+            ["Total operating expense", data?.overview.platformOperatingExpense],
             ["Estimated margin", data?.overview.estimatedPlatformMargin],
             ["Restaurant payable", data?.overview.restaurantPayable],
           ].map(([label, value]) => (
@@ -1858,49 +2007,18 @@ function DashboardPage() {
       </div>
 
       <Card>
-        <CardContent className="grid gap-3 pt-2 md:grid-cols-2 xl:grid-cols-[0.85fr_0.7fr_0.7fr_auto_auto]">
-          <div className="space-y-2">
-            <Label>Dashboard timeframe</Label>
-            <Select
-              value={preset}
-              onValueChange={(value) => setPreset(value as AdminReportsPreset)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="yesterday">Yesterday</SelectItem>
-                <SelectItem value="last7Days">Last 7 days</SelectItem>
-                <SelectItem value="last30Days">Last 30 days</SelectItem>
-                <SelectItem value="last90Days">Last 90 days</SelectItem>
-                <SelectItem value="thisMonth">This month</SelectItem>
-                <SelectItem value="lastMonth">Last month</SelectItem>
-                <SelectItem value="lifetime">Lifetime</SelectItem>
-                <SelectItem value="custom">Custom range</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-2">
-            <Label>From</Label>
-            <Input
-              type="date"
-              value={from}
-              onChange={(event) => setFrom(event.target.value)}
-              disabled={!isCustomRange}
-              className="h-10"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>To</Label>
-            <Input
-              type="date"
-              value={to}
-              onChange={(event) => setTo(event.target.value)}
-              disabled={!isCustomRange}
-              className="h-10"
-            />
-          </div>
+        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(300px,1fr)_auto_auto]">
+          <AdminDateRangeFilter<AdminReportsPreset>
+            value={preset}
+            from={from}
+            to={to}
+            label="Dashboard timeframe"
+            onPresetChange={setPreset}
+            onRangeChange={(range) => {
+              setFrom(range.from)
+              setTo(range.to)
+            }}
+          />
           <div className="flex items-end">
             <Badge
               variant="outline"
@@ -2251,6 +2369,14 @@ function DashboardPage() {
               </span>
             </div>
             <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">
+                Platform-funded vouchers
+              </span>
+              <span className="font-medium">
+                {formatDashboardCurrency(data?.overview.platformDiscountCost)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
               <span className="text-muted-foreground">Restaurant payable</span>
               <span className="font-medium">
                 {formatDashboardCurrency(data?.overview.restaurantPayable)}
@@ -2261,6 +2387,11 @@ function DashboardPage() {
               <span className="font-medium">
                 {formatDashboardCurrency(data?.overview.riderPayrollExpense)}
               </span>
+            </div>
+            <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+              Platform-funded vouchers include referral rewards and Foodbela-funded
+              promos. They are counted as operating expense and do not reduce
+              restaurant payout.
             </div>
             <Button
               variant="outline"
@@ -2339,8 +2470,8 @@ function DashboardPage() {
           if (!open) setDrawer(null)
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl lg:max-w-2xl">
-          <SheetHeader>
+        <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
+          <SheetHeader className="border-b px-6 py-5">
             <SheetTitle>
               {drawer ? drawerMeta[drawer].title : "Dashboard details"}
             </SheetTitle>
@@ -2350,7 +2481,7 @@ function DashboardPage() {
                 : "Detailed dashboard context."}
             </SheetDescription>
           </SheetHeader>
-          <div className="space-y-4 px-4 pb-4">
+          <div className="flex-1 space-y-4 overflow-y-auto p-6">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">Timeframe: {timeframeLabel}</Badge>
               <Badge variant="secondary">{dateRangeText}</Badge>
@@ -2475,6 +2606,7 @@ function RouteLoading() {
 
 function RouteErrorBoundary() {
   const error = useRouteError()
+  const navigate = useNavigate()
   const message =
     error instanceof Error
       ? error.message
@@ -2493,7 +2625,7 @@ function RouteErrorBoundary() {
           <div className="rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground">
             {message}
           </div>
-          <Button onClick={() => window.location.assign("/")}>
+          <Button onClick={() => navigate("/")}>
             Back to Dashboard
           </Button>
         </CardContent>
@@ -2614,8 +2746,32 @@ const router = createBrowserRouter([
         ),
       },
       {
+        path: "customer-analytics",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <CustomerAnalyticsPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "referrals",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <ReferralsPage />
+          </React.Suspense>
+        ),
+      },
+      {
         path: "notifications",
         element: <NotificationsPage />,
+      },
+      {
+        path: "sessions",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <SessionsPage />
+          </React.Suspense>
+        ),
       },
       {
         path: "operations",

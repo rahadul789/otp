@@ -3,7 +3,9 @@ import rateLimit from "express-rate-limit"
 import {
   createOtpSendLimiter,
   createOtpVerifyLimiter,
-  createRefreshLimiter
+  createPasswordRecoveryLimiter,
+  createRefreshLimiter,
+  createSigninLimiter
 } from "../../common/middleware/rate-limit"
 
 import { requireAuth, requireRole } from "../../common/middleware/auth"
@@ -22,13 +24,19 @@ import {
   postRiderPushToken,
   postRiderTrackingActivate,
   refreshRiderAuth,
+  resetRiderPasswordAuth,
+  signinRiderPasswordAuth,
   startRiderPhoneAuth,
+  startRiderPasswordResetAuth,
+  verifyRiderPasswordResetAuth,
   verifyRiderPhoneAuth
 } from "./rider.controller"
 
 export const riderRouter = Router()
 const riderAuthStartLimiter = createOtpSendLimiter()
 const riderAuthVerifyLimiter = createOtpVerifyLimiter()
+const riderSigninLimiter = createSigninLimiter()
+const riderPasswordRecoveryLimiter = createPasswordRecoveryLimiter()
 const riderRefreshLimiter = createRefreshLimiter()
 const riderLocationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -39,6 +47,10 @@ const riderLocationLimiter = rateLimit({
 
 riderRouter.post("/auth/phone/start", riderAuthStartLimiter, startRiderPhoneAuth)
 riderRouter.post("/auth/phone/verify", riderAuthVerifyLimiter, verifyRiderPhoneAuth)
+riderRouter.post("/auth/password/signin", riderSigninLimiter, signinRiderPasswordAuth)
+riderRouter.post("/auth/password/forgot", riderPasswordRecoveryLimiter, startRiderPasswordResetAuth)
+riderRouter.post("/auth/password/verify", riderAuthVerifyLimiter, verifyRiderPasswordResetAuth)
+riderRouter.post("/auth/password/reset", riderPasswordRecoveryLimiter, resetRiderPasswordAuth)
 riderRouter.post("/auth/refresh", riderRefreshLimiter, refreshRiderAuth)
 riderRouter.post("/auth/logout", logoutRiderAuth)
 

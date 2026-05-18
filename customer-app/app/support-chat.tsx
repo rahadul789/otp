@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -12,7 +12,6 @@ import {
   Platform,
   Pressable,
   RefreshControl,
-  StyleSheet,
   Text,
   TextInput,
   View,
@@ -21,6 +20,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { styles } from "@/src/components/support/support-chat.styles";
 import { Screen } from "@/src/components/screen";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import {
@@ -34,6 +34,10 @@ import {
 } from "@/src/hooks/use-customer-api";
 import { getCustomerAuthErrorMessage } from "@/src/lib/auth-error-message";
 import { useIsOnline } from "@/src/hooks/use-network-status";
+import {
+  useSafeAnimationFrame,
+  useSafeTimeout,
+} from "@/src/hooks/use-safe-timeout";
 import { getCustomerSocket } from "@/src/lib/socket-client";
 import { palette } from "@/src/theme/palette";
 
@@ -113,6 +117,8 @@ export default function SupportChatScreen() {
   const [hasInitializedSessionMark, setHasInitializedSessionMark] =
     useState(false);
   const isOnline = useIsOnline();
+  const scheduleTimeout = useSafeTimeout();
+  const scheduleAnimationFrame = useSafeAnimationFrame();
 
   const latestCaseQuery = useCustomerLatestSupportCaseQuery(!routeCaseId);
   const supportCaseQuery = useCustomerSupportCaseQuery(
@@ -189,6 +195,15 @@ export default function SupportChatScreen() {
     ];
   }, [messages, pendingMessage, sessionOpenedAt]);
 
+  const scrollToLatest = useCallback(
+    (animated = true) => {
+      scheduleAnimationFrame(() => {
+        flatListRef.current?.scrollToEnd({ animated });
+      });
+    },
+    [scheduleAnimationFrame],
+  );
+
   useEffect(() => {
     if (hasInitializedSessionMark) {
       return;
@@ -236,7 +251,7 @@ export default function SupportChatScreen() {
       setIsKeyboardVisible(true);
       setKeyboardHeight(event.endCoordinates?.height ?? 0);
       if (shouldAutoScrollRef.current) {
-        setTimeout(() => scrollToLatest(false), 40);
+        scheduleTimeout(() => scrollToLatest(false), 40);
       }
     });
     const hideSubscription = Keyboard.addListener(hideEvent, () => {
@@ -248,7 +263,7 @@ export default function SupportChatScreen() {
       showSubscription.remove();
       hideSubscription.remove();
     };
-  }, []);
+  }, [scheduleTimeout, scrollToLatest]);
 
   useEffect(() => {
     const listeningCaseId = currentCase?.id || activeCaseId || routeCaseId;
@@ -269,7 +284,7 @@ export default function SupportChatScreen() {
       setIsAdminTyping(Boolean(payload.isTyping));
 
       if (payload?.isTyping && shouldAutoScrollRef.current) {
-        setTimeout(() => scrollToLatest(false), 40);
+        scheduleTimeout(() => scrollToLatest(false), 40);
       }
     };
 
@@ -277,13 +292,7 @@ export default function SupportChatScreen() {
     return () => {
       socket.off("customer.support.typing", handleSupportTyping);
     };
-  }, [activeCaseId, currentCase?.id, routeCaseId]);
-
-  function scrollToLatest(animated = true) {
-    requestAnimationFrame(() => {
-      flatListRef.current?.scrollToEnd({ animated });
-    });
-  }
+  }, [activeCaseId, currentCase?.id, routeCaseId, scheduleTimeout, scrollToLatest]);
 
   function handleScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
@@ -884,443 +893,3 @@ export default function SupportChatScreen() {
     </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
-  container: {
-    flex: 1,
-  },
-  header: {
-    paddingHorizontal: 18,
-    flexDirection: "row",
-    gap: 12,
-    alignItems: "flex-start",
-    paddingBottom: 10,
-  },
-  backButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerCopy: {
-    flex: 1,
-    justifyContent: "flex-start",
-    gap: 6,
-    paddingTop: 1,
-  },
-  titleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  titleIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFE9F1",
-  },
-  title: {
-    fontSize: 20,
-    lineHeight: 24,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  list: {
-    flex: 1,
-  },
-  offlineNoticeWrap: {
-    paddingHorizontal: 18,
-    paddingBottom: 8,
-  },
-  chatContent: {
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 16,
-    flexGrow: 1,
-  },
-  chatContentWithMessages: {
-    justifyContent: "flex-start",
-  },
-  chatContentEmpty: {
-    justifyContent: "center",
-  },
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 42,
-    paddingHorizontal: 24,
-    gap: 10,
-  },
-  emptyIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "#FFE9F1",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emptyTitle: {
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  emptyDescription: {
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "500",
-    color: palette.mutedForeground,
-    textAlign: "center",
-  },
-  quickChipRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 8,
-    marginTop: 6,
-  },
-  quickChip: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#F2D9E4",
-    backgroundColor: "#FFF6FA",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  quickChipText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "700",
-    color: palette.secondary,
-  },
-  messageRow: {
-    flexDirection: "row",
-    marginBottom: 12,
-  },
-  dayRow: {
-    alignItems: "center",
-    marginBottom: 10,
-    marginTop: 2,
-  },
-  dayChip: {
-    borderRadius: 999,
-    backgroundColor: "#F3ECE8",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  dayChipText: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "700",
-    color: palette.mutedForeground,
-  },
-  unreadRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginBottom: 12,
-    marginTop: 2,
-  },
-  unreadLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: "#F2D9E4",
-  },
-  unreadChip: {
-    borderRadius: 999,
-    backgroundColor: "#FFF2F7",
-    borderWidth: 1,
-    borderColor: "#F7D1E0",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  unreadChipText: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "800",
-    color: palette.secondary,
-  },
-  messageRowUser: {
-    justifyContent: "flex-end",
-  },
-  messageRowSupport: {
-    justifyContent: "flex-start",
-  },
-  messageBubble: {
-    maxWidth: "82%",
-    borderRadius: 22,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 10,
-    gap: 6,
-  },
-  messageBubbleUser: {
-    backgroundColor: palette.secondary,
-    borderBottomRightRadius: 8,
-  },
-  messageBubbleSupport: {
-    backgroundColor: palette.surface,
-    borderBottomLeftRadius: 8,
-    borderWidth: 1,
-    borderColor: palette.border,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 1,
-  },
-  messageText: {
-    fontSize: 15,
-    lineHeight: 21,
-    color: palette.foreground,
-  },
-  messageTextUser: {
-    color: "#fff",
-  },
-  messageTime: {
-    fontSize: 11,
-    lineHeight: 15,
-    color: palette.mutedForeground,
-  },
-  messageTimeUser: {
-    color: "rgba(255,255,255,0.78)",
-  },
-  messageMeta: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  messageMetaUser: {
-    color: "rgba(255,255,255,0.82)",
-  },
-  messageMetaFailed: {
-    color: "#C62828",
-  },
-  messageImage: {
-    width: 188,
-    height: 138,
-    borderRadius: 16,
-    backgroundColor: palette.surfaceMuted,
-  },
-  composerWrap: {
-    paddingHorizontal: 18,
-    paddingTop: 8,
-    backgroundColor: palette.background,
-    gap: 8,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(224, 217, 212, 0.6)",
-  },
-  previewCard: {
-    alignSelf: "flex-start",
-    position: "relative",
-  },
-  previewImage: {
-    width: 80,
-    height: 80,
-    borderRadius: 18,
-    backgroundColor: palette.surfaceMuted,
-  },
-  previewOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 18,
-    backgroundColor: "rgba(11, 15, 24, 0.55)",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  previewOverlayText: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "700",
-    color: "#fff",
-  },
-  previewRemove: {
-    position: "absolute",
-    top: -6,
-    right: -6,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: palette.foreground,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  errorText: {
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "600",
-    color: "#C62828",
-  },
-  retryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    alignSelf: "flex-start",
-  },
-  retryText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "700",
-    color: palette.secondary,
-  },
-  typingRow: {
-    alignItems: "flex-start",
-  },
-  typingText: {
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: "500",
-    color: palette.mutedForeground,
-    paddingHorizontal: 2,
-  },
-  composerCard: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 10,
-    borderRadius: 28,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.08,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
-  },
-  attachButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.background,
-  },
-  input: {
-    flex: 1,
-    maxHeight: 108,
-    minHeight: 40,
-    paddingTop: 9,
-    paddingBottom: 8,
-    fontSize: 15,
-    lineHeight: 20,
-    color: palette.foreground,
-  },
-  sendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.secondary,
-  },
-  sendButtonDisabled: {
-    opacity: 0.45,
-  },
-  jumpToBottomButton: {
-    position: "absolute",
-    alignSelf: "center",
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: palette.foreground,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.14,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  sheetBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(11, 15, 24, 0.22)",
-    justifyContent: "flex-end",
-    padding: 18,
-  },
-  sheetCard: {
-    borderRadius: 28,
-    backgroundColor: palette.surface,
-    padding: 18,
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.14,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 6,
-  },
-  sheetTitle: {
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  sheetAction: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.background,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-  },
-  sheetActionIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFE9F1",
-  },
-  sheetActionCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  sheetActionTitle: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  sheetActionText: {
-    fontSize: 12,
-    lineHeight: 16,
-    color: palette.mutedForeground,
-    fontWeight: "500",
-  },
-  previewModalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(11, 15, 24, 0.92)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20,
-  },
-  previewModalClose: {
-    position: "absolute",
-    top: 48,
-    right: 24,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.14)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  previewModalImage: {
-    width: "100%",
-    height: "78%",
-  },
-});

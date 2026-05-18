@@ -4,6 +4,7 @@ import { StatusCodes } from "http-status-codes"
 import type { AuthRole } from "../constants/auth"
 import { AppError } from "../utils/app-error"
 import { verifyAccessToken } from "../../modules/auth/auth.utils"
+import { isAccessSessionActive } from "../../modules/auth/session-control.service"
 
 export type AuthUser = {
   id: string
@@ -15,7 +16,7 @@ export type AuthenticatedRequest = Request & {
   user?: AuthUser
 }
 
-export function attachAuthUser(req: AuthenticatedRequest, _res: Response, next: NextFunction) {
+export async function attachAuthUser(req: AuthenticatedRequest, _res: Response, next: NextFunction) {
   const authorizationHeader = req.headers.authorization
 
   if (!authorizationHeader?.startsWith("Bearer ")) {
@@ -26,6 +27,11 @@ export function attachAuthUser(req: AuthenticatedRequest, _res: Response, next: 
 
   try {
     const payload = verifyAccessToken(accessToken)
+    const isSessionActive = await isAccessSessionActive(payload)
+    if (!isSessionActive) {
+      return next(new AppError(StatusCodes.UNAUTHORIZED, "SESSION_REVOKED", "Session is not active"))
+    }
+
     req.user = {
       id: payload.sub,
       role: payload.role,

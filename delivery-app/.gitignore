@@ -15,6 +15,7 @@ dash-delivery-b912d-firebase-adminsdk-fbsvc-623662256e.json
 
 # Native
 .kotlin/
+local.properties
 *.orig.*
 *.jks
 *.p8

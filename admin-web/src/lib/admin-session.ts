@@ -2,6 +2,11 @@ const ACCESS_TOKEN_KEY = "admin_access_token"
 const REFRESH_TOKEN_KEY = "admin_refresh_token"
 const ADMIN_PROFILE_KEY = "admin_profile"
 
+export const ADMIN_ACCESS_TOKEN_UPDATED_EVENT = "admin-access-token-updated"
+export const ADMIN_SESSION_EXPIRED_EVENT = "admin-session-expired"
+
+let accessTokenCache: string | null = null
+
 export type AdminProfile = {
   id: string
   fullName: string
@@ -27,11 +32,11 @@ function isAdminProfile(value: unknown): value is AdminProfile {
 }
 
 export function getAdminAccessToken() {
-  return localStorage.getItem(ACCESS_TOKEN_KEY)
+  return accessTokenCache
 }
 
 export function getAdminRefreshToken() {
-  return localStorage.getItem(REFRESH_TOKEN_KEY)
+  return null
 }
 
 export function getAdminProfile(): AdminProfile | null {
@@ -54,16 +59,23 @@ export function getAdminProfile(): AdminProfile | null {
 
 export function setAdminSession(payload: {
   accessToken: string
-  refreshToken: string
   admin: AdminProfile
 }) {
-  localStorage.setItem(ACCESS_TOKEN_KEY, payload.accessToken)
-  localStorage.setItem(REFRESH_TOKEN_KEY, payload.refreshToken)
+  accessTokenCache = payload.accessToken
   localStorage.setItem(ADMIN_PROFILE_KEY, JSON.stringify(payload.admin))
+  localStorage.removeItem(ACCESS_TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
+  window.dispatchEvent(new Event(ADMIN_ACCESS_TOKEN_UPDATED_EVENT))
 }
 
 export function clearAdminSession() {
+  accessTokenCache = null
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
   localStorage.removeItem(ADMIN_PROFILE_KEY)
+  window.dispatchEvent(new Event(ADMIN_ACCESS_TOKEN_UPDATED_EVENT))
+}
+
+export function notifyAdminSessionExpired() {
+  window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT))
 }

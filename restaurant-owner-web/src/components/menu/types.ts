@@ -215,10 +215,12 @@ export function getMenuItemKindLabel(kind: MenuItemKind) {
 export function getMenuDisplayPrice(item: MenuItem) {
   if (item.variants.length > 0) {
     const prices = item.variants.map((variant) => variant.price)
-    return `${Math.min(...prices)}tk - ${Math.max(...prices)}tk`
+    return `${Math.round(Math.min(...prices)).toLocaleString()}tk - ${Math.round(Math.max(...prices)).toLocaleString()}tk`
   }
 
-  return item.basePrice ? `${item.basePrice}tk` : "Set in variants"
+  return item.basePrice
+    ? `${Math.round(item.basePrice).toLocaleString()}tk`
+    : "Set in variants"
 }
 
 export function getInitialMenuItemFormState(): MenuItemFormState {

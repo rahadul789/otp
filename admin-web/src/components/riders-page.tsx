@@ -827,7 +827,7 @@ function RiderDetailsSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-5xl!">
+      <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
         <SheetHeader className="border-b">
           <SheetTitle>{rider?.fullName ?? "Rider details"}</SheetTitle>
           <SheetDescription>
@@ -2029,7 +2029,7 @@ export function RidersPage() {
       listAdminRiders({
         verification: "pending",
         sortBy: "newest",
-        pageSize: 100,
+        pageSize: 50,
       }),
   })
   const earningsQuery = useQuery({
@@ -2037,7 +2037,7 @@ export function RidersPage() {
     queryFn: () =>
       listAdminRiders({
         sortBy: "mostDelivered",
-        pageSize: 100,
+        pageSize: 50,
       }),
   })
   const payrollQuery = useQuery({

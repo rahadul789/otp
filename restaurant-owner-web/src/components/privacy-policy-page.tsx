@@ -45,7 +45,7 @@ export function PrivacyPolicyPage() {
                 </h1>
                 <p className="text-sm leading-6 text-muted-foreground">
                   {privacyPolicy?.description ??
-                    "Learn how Foodex handles owner, business, and operational data across onboarding and dashboard usage."}
+                    "Learn how Foodbela handles owner, business, and operational data across onboarding and dashboard usage."}
                 </p>
               </div>
 

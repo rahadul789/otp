@@ -1,8 +1,7 @@
 import { useCustomerAuthStore } from "@/src/store/auth-store";
+import { API_BASE_URL } from "@/src/config/runtime";
 
-const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:5000/api/v1";
+let refreshPromise: Promise<boolean> | null = null;
 
 type ApiResponse<T> = {
   success: boolean;
@@ -72,7 +71,9 @@ async function refreshCustomerSession() {
   }
 
   if (!response.ok) {
-    useCustomerAuthStore.getState().clearSession();
+    if (response.status === 401 || response.status === 403) {
+      useCustomerAuthStore.getState().clearSession();
+    }
     return false;
   }
 
@@ -84,6 +85,7 @@ async function refreshCustomerSession() {
         fullName: string;
         phone: string;
         email: string;
+        referralCode?: string;
         notificationSettings?: {
           orderUpdates?: boolean;
           restaurantStatus?: boolean;
@@ -126,6 +128,16 @@ async function refreshCustomerSession() {
   return true;
 }
 
+function refreshCustomerSessionOnce() {
+  if (!refreshPromise) {
+    refreshPromise = refreshCustomerSession().finally(() => {
+      refreshPromise = null;
+    });
+  }
+
+  return refreshPromise;
+}
+
 async function apiRequest<T>(
   path: string,
   init?: RequestInit,
@@ -151,7 +163,7 @@ async function apiRequest<T>(
   }
 
   if (response.status === 401 && allowRetry && !path.includes("/customer/auth/refresh")) {
-    const refreshed = await refreshCustomerSession();
+    const refreshed = await refreshCustomerSessionOnce();
     if (refreshed) {
       return apiRequest<T>(path, init, false);
     }

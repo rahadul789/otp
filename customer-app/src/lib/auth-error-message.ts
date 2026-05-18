@@ -44,8 +44,11 @@ export function getCustomerAuthErrorMessage(
     return message;
   }
 
-  if (message === "Use at least 8 characters for your password") {
-    return "Use at least 8 characters for your password.";
+  if (
+    message === "Use at least 6 characters for your password" ||
+    message === "Use at least 8 characters for your password"
+  ) {
+    return "Use at least 6 characters for your password.";
   }
 
   if (message === "Enter your name to finish creating this account") {
@@ -61,4 +64,23 @@ export function getCustomerAuthErrorMessage(
 
 export function isCustomerRateLimitMessage(message: string) {
   return /^too many /i.test(message.trim());
+}
+
+export function isCustomerOtpRequestRateLimitMessage(message: string) {
+  const normalized = message.trim().toLowerCase();
+
+  return (
+    normalized.startsWith("too many otp requests") ||
+    normalized.includes("requesting another code") ||
+    normalized.startsWith("too many password recovery attempts")
+  );
+}
+
+export function isCustomerOtpVerificationLockMessage(message: string) {
+  const normalized = message.trim().toLowerCase();
+
+  return (
+    normalized.startsWith("too many verification attempts") ||
+    normalized.includes("incorrect otp attempts")
+  );
 }

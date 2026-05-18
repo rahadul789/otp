@@ -19,6 +19,7 @@ import type {
   OwnerPayoutHistoryResponse,
   OwnerPayoutTransactionResponse,
   OwnerDashboardSummaryResponse,
+  OwnerAnalyticsOverviewResponse,
   OwnerReviewResponse,
   OwnerOpeningHoursResponse,
   OwnerSupportCaseResponse,
@@ -27,7 +28,6 @@ import type {
 
 export type OwnerSigninResponse = {
   accessToken: string
-  refreshToken: string
   owner: {
     id: string
     fullName: string
@@ -48,11 +48,15 @@ type MockOtpDebugData = {
   mockCode?: string
 }
 
-export type OwnerSignupResponse = MockOtpDebugData & {
+type OtpTimingData = {
+  expiresInSeconds: number
+  resendAvailableInSeconds?: number
+}
+
+export type OwnerSignupResponse = MockOtpDebugData & OtpTimingData & {
   ownerId: string
   verificationSessionId: string
   nextStatus: string
-  expiresInSeconds: number
 }
 
 export type OtpVerifyResponse = {
@@ -61,9 +65,8 @@ export type OtpVerifyResponse = {
   nextStatus?: string
 }
 
-export type PasswordResetRequestResponse = MockOtpDebugData & {
+export type PasswordResetRequestResponse = MockOtpDebugData & OtpTimingData & {
   verificationSessionId: string
-  expiresInSeconds: number
 }
 
 export type OwnerProfileUpdateResponse = MockOtpDebugData & {
@@ -81,6 +84,8 @@ export type OwnerProfileUpdateResponse = MockOtpDebugData & {
     lastLoginAt: string | null
   }
   verificationSessionId: string | null
+  expiresInSeconds?: number
+  resendAvailableInSeconds?: number
 }
 
 export function useOwnerSigninMutation() {
@@ -318,6 +323,7 @@ export function useOwnerMenuItemsQuery(
   params?: {
     search?: string
     status?: string
+    availability?: string
     categoryId?: string
     popularFilter?: string
     sortBy?: string
@@ -402,6 +408,7 @@ export function useOwnerPayoutHistoryQuery(
     preset?: string
     from?: string
     to?: string
+    dateBasis?: "created" | "history" | "activity"
     page?: number
     pageSize?: number
   }
@@ -469,6 +476,33 @@ export function useOwnerDashboardSummaryQuery(
     placeholderData: keepPreviousData,
     queryFn: ({ signal }) =>
       api.get<OwnerDashboardSummaryResponse>(path, signal),
+  })
+}
+
+export function useOwnerAnalyticsOverviewQuery(
+  enabled: boolean,
+  params?: {
+    preset?: string
+    from?: string
+    to?: string
+    paymentMethod?: string
+    orderType?: "delivery" | "pickup"
+    categoryId?: string
+  }
+) {
+  const normalizedParams = compactQueryParams(params)
+  const queryString = buildQueryString(normalizedParams)
+  const path = queryString
+    ? `/owner/analytics/overview?${queryString}`
+    : "/owner/analytics/overview"
+
+  return useQuery({
+    queryKey: ["owner", "analytics", "overview", normalizedParams],
+    enabled,
+    placeholderData: keepPreviousData,
+    staleTime: 1000 * 15,
+    queryFn: ({ signal }) =>
+      api.get<OwnerAnalyticsOverviewResponse>(path, signal),
   })
 }
 
@@ -619,6 +653,9 @@ export function useOwnerAnalyticsOrdersQuery(
     preset?: string
     from?: string
     to?: string
+    dateBasis?: "created" | "history" | "activity"
+    page?: number
+    pageSize?: number
   }
 ) {
   const analyticsListParams = compactQueryParams({
@@ -626,36 +663,86 @@ export function useOwnerAnalyticsOrdersQuery(
     search: params?.search,
     paymentMethod: params?.paymentMethod,
     sortBy: params?.sortBy,
+    preset: params?.preset,
+    from: params?.from,
+    to: params?.to,
+    dateBasis: params?.dateBasis,
+    page: params?.page ?? 1,
+    pageSize: params?.pageSize ?? 100,
   })
-  const baseQueryString = buildQueryString(analyticsListParams)
-  const searchParams = new URLSearchParams(baseQueryString)
+  const queryString = buildQueryString(analyticsListParams)
+  const path = queryString ? `/owner/orders?${queryString}` : "/owner/orders"
 
   return useQuery({
     queryKey: ["owner", "analytics", "orders", analyticsListParams],
     enabled,
     placeholderData: keepPreviousData,
-    queryFn: async ({ signal }) => {
-      const pageSize = 100
-      let page = 1
-      let total = 0
-      const items: OwnerOrderResponse[] = []
+    queryFn: ({ signal }) =>
+      api.get<OwnerListResponse<OwnerOrderResponse>>(path, signal),
+  })
+}
 
-      do {
-        const pageParams = new URLSearchParams(searchParams)
-        pageParams.set("page", String(page))
-        pageParams.set("pageSize", String(pageSize))
-        const path = `/owner/orders?${pageParams.toString()}`
-        const response = await api.get<OwnerListResponse<OwnerOrderResponse>>(path, signal)
-        total = response.total ?? response.items.length
-        items.push(...response.items)
-        page += 1
-      } while (items.length < total)
+export function useOwnerAnalyticsPayoutHistoryQuery(
+  enabled: boolean,
+  params?: {
+    search?: string
+    status?: string
+    sortBy?: string
+    preset?: string
+    from?: string
+    to?: string
+    page?: number
+    pageSize?: number
+  }
+) {
+  const analyticsListParams = compactQueryParams({
+    ...params,
+    page: params?.page ?? 1,
+    pageSize: params?.pageSize ?? 100,
+  })
+  const queryString = buildQueryString(analyticsListParams)
+  const path = queryString
+    ? `/owner/payouts/history?${queryString}`
+    : "/owner/payouts/history"
 
-      return {
-        items,
-        total,
-      } satisfies OwnerListResponse<OwnerOrderResponse>
-    },
+  return useQuery({
+    queryKey: ["owner", "analytics", "payouts", "history", analyticsListParams],
+    enabled,
+    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) =>
+      api.get<OwnerListResponse<OwnerPayoutHistoryResponse>>(path, signal),
+  })
+}
+
+export function useOwnerAnalyticsPayoutTransactionsQuery(
+  enabled: boolean,
+  params?: {
+    search?: string
+    type?: string
+    sortBy?: string
+    preset?: string
+    from?: string
+    to?: string
+    page?: number
+    pageSize?: number
+  }
+) {
+  const analyticsListParams = compactQueryParams({
+    ...params,
+    page: params?.page ?? 1,
+    pageSize: params?.pageSize ?? 100,
+  })
+  const queryString = buildQueryString(analyticsListParams)
+  const path = queryString
+    ? `/owner/payout-transactions?${queryString}`
+    : "/owner/payout-transactions"
+
+  return useQuery({
+    queryKey: ["owner", "analytics", "payouts", "transactions", analyticsListParams],
+    enabled,
+    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) =>
+      api.get<OwnerListResponse<OwnerPayoutTransactionResponse>>(path, signal),
   })
 }
 
@@ -663,7 +750,7 @@ export function useOwnerOrderTransitionMutation() {
   return useMutation({
     mutationFn: (payload: {
       orderId: string
-      nextStatus: "Accepted" | "Rejected" | "Preparing" | "ReadyForPickup"
+      nextStatus: "Accepted" | "Rejected" | "Preparing" | "ReadyForPickup" | "Cancelled"
       actor: "owner"
       note?: string
     }) =>

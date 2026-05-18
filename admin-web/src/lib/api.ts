@@ -1,7 +1,7 @@
 import {
   clearAdminSession,
   getAdminAccessToken,
-  getAdminRefreshToken,
+  notifyAdminSessionExpired,
   setAdminSession
 } from "./admin-session"
 
@@ -22,8 +22,13 @@ class ApiError extends Error {
   }
 }
 
+let refreshSessionPromise: Promise<string> | null = null
+
 async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit) {
-  const response = await fetch(input, init)
+  const response = await fetch(input, {
+    ...init,
+    credentials: "include"
+  })
   const contentType = response.headers.get("content-type") ?? ""
 
   if (!response.ok) {
@@ -46,31 +51,53 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit) {
 }
 
 async function refreshAdminSession() {
-  const refreshToken = getAdminRefreshToken()
-  if (!refreshToken) {
-    clearAdminSession()
-    throw new Error("Admin session expired. Please sign in again.")
+  if (refreshSessionPromise) {
+    return refreshSessionPromise
   }
 
-  const payload = await fetchJson<{
-    accessToken: string
-    refreshToken: string
-    admin: {
-      id: string
-      fullName: string
-      email: string
-      role: "admin"
+  refreshSessionPromise = (async () => {
+    let payload: ApiResponse<{
+      accessToken: string
+      admin: {
+        id: string
+        fullName: string
+        email: string
+        role: "admin"
+      }
+    }>
+    try {
+      payload = await fetchJson<{
+        accessToken: string
+        admin: {
+          id: string
+          fullName: string
+          email: string
+          role: "admin"
+        }
+      }>(`${API_BASE_URL}/admin/auth/refresh`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({})
+      })
+    } catch (error) {
+      if (error instanceof ApiError && [401, 403].includes(error.status)) {
+        clearAdminSession()
+        notifyAdminSessionExpired()
+      }
+      throw error
     }
-  }>(`${API_BASE_URL}/admin/auth/refresh`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({ refreshToken })
-  })
 
-  setAdminSession(payload.data)
-  return payload.data.accessToken
+    setAdminSession(payload.data)
+    return payload.data.accessToken
+  })()
+
+  try {
+    return await refreshSessionPromise
+  } finally {
+    refreshSessionPromise = null
+  }
 }
 
 export async function adminRequest<T>(
@@ -97,9 +124,13 @@ export async function adminRequest<T>(
       let newToken = ""
       try {
         newToken = await refreshAdminSession()
-      } catch {
-        clearAdminSession()
-        throw new Error("Admin session expired. Please sign in again.")
+      } catch (refreshError) {
+        if (refreshError instanceof ApiError && [401, 403].includes(refreshError.status)) {
+          clearAdminSession()
+          notifyAdminSessionExpired()
+          throw new Error("Admin session expired. Please sign in again.")
+        }
+        throw refreshError
       }
       headers.set("authorization", `Bearer ${newToken}`)
       return await fetchJson<T>(`${API_BASE_URL}${path}`, {

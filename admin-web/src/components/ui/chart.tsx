@@ -39,6 +39,20 @@ function useChart() {
   return context
 }
 
+function toSafeCssVariableName(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "")
+}
+
+function isSafeCssColor(value: string) {
+  const color = value.trim()
+  return (
+    color.length > 0 &&
+    color.length <= 120 &&
+    !/[;{}<>]/.test(color) &&
+    !/url\s*\(|expression\s*\(/i.test(color)
+  )
+}
+
 function ChartContainer({
   id,
   className,
@@ -57,7 +71,9 @@ function ChartContainer({
   }
 }) {
   const uniqueId = React.useId()
-  const chartId = `chart-${id ?? uniqueId.replace(/:/g, "")}`
+  const chartId = toSafeCssVariableName(
+    `chart-${id ?? uniqueId.replace(/:/g, "")}`
+  )
 
   return (
     <ChartContext.Provider value={{ config }}>
@@ -99,11 +115,15 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
 ${prefix} [data-chart=${id}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
+    const variableName = toSafeCssVariableName(key)
     const color =
       itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ??
       itemConfig.color
-    return color ? `  --color-${key}: ${color};` : null
+    return variableName && color && isSafeCssColor(color)
+      ? `  --color-${variableName}: ${color.trim()};`
+      : null
   })
+  .filter(Boolean)
   .join("\n")}
 }
 `

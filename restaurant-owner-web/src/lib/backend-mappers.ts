@@ -295,24 +295,36 @@ export type OwnerPayoutMethodResponse = {
     verifiedAt?: string | null
   }
   verificationSessionId: string | null
+  expiresInSeconds?: number
+  resendAvailableInSeconds?: number
 }
 
 export type OwnerPayoutSummaryResponse = {
   pendingBalance: number
   availableBalance: number
   paidOutBalance: number
+  requestedPayoutBalance: number
   lifetimeGrossAmount: number
   lifetimeNetEarnings: number
   lifetimeCommission: number
   lifetimeDiscountCost: number
   lifetimeDeliveryCost: number
   nextSettlementAvailableAt: string | null
+  settlementDelayDays: number
+  minimumPayoutAmountTaka: number
+  oneActivePayoutRequest: boolean
+  hasActivePayoutRequest?: boolean
   lastPayout?: {
     _id: string
     amount: number
     status: "pending" | "processing" | "completed" | "failed"
     batchReference?: string
     failureReason?: string
+    providerReference?: string
+    providerPayoutId?: string
+    providerTransactionId?: string
+    paymentProofUrl?: string
+    processingNote?: string
     requestedAt: string
     processedAt?: string | null
   } | null
@@ -325,6 +337,11 @@ export type OwnerPayoutHistoryResponse = {
   status: "pending" | "processing" | "completed" | "failed"
   batchReference?: string
   failureReason?: string
+  providerReference?: string
+  providerPayoutId?: string
+  providerTransactionId?: string
+  paymentProofUrl?: string
+  processingNote?: string
   requestedAt: string
   processedAt?: string | null
   createdAt: string
@@ -364,8 +381,20 @@ export type OwnerDashboardSummaryResponse = {
     previousTotalOrders: number
     totalRevenue: number
     previousTotalRevenue: number
+    placedOrderValue: number
+    previousPlacedOrderValue: number
+    deliveredOrderValue: number
+    previousDeliveredOrderValue: number
     totalNetEarnings: number
     previousTotalNetEarnings: number
+    cancelledOrders: number
+    previousCancelledOrders: number
+    cancelledOrderValue: number
+    previousCancelledOrderValue: number
+    rejectedOrders: number
+    previousRejectedOrders: number
+    rejectedOrderValue: number
+    previousRejectedOrderValue: number
     averageOrderValue: number
     previousAverageOrderValue: number
     pendingOrders: number
@@ -374,6 +403,67 @@ export type OwnerDashboardSummaryResponse = {
     previousCompletedOrders: number
     uniqueCustomers: number
     nextEstimatedPayoutAt: string | null
+  }
+}
+
+export type OwnerAnalyticsOverviewResponse = {
+  filter: {
+    current: {
+      from: string
+      to: string
+    }
+    previous: {
+      from: string
+      to: string
+    }
+  }
+  metrics: {
+    totalOrders: number
+    previousTotalOrders: number
+    deliveredRevenue: number
+    previousDeliveredRevenue: number
+    netEarnings: number
+    previousNetEarnings: number
+    deliveredCount: number
+    previousDeliveredCount: number
+    averageOrderValue: number
+    previousAverageOrderValue: number
+    uniqueCustomers: number
+    previousUniqueCustomers: number
+    repeatCustomers: number
+    previousRepeatCustomers: number
+    discountedOrdersCount: number
+    discountedRevenue: number
+    discountGiven: number
+  }
+  statusCounts: Record<string, number>
+  weekdayOrders: Array<{ label: string; orders: number }>
+  peakHours: Array<{ label: string; orders: number }>
+  orderSeries: Array<{ date: string; label: string; orders: number }>
+  customerInsights: {
+    unique: number
+    repeat: number
+    repeatRate: number
+    rows: Array<{ name: string; orders: number; revenue: number }>
+    donut: Array<{ name: string; value: number; color: string }>
+  }
+  menuPerformance: {
+    rows: Array<{ name: string; categoryName: string; quantitySold: number; revenue: number }>
+    lowPerformers: Array<{ name: string; categoryName: string; quantitySold: number; revenue: number }>
+    categories: Array<{ name: string; revenue: number }>
+  }
+  payoutInsights: {
+    gross: number
+    net: number
+    commission: number
+    discountCost: number
+    deliveryCost: number
+    available: number
+    pending: number
+    paidOutBalance: number
+    totalPayouts: number
+    lifetimeEarnings: number
+    availableSoon: number
   }
 }
 
@@ -830,7 +920,10 @@ export function mapOwnerMenuItem(item: OwnerMenuItemResponse): MenuItem {
     categoryId: item.categoryId,
     categoryName: "",
     description: item.description ?? "",
-    status: item.status === "active" ? "Active" : "Hidden",
+    status:
+      item.status === "active" && item.availability !== "unavailable"
+        ? "Active"
+        : "Hidden",
     kind: resolveMenuItemKind(variants, addOnGroups),
     basePrice: item.kind === "variant" ? null : basePrice,
     variants,
@@ -876,7 +969,15 @@ export function mapOwnerPayout(
     status: payout.status,
     method: payoutMethodType,
     batchReference: payout.batchReference ?? "",
-    transactionId: payout.batchReference ?? payout._id,
+    transactionId:
+      payout.providerTransactionId ??
+      payout.providerReference ??
+      payout.batchReference ??
+      payout._id,
+    providerReference: payout.providerReference ?? "",
+    providerPayoutId: payout.providerPayoutId ?? "",
+    paymentProofUrl: payout.paymentProofUrl ?? "",
+    processingNote: payout.processingNote ?? "",
     createdAt: payout.requestedAt ?? payout.createdAt,
     processedAt: payout.processedAt ?? null,
     failureReason: payout.failureReason ?? null,

@@ -15,7 +15,11 @@ export function OrdersProvider({
 }) {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const setOrders = useAppStore((state) => state.setOrders)
-  const ordersQuery = useOwnerOrdersQuery(ownerAccount.isAuthenticated)
+  const ordersQuery = useOwnerOrdersQuery(ownerAccount.isAuthenticated, {
+    tab: "live",
+    page: 1,
+    pageSize: 20,
+  })
 
   React.useEffect(() => {
     if (!ordersQuery.data) return
@@ -32,12 +36,10 @@ export function OrdersProvider({
 export function useOrders() {
   const orders = useAppStore((state) => state.orders)
   const setOrders = useAppStore((state) => state.setOrders)
-  const ownerAccount = useAppStore((state) => state.ownerAccount)
-  const ordersQuery = useOwnerOrdersQuery(ownerAccount.isAuthenticated)
 
   return {
     orders,
     setOrders,
-    isLoading: ordersQuery.isPending,
+    isLoading: false,
   }
 }

@@ -79,6 +79,7 @@ const riderSchema = new Schema(
   {
     fullName: { type: String, required: true, trim: true },
     phone: { type: String, required: true, unique: true, trim: true },
+    passwordHash: { type: String, default: "" },
     profileImage: { type: mediaAssetSchema, default: () => ({}) },
     vehicleType: { type: String, enum: ["cycle"], default: "cycle" },
     activeTrackingOrderId: { type: String, default: "" },
@@ -112,6 +113,9 @@ const riderSchema = new Schema(
   { timestamps: true },
 );
 
+riderSchema.index({ status: 1, "lastKnownLocation.updatedAt": -1, lastLoginAt: -1 });
+riderSchema.index({ status: 1, isAvailableForAssignments: 1, "verification.status": 1 });
+
 const ownerSchema = new Schema(
   {
     fullName: { type: String, required: true, trim: true },
@@ -136,6 +140,7 @@ const ownerSchema = new Schema(
       ref: "Restaurant",
       default: null,
     },
+    pushTokens: { type: [riderPushTokenSchema], default: [] },
     lastLoginAt: { type: Date, default: null },
   },
   { timestamps: true },
@@ -170,12 +175,92 @@ const otpSessionSchema = new Schema(
       default: "pending",
     },
     expiresAt: { type: Date, required: true },
+    lastSentAt: { type: Date, default: null },
+    failedVerifyCount: { type: Number, default: 0, min: 0 },
+    lockedUntilAt: { type: Date, default: null },
     verifiedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );
 
 otpSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 });
+
+const otpSecurityEventSchema = new Schema(
+  {
+    phone: { type: String, required: true, trim: true },
+    purpose: {
+      type: String,
+      enum: otpPurposes,
+      required: true,
+    },
+    referenceId: { type: String, default: "", trim: true },
+    verificationSessionId: { type: String, default: "", trim: true },
+    event: {
+      type: String,
+      enum: [
+        "send_sent",
+        "send_reused",
+        "send_blocked",
+        "send_failed",
+        "verify_success",
+        "verify_failed",
+        "verify_blocked",
+      ],
+      required: true,
+    },
+    blockReason: { type: String, default: "", trim: true },
+    ipAddress: { type: String, default: "", trim: true },
+    userAgent: { type: String, default: "", trim: true },
+    metadata: { type: Schema.Types.Mixed, default: {} },
+  },
+  { timestamps: true },
+);
+
+otpSecurityEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
+otpSecurityEventSchema.index({ phone: 1, createdAt: -1 });
+otpSecurityEventSchema.index({ ipAddress: 1, createdAt: -1 });
+otpSecurityEventSchema.index({ event: 1, createdAt: -1 });
+
+const otpAbuseBlockSchema = new Schema(
+  {
+    targetType: {
+      type: String,
+      enum: ["phone", "ip", "device"],
+      required: true,
+      index: true,
+    },
+    targetValue: { type: String, required: true, trim: true },
+    displayValue: { type: String, default: "", trim: true },
+    reason: { type: String, default: "", trim: true },
+    isPermanent: { type: Boolean, default: false, index: true },
+    lockedUntilAt: { type: Date, default: null, index: true },
+    isActive: { type: Boolean, default: true, index: true },
+    liftedAt: { type: Date, default: null },
+    createdByAdminId: { type: String, default: "", trim: true },
+    updatedByAdminId: { type: String, default: "", trim: true },
+    liftedByAdminId: { type: String, default: "", trim: true },
+    audit: {
+      type: [
+        {
+          action: { type: String, required: true },
+          adminId: { type: String, default: "", trim: true },
+          note: { type: String, default: "", trim: true },
+          lockedUntilAt: { type: Date, default: null },
+          isPermanent: { type: Boolean, default: false },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+  },
+  { timestamps: true },
+);
+
+otpAbuseBlockSchema.index(
+  { targetType: 1, targetValue: 1 },
+  { unique: true },
+);
+otpAbuseBlockSchema.index({ isActive: 1, targetType: 1, lockedUntilAt: 1 });
 
 const onboardingDraftSchema = new Schema(
   {
@@ -443,6 +528,7 @@ const restaurantSchema = new Schema(
 
 restaurantSchema.index({ ownerId: 1, slug: 1 }, { unique: true });
 restaurantSchema.index({ locationPoint: "2dsphere" });
+restaurantSchema.index({ "runtime.isOnline": -1, name: 1 });
 
 const payoutMethodSchema = new Schema(
   {
@@ -540,6 +626,14 @@ riderRefreshTokenSessionSchema.index(
 export const OwnerModel = mongoose.model("Owner", ownerSchema);
 export const RiderModel = mongoose.model("Rider", riderSchema);
 export const OtpSessionModel = mongoose.model("OtpSession", otpSessionSchema);
+export const OtpSecurityEventModel = mongoose.model(
+  "OtpSecurityEvent",
+  otpSecurityEventSchema,
+);
+export const OtpAbuseBlockModel = mongoose.model(
+  "OtpAbuseBlock",
+  otpAbuseBlockSchema,
+);
 export const OnboardingDraftModel = mongoose.model(
   "OnboardingDraft",
   onboardingDraftSchema,

@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useLocation } from "react-router-dom"
 
 import { useOwnerCategoriesQuery } from "@/hooks/use-owner-api"
 import {
@@ -15,7 +16,12 @@ export function CategoriesProvider({
 }) {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const setCategories = useAppStore((state) => state.setCategories)
-  const categoriesQuery = useOwnerCategoriesQuery(ownerAccount.isAuthenticated)
+  const location = useLocation()
+  const shouldLoadCategories =
+    location.pathname === "/" || location.pathname === "/analytics"
+  const categoriesQuery = useOwnerCategoriesQuery(
+    ownerAccount.isAuthenticated && shouldLoadCategories
+  )
 
   React.useEffect(() => {
     if (!categoriesQuery.data) return
@@ -27,11 +33,11 @@ export function CategoriesProvider({
   }, [categoriesQuery.data, setCategories])
 
   React.useEffect(() => {
-    if (!ownerAccount.isAuthenticated) return
+    if (!ownerAccount.isAuthenticated || !shouldLoadCategories) return
     if (categoriesQuery.isPending && !categoriesQuery.data) {
       setCategories([])
     }
-  }, [categoriesQuery.data, categoriesQuery.isPending, ownerAccount.isAuthenticated, setCategories])
+  }, [categoriesQuery.data, categoriesQuery.isPending, ownerAccount.isAuthenticated, setCategories, shouldLoadCategories])
 
   return <>{children}</>
 }

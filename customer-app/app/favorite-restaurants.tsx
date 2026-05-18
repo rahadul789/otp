@@ -69,7 +69,7 @@ export default function FavoriteRestaurantsScreen() {
         error,
         "Could not update favorites right now."
       );
-      console.warn(message);
+      if (__DEV__) console.warn(message);
     } finally {
       setPendingFavoriteIds((current) => current.filter((id) => id !== restaurantId));
     }

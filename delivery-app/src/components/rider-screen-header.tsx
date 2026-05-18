@@ -65,13 +65,13 @@ export function RiderScreenHeader({
 
 const styles = StyleSheet.create({
   container: {
-    minHeight: 74,
-    borderRadius: 24,
+    minHeight: 66,
+    borderRadius: 20,
     backgroundColor: palette.surface,
     borderWidth: 1,
     borderColor: palette.border,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -84,14 +84,14 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   iconShell: {
-    width: 42,
-    height: 42,
-    borderRadius: 15,
+    width: 40,
+    height: 40,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#FFF0F5",
+    backgroundColor: palette.surfaceMuted,
     borderWidth: 1,
-    borderColor: "#FFD2E2",
+    borderColor: palette.border,
   },
   copyWrap: {
     flex: 1,
@@ -118,16 +118,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   statusPillOnline: {
-    backgroundColor: palette.successSurface,
-    borderColor: "#B7E8D1",
+    backgroundColor: palette.successSoft,
+    borderColor: "#BFE6D1",
   },
   statusPillOffline: {
-    backgroundColor: "#F4EDE6",
+    backgroundColor: palette.surfaceMuted,
     borderColor: palette.border,
   },
   statusPillPaused: {
-    backgroundColor: "#FFF4E2",
-    borderColor: "#F1D4A7",
+    backgroundColor: palette.warningSoft,
+    borderColor: "#F2D5A8",
   },
   statusText: {
     fontSize: 11,
@@ -140,6 +140,6 @@ const styles = StyleSheet.create({
     color: palette.mutedForeground,
   },
   statusTextPaused: {
-    color: "#9A5A00",
+    color: palette.warning,
   },
 });

@@ -13,6 +13,7 @@ import {
   putOwnerOpeningHours
 } from "./business.controller"
 import {
+  getOwnerAnalyticsOverview,
   getOwnerDashboardSummary,
   getOwnerPayoutHistory,
   getOwnerPayoutSummary,
@@ -21,9 +22,11 @@ import {
   putOwnerPayoutMethod
 } from "./finance.controller"
 import {
+  deleteOwnerPushToken,
   getOwnerMe,
   patchOwnerMe,
-  patchOwnerPassword
+  patchOwnerPassword,
+  postOwnerPushToken
 } from "./owner.controller"
 import {
   deleteOwnerCategory,
@@ -41,6 +44,7 @@ import {
   postOwnerCategory,
   postOwnerMenuItem,
   postOwnerOrderAssignRider,
+  postOwnerOrderPreparationExtension,
   postOwnerOrderTransition
 } from "./operational.controller"
 import {
@@ -57,6 +61,8 @@ ownerRouter.use(requireAuth, requireRole("owner"))
 ownerRouter.get("/me", getOwnerMe)
 ownerRouter.patch("/me", patchOwnerMe)
 ownerRouter.patch("/me/password", patchOwnerPassword)
+ownerRouter.post("/push-tokens", postOwnerPushToken)
+ownerRouter.delete("/push-tokens", deleteOwnerPushToken)
 ownerRouter.get("/onboarding/draft", getOnboardingDraft)
 ownerRouter.put("/onboarding/draft", updateOnboardingDraft)
 ownerRouter.post("/onboarding/submit", submitOnboardingDraft)
@@ -73,6 +79,7 @@ ownerRouter.get("/orders", getOwnerOrders)
 ownerRouter.get("/orders/:orderId", getOwnerOrderById)
 ownerRouter.get("/riders/assignment-options", getOwnerRiderAssignmentOptions)
 ownerRouter.post("/orders/:orderId/assign-rider", postOwnerOrderAssignRider)
+ownerRouter.post("/orders/:orderId/preparation/extend", postOwnerOrderPreparationExtension)
 ownerRouter.post("/orders/:orderId/transition", postOwnerOrderTransition)
 ownerRouter.get("/notifications", getOwnerNotifications)
 ownerRouter.patch("/notifications/:notificationId/read", patchOwnerNotificationRead)
@@ -83,6 +90,7 @@ ownerRouter.get("/payout-transactions", getOwnerPayoutTransactions)
 ownerRouter.put("/payout-method", putOwnerPayoutMethod)
 ownerRouter.post("/payouts/request", postOwnerPayoutRequest)
 ownerRouter.get("/dashboard/summary", getOwnerDashboardSummary)
+ownerRouter.get("/analytics/overview", getOwnerAnalyticsOverview)
 ownerRouter.get("/store-settings", getOwnerStoreSettings)
 ownerRouter.patch("/store-settings", patchOwnerStoreSettings)
 ownerRouter.patch("/restaurant-status", patchOwnerRestaurantStatus)

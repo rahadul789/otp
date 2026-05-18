@@ -19,10 +19,18 @@ import {
 import { api } from "@/lib/api"
 import { setOwnerAuthSession } from "@/lib/auth-session"
 import { getOtpSupportHint } from "@/lib/otp-copy"
-import { useOwnerSigninMutation, useVerifyOtpMutation } from "@/hooks/use-owner-api"
+import {
+  DEFAULT_OTP_RESEND_SECONDS,
+  resolveOtpResendSeconds,
+} from "@/lib/otp-timing"
+import {
+  useOwnerSigninMutation,
+  useVerifyOtpMutation,
+} from "@/hooks/use-owner-api"
 import { useAppStore } from "@/store/app-store"
 
-const RESEND_SECONDS = 30
+const RESEND_SECONDS = DEFAULT_OTP_RESEND_SECONDS
+const OTP_LENGTH = 4
 
 function maskPhoneNumber(phone: string) {
   if (!phone) return "your phone number"
@@ -58,18 +66,20 @@ export function VerificationModalHost() {
 
   const requiresVerification = Boolean(
     verificationModalOpen &&
-      (Boolean(verificationRequest.verificationSessionId) ||
-        (ownerAccount.isAuthenticated &&
-          (Boolean(ownerAccount.pendingPhone) ||
-            Boolean(payoutMethod.pendingAccountNumber) ||
-            (!ownerAccount.isPhoneVerified &&
-              restaurantLifecycleStatus === "account_created"))))
+    (Boolean(verificationRequest.verificationSessionId) ||
+      (ownerAccount.isAuthenticated &&
+        (Boolean(ownerAccount.pendingPhone) ||
+          Boolean(payoutMethod.pendingAccountNumber) ||
+          (!ownerAccount.isPhoneVerified &&
+            restaurantLifecycleStatus === "account_created"))))
   )
 
   const [code, setCode] = React.useState("")
   const [error, setError] = React.useState("")
   const [isLoading, setIsLoading] = React.useState(false)
-  const [secondsLeft, setSecondsLeft] = React.useState(RESEND_SECONDS)
+  const [secondsLeft, setSecondsLeft] = React.useState(() =>
+    resolveOtpResendSeconds(verificationRequest.resendAvailableInSeconds)
+  )
   const [isResending, setIsResending] = React.useState(false)
 
   React.useEffect(() => {
@@ -80,7 +90,14 @@ export function VerificationModalHost() {
       setSecondsLeft(RESEND_SECONDS)
       return
     }
-  }, [requiresVerification])
+    setSecondsLeft(
+      resolveOtpResendSeconds(verificationRequest.resendAvailableInSeconds)
+    )
+  }, [
+    requiresVerification,
+    verificationRequest.resendAvailableInSeconds,
+    verificationRequest.verificationSessionId,
+  ])
 
   React.useEffect(() => {
     if (!requiresVerification || secondsLeft <= 0) return
@@ -95,8 +112,8 @@ export function VerificationModalHost() {
   async function handleVerify(event: React.FormEvent) {
     event.preventDefault()
 
-    if (!/^\d{6}$/.test(code.trim())) {
-      setError("Enter the 6-digit verification code.")
+    if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(code.trim())) {
+      setError(`Enter the ${OTP_LENGTH}-digit verification code.`)
       return
     }
 
@@ -121,7 +138,6 @@ export function VerificationModalHost() {
 
           setOwnerAuthSession({
             accessToken: signInResult.accessToken,
-            refreshToken: signInResult.refreshToken,
           })
           setOwnerAccount((current) => ({
             ...current,
@@ -132,9 +148,7 @@ export function VerificationModalHost() {
             isPhoneVerified: signInResult.owner.isPhoneVerified,
             lastLoginAt: new Date().toISOString(),
           }))
-          setRestaurantLifecycleStatus(
-            signInResult.restaurantLifecycleStatus
-          )
+          setRestaurantLifecycleStatus(signInResult.restaurantLifecycleStatus)
           toast.success("Phone verified successfully.")
           navigate("/onboarding")
         } else {
@@ -180,14 +194,14 @@ export function VerificationModalHost() {
           phone: "",
           referenceId: null,
           pendingPassword: "",
+          resendAvailableInSeconds: undefined,
         })
       } else if (payoutMethod.pendingAccountNumber) {
         setPayoutMethod((current) => ({
           ...current,
           type: "bkash",
           accountName: current.pendingAccountName || current.accountName,
-          accountNumber:
-            current.pendingAccountNumber || current.accountNumber,
+          accountNumber: current.pendingAccountNumber || current.accountNumber,
           bankName: "",
           branchName: "",
           pendingAccountName: "",
@@ -231,10 +245,15 @@ export function VerificationModalHost() {
   async function handleResend() {
     setIsResending(true)
     try {
-      if (verificationRequest.referenceId && verificationRequest.purpose && verificationTarget) {
+      if (
+        verificationRequest.referenceId &&
+        verificationRequest.purpose &&
+        verificationTarget
+      ) {
         const result = await api.post<{
           verificationSessionId: string
           expiresInSeconds: number
+          resendAvailableInSeconds?: number
         }>(
           "/auth/otp/send",
           {
@@ -249,10 +268,15 @@ export function VerificationModalHost() {
         setVerificationRequest((current) => ({
           ...current,
           verificationSessionId: result.verificationSessionId,
+          resendAvailableInSeconds: resolveOtpResendSeconds(
+            result.resendAvailableInSeconds
+          ),
         }))
+        setSecondsLeft(resolveOtpResendSeconds(result.resendAvailableInSeconds))
+      } else {
+        setSecondsLeft(RESEND_SECONDS)
       }
 
-      setSecondsLeft(RESEND_SECONDS)
       setError("")
       toast.success("A fresh OTP has been sent.")
     } catch (requestError) {
@@ -268,7 +292,7 @@ export function VerificationModalHost() {
     }
   }
 
-  const otpComplete = code.length === 6
+  const otpComplete = code.length === OTP_LENGTH
   const verificationTarget =
     verificationRequest.phone ||
     payoutMethod.pendingAccountNumber ||
@@ -323,18 +347,20 @@ export function VerificationModalHost() {
             <div className="flex items-center justify-between gap-3">
               <p className="text-sm font-medium">Enter OTP</p>
               <p className="text-xs text-muted-foreground">
-                {otpComplete ? "Code complete" : `${code.length}/6 digits`}
+                {otpComplete ? "Code complete" : `${code.length}/${OTP_LENGTH} digits`}
               </p>
             </div>
 
             <InputOTP
-              maxLength={6}
+              maxLength={OTP_LENGTH}
               value={code}
-              onChange={(value) => setCode(value.replace(/\D/g, "").slice(0, 6))}
+              onChange={(value) =>
+                setCode(value.replace(/\D/g, "").slice(0, OTP_LENGTH))
+              }
               containerClassName="justify-center"
             >
               <InputOTPGroup className="gap-2 rounded-none border-0">
-                {Array.from({ length: 6 }).map((_, index) => (
+                {Array.from({ length: OTP_LENGTH }).map((_, index) => (
                   <InputOTPSlot
                     key={index}
                     index={index}

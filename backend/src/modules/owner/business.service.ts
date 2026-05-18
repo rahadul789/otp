@@ -6,6 +6,7 @@ import type { SortOrder } from "mongoose"
 import { env } from "../../config/env"
 import { emitSocketEvent } from "../../config/socket"
 import { createAdminOperationalAlert } from "../admin/admin-alert.service"
+import { AdminAuditLogModel } from "../admin/admin.model"
 import { AppError } from "../../common/utils/app-error"
 import {
   OpeningHoursModel,
@@ -69,9 +70,42 @@ function getReviewDateRange(params?: {
   switch (params?.datePreset) {
     case "today":
       return { start: startOfDay(now), end: endOfDay(now) }
+    case "yesterday": {
+      const yesterday = new Date(now)
+      yesterday.setDate(now.getDate() - 1)
+      return { start: startOfDay(yesterday), end: endOfDay(yesterday) }
+    }
     case "last7Days": {
       const start = new Date(now)
       start.setDate(now.getDate() - 6)
+      return { start: startOfDay(start), end: endOfDay(now) }
+    }
+    case "last30Days": {
+      const start = new Date(now)
+      start.setDate(now.getDate() - 29)
+      return { start: startOfDay(start), end: endOfDay(now) }
+    }
+    case "last90Days": {
+      const start = new Date(now)
+      start.setDate(now.getDate() - 89)
+      return { start: startOfDay(start), end: endOfDay(now) }
+    }
+    case "lastMonth": {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      const end = new Date(now.getFullYear(), now.getMonth(), 0)
+      return { start: startOfDay(start), end: endOfDay(end) }
+    }
+    case "lifetime":
+      return null
+    case "thisWeek": {
+      const start = new Date(now)
+      const day = start.getDay()
+      const diff = day === 0 ? 6 : day - 1
+      start.setDate(start.getDate() - diff)
+      return { start: startOfDay(start), end: endOfDay(now) }
+    }
+    case "thisMonth": {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1)
       return { start: startOfDay(start), end: endOfDay(now) }
     }
     case "custom":
@@ -85,6 +119,28 @@ function getReviewDateRange(params?: {
     default:
       return null
   }
+}
+
+async function createOwnerRestaurantAuditLog(params: {
+  ownerId: string
+  ownerName: string
+  restaurantId: string
+  action: string
+  title: string
+  description?: string
+  metadata?: Record<string, unknown>
+}) {
+  await AdminAuditLogModel.create({
+    actorAdminId: params.ownerId,
+    actorName: params.ownerName || "Restaurant owner",
+    actorRole: "owner",
+    entityType: "restaurant",
+    entityId: params.restaurantId,
+    action: params.action,
+    title: params.title,
+    description: params.description ?? "",
+    metadata: params.metadata ?? {}
+  })
 }
 
 async function getOwnerBusinessContext(ownerId: string) {
@@ -139,6 +195,7 @@ export async function updateStoreSettings(params: {
   ownerId: string
   name?: string
   description?: string
+  phone?: string
   preparationTimeMinutes?: number | null
   autoAcceptOrders?: boolean
   cuisineTypes?: string[]
@@ -156,10 +213,17 @@ export async function updateStoreSettings(params: {
     support?: boolean
   }
 }) {
-  const { restaurant } = await getOwnerBusinessContext(params.ownerId)
+  const { owner, restaurant, restaurantId } = await getOwnerBusinessContext(params.ownerId)
+  const previousContactPhone = restaurant.contact?.phone ?? ""
 
   if (params.name !== undefined) restaurant.name = params.name
   if (params.description !== undefined) restaurant.description = params.description
+  if (params.phone !== undefined) {
+    restaurant.contact = {
+      ...(restaurant.contact ?? { phone: "", email: "" }),
+      phone: params.phone
+    }
+  }
   if (params.preparationTimeMinutes !== undefined) {
     restaurant.preparationTimeMinutes = params.preparationTimeMinutes
   }
@@ -250,6 +314,44 @@ export async function updateStoreSettings(params: {
   }
 
   await restaurant.save()
+  emitSocketEvent(`owner:${params.ownerId}`, "store.updated", {
+    restaurantId,
+    type: "store_settings_updated"
+  })
+  emitSocketEvent(`restaurant:${restaurantId}`, "store.updated", {
+    restaurantId,
+    type: "store_settings_updated"
+  })
+  if (params.phone !== undefined) {
+    if (params.phone !== previousContactPhone) {
+      await createOwnerRestaurantAuditLog({
+        ownerId: params.ownerId,
+        ownerName: owner.fullName ?? "Restaurant owner",
+        restaurantId,
+        action: "restaurant_contact_updated",
+        title: "Restaurant contact number updated",
+        description: `Restaurant owner changed the pickup contact number from ${previousContactPhone || "not set"} to ${params.phone}.`,
+        metadata: {
+          previousPhone: previousContactPhone,
+          nextPhone: params.phone,
+          source: "owner_settings"
+        }
+      }).catch(() => undefined)
+    }
+
+    const activeRiderOrders = await OrderModel.find({
+      restaurantId,
+      riderId: { $nin: ["", null] },
+      status: { $in: ["ReadyForPickup", "PickedUp"] }
+    }).select("_id riderId")
+
+    activeRiderOrders.forEach((order) => {
+      emitSocketEvent(`rider:${String(order.riderId)}`, "rider.restaurant.updated", {
+        restaurantId,
+        orderId: order.id
+      })
+    })
+  }
   return restaurant
 }
 
@@ -267,6 +369,11 @@ export async function updateRestaurantStatus(params: {
 
   await restaurant.save()
 
+  emitSocketEvent(`owner:${params.ownerId}`, "store.updated", {
+    restaurantId,
+    type: "status_updated",
+    isOnline: params.isOnline
+  })
   emitSocketEvent(`restaurant:${restaurantId}`, "store.updated", {
     restaurantId,
     type: "status_updated",
@@ -293,10 +400,10 @@ export async function updateRestaurantStatus(params: {
       await sendPushToCustomer({
         customerId,
         payload: {
-          title: params.isOnline ? "Restaurant is back online" : "Restaurant is temporarily offline",
+          title: params.isOnline ? "✅ Restaurant is online" : "⏸️ Restaurant is offline",
           body: params.isOnline
-            ? `${restaurant.name} is online again and your order updates will continue as usual.`
-            : `${restaurant.name} is currently offline. We will keep you updated about your active order.`,
+            ? `${restaurant.name} is back online. Your order updates will continue.`
+            : `${restaurant.name} is offline for now. We will keep you updated.`,
           data: {
             type: "restaurant_status",
             restaurantId,
@@ -592,13 +699,13 @@ export async function replyToReview(params: {
     await sendPushToCustomer({
       customerId: review.customerId,
       payload: {
-        title: "Restaurant replied to your review",
-        body: "There is a new reply waiting on one of your recent orders.",
+        title: "💬 Restaurant replied",
+        body: "A restaurant replied to your review.",
         data: {
           type: "review_reply",
           orderId: String(review.orderId),
           reviewId: review.id,
-          path: `/orders/${String(review.orderId)}`
+          path: `/orders/${String(review.orderId)}/tracking`
         }
       }
     })

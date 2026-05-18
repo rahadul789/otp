@@ -1,6 +1,7 @@
 import { io, type Socket } from "socket.io-client"
 
 import { getApiBaseUrl } from "@/lib/api"
+import { getAdminAccessToken } from "@/lib/admin-session"
 
 function resolveSocketUrl() {
   const apiBaseUrl = getApiBaseUrl().replace(/\/$/, "")
@@ -11,6 +12,12 @@ function resolveSocketUrl() {
 }
 
 let adminSocket: Socket | null = null
+
+function syncSocketAuth(socket: Socket) {
+  socket.auth = {
+    token: getAdminAccessToken() ?? "",
+  }
+}
 
 export function getAdminSocket() {
   if (!adminSocket) {
@@ -26,6 +33,8 @@ export function getAdminSocket() {
 
 export function connectAdminSocket() {
   const socket = getAdminSocket()
+  syncSocketAuth(socket)
+  if (!getAdminAccessToken()) return socket
   if (!socket.connected) socket.connect()
   socket.emit("admin:join", "ops")
   return socket
@@ -33,6 +42,8 @@ export function connectAdminSocket() {
 
 export function joinAdminSocketScope(scope: string) {
   const socket = getAdminSocket()
+  syncSocketAuth(socket)
+  if (!getAdminAccessToken()) return socket
   if (!socket.connected) socket.connect()
   if (scope) socket.emit("admin:join", scope)
   return socket

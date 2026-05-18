@@ -429,7 +429,7 @@ export function MenuItemDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="Active">Active</SelectItem>
-                  <SelectItem value="Hidden">Hidden</SelectItem>
+                  <SelectItem value="Hidden">Inactive</SelectItem>
                 </SelectContent>
               </Select>
             </div>

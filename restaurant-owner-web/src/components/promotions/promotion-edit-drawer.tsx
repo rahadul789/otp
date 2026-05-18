@@ -61,6 +61,18 @@ function getLocalDateTimeValue(date = new Date()) {
   return offsetDate.toISOString().slice(0, 16)
 }
 
+function getOwnerCostMessage(form: VoucherFormState) {
+  if (form.type === "free-delivery") {
+    return "Foodbela will remove the delivery fee for the customer. That waived delivery amount is treated as your voucher cost when the order uses this offer."
+  }
+
+  if (form.type === "percentage") {
+    return "This is owner-funded. The percentage discount used by the customer will be deducted from your restaurant earning before payout."
+  }
+
+  return "This is owner-funded. The flat discount used by the customer will be deducted from your restaurant earning before payout."
+}
+
 function SelectionPill({
   checked,
   label,
@@ -414,18 +426,17 @@ export function PromotionEditDrawer({
                 </div>
               </div>
 
-              {form.type === "free-delivery" ? (
-                <div className="rounded-xl border border-sky-200 bg-sky-50/80 p-4 text-sm text-sky-900">
-                  <div className="flex items-start gap-3">
-                    <Info className="mt-0.5 size-4 shrink-0" />
-                    <p>
-                      Free Delivery removes the customer&apos;s delivery charge.
-                      The waived delivery fee will be counted as discount cost
-                      for this voucher.
+              <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-950">
+                <div className="flex items-start gap-3">
+                  <Info className="mt-0.5 size-4 shrink-0" />
+                  <div>
+                    <p className="font-medium">This offer affects your payout</p>
+                    <p className="mt-1 text-amber-900/80">
+                      {getOwnerCostMessage(form)}
                     </p>
                   </div>
                 </div>
-              ) : null}
+              </div>
 
               <div className="grid gap-4 rounded-xl border p-4 md:grid-cols-3">
                 <div className="space-y-2">
@@ -629,6 +640,9 @@ export function PromotionEditDrawer({
                             ? Number(form.discountValue)
                             : null,
                         })}
+                  </Badge>
+                  <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+                    Owner-funded cost
                   </Badge>
                 </div>
               </div>

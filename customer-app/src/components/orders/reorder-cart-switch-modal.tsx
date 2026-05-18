@@ -38,8 +38,8 @@ export function ReorderCartSwitchModal({
 
           <Text style={styles.modalTitle}>Start a fresh cart?</Text>
           <Text style={styles.modalText}>
-            Your cart already has items from {currentRestaurantName}. Add this reorder from{" "}
-            {incomingRestaurantName} to start a new cart.
+            Your cart already has items from {currentRestaurantName}. Replace it with this reorder
+            from {incomingRestaurantName}.
           </Text>
 
           <View style={styles.modalPreviewRow}>

@@ -7,10 +7,16 @@ export const customerAnalyticsEventTypes = [
   "cart_add",
   "cart_view",
   "checkout_start",
+  "payment_initiated",
+  "payment_completed",
+  "payment_failed",
+  "payment_cancelled",
   "signup_started",
   "signup_completed",
   "order_created",
   "search",
+  "campaign_open",
+  "voucher_applied",
   "custom",
 ] as const
 
@@ -45,9 +51,13 @@ const customerAnalyticsEventSchema = new Schema(
 )
 
 customerAnalyticsEventSchema.index({ eventType: 1, occurredAt: -1 })
+customerAnalyticsEventSchema.index({ eventType: 1, entityId: 1, occurredAt: -1 })
+customerAnalyticsEventSchema.index({ eventType: 1, sessionId: 1, occurredAt: -1 })
 customerAnalyticsEventSchema.index({ actorType: 1, occurredAt: -1 })
 customerAnalyticsEventSchema.index({ customerId: 1, occurredAt: -1 })
 customerAnalyticsEventSchema.index({ anonymousId: 1, occurredAt: -1 })
+customerAnalyticsEventSchema.index({ sessionId: 1, occurredAt: -1 })
+customerAnalyticsEventSchema.index({ sourceApp: 1, occurredAt: -1 })
 customerAnalyticsEventSchema.index({ path: 1, occurredAt: -1 })
 customerAnalyticsEventSchema.index(
   { createdAt: 1 },

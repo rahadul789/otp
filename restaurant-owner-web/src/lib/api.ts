@@ -1,4 +1,10 @@
-import { clearOwnerAuthSession, getOwnerAuthSession, setOwnerAuthSession } from "@/lib/auth-session"
+import {
+  clearOwnerAuthSession,
+  getOwnerAuthSession,
+  setOwnerAuthSession,
+  takeLegacyOwnerRefreshToken,
+} from "@/lib/auth-session"
+import type { OwnerAuthSession } from "@/lib/auth-session"
 
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ||
@@ -17,6 +23,8 @@ type RequestOptions = {
   auth?: boolean
   signal?: AbortSignal
 }
+
+let refreshPromise: Promise<OwnerAuthSession | null> | null = null
 
 export class ApiError extends Error {
   status: number
@@ -37,42 +45,53 @@ export class ApiError extends Error {
   }
 }
 
-async function refreshOwnerSession() {
-  const session = getOwnerAuthSession()
-  if (!session?.refreshToken) return null
-
+async function refreshOwnerSessionRequest() {
+  const legacyRefreshToken = takeLegacyOwnerRefreshToken()
   const response = await fetch(`${API_BASE_URL}/auth/owner/refresh`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      refreshToken: session.refreshToken,
-    }),
+    headers: legacyRefreshToken
+      ? {
+          "Content-Type": "application/json",
+        }
+      : undefined,
+    body: legacyRefreshToken
+      ? JSON.stringify({
+          refreshToken: legacyRefreshToken,
+        })
+      : undefined,
+    credentials: "include",
   })
 
   if (!response.ok) {
-    clearOwnerAuthSession()
+    if (response.status === 401 || response.status === 403) {
+      clearOwnerAuthSession()
+    }
     return null
   }
 
   const payload = (await response.json()) as ApiEnvelope<{
     accessToken: string
-    refreshToken: string
   }>
 
-  if (!payload.data?.accessToken || !payload.data?.refreshToken) {
+  if (!payload.data?.accessToken) {
     clearOwnerAuthSession()
     return null
   }
 
   const nextSession = {
     accessToken: payload.data.accessToken,
-    refreshToken: payload.data.refreshToken,
   }
 
   setOwnerAuthSession(nextSession)
   return nextSession
+}
+
+export function refreshOwnerSession() {
+  refreshPromise ??= refreshOwnerSessionRequest().finally(() => {
+    refreshPromise = null
+  })
+
+  return refreshPromise
 }
 
 async function request<T>(
@@ -80,12 +99,18 @@ async function request<T>(
   options: RequestOptions = {},
   allowRefresh = true
 ): Promise<T> {
-  const session = getOwnerAuthSession()
+  let session = getOwnerAuthSession()
+  let attemptedRefreshBeforeRequest = false
   const headers = new Headers()
   const isJsonBody = options.body !== undefined
 
   if (isJsonBody) {
     headers.set("Content-Type", "application/json")
+  }
+
+  if (options.auth !== false && !session?.accessToken && allowRefresh) {
+    attemptedRefreshBeforeRequest = true
+    session = await refreshOwnerSession()
   }
 
   if (options.auth !== false && session?.accessToken) {
@@ -97,9 +122,15 @@ async function request<T>(
     headers,
     body: isJsonBody ? JSON.stringify(options.body) : undefined,
     signal: options.signal,
+    credentials: "include",
   })
 
-  if (response.status === 401 && options.auth !== false && allowRefresh) {
+  if (
+    response.status === 401 &&
+    options.auth !== false &&
+    allowRefresh &&
+    !attemptedRefreshBeforeRequest
+  ) {
     const refreshedSession = await refreshOwnerSession()
     if (refreshedSession) {
       return request<T>(path, options, false)

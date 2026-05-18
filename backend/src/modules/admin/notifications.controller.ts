@@ -31,6 +31,8 @@ const sendNotificationSchema = z.object({
   title: z.string().trim().min(1).max(120),
   body: z.string().trim().min(1).max(500),
   path: z.string().trim().optional(),
+  ctaLabel: z.string().trim().max(60).optional(),
+  ctaPath: z.string().trim().optional(),
   type: z.string().trim().optional(),
   contentType: z.enum(["text", "image", "image_text"]).optional(),
   imageUrl: z.string().trim().optional(),

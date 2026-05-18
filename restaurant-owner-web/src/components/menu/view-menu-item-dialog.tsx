@@ -11,7 +11,7 @@ function getStatusBadge(status: MenuItem["status"]) {
     return <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">Active</Badge>
   }
   if (status === "Hidden") {
-    return <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-700">Hidden</Badge>
+    return <Badge variant="outline" className="border-slate-200 bg-slate-100 text-slate-700">Inactive</Badge>
   }
   return null
 }
@@ -68,7 +68,7 @@ export function ViewMenuItemDialog({
               {item.variants.map((variant) => (
                 <div key={variant.id} className="flex items-center justify-between rounded-lg border bg-muted/20 px-3 py-2 text-sm">
                   <span>{variant.name}</span>
-                  <span>{variant.price}tk</span>
+                  <span>{Math.round(variant.price).toLocaleString()}tk</span>
                 </div>
               ))}
             </div>
@@ -89,7 +89,7 @@ export function ViewMenuItemDialog({
                     {group.options.map((option) => (
                       <div key={option.id} className="flex items-center justify-between text-sm">
                         <span>{option.name}</span>
-                        <span>{option.price}tk</span>
+                        <span>{Math.round(option.price).toLocaleString()}tk</span>
                       </div>
                     ))}
                   </div>

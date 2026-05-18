@@ -2,7 +2,7 @@ import { StatusCodes } from "http-status-codes"
 
 import { AppError } from "../../common/utils/app-error"
 import { OwnerModel } from "../auth/auth.model"
-import { createOtpSession } from "../auth/auth.service"
+import { createOtpSession, getOtpSessionTiming } from "../auth/auth.service"
 import { getMockOtpCode } from "../auth/mock-otp"
 import { comparePassword, hashPassword } from "../auth/auth.utils"
 
@@ -33,6 +33,7 @@ export async function updateOwnerProfile(params: {
   }
 
   let verificationSessionId: string | null = null
+  let otpTiming: ReturnType<typeof getOtpSessionTiming> | null = null
   let mockCode: string | undefined
 
   if (params.phone && params.phone !== owner.phone) {
@@ -59,6 +60,7 @@ export async function updateOwnerProfile(params: {
     })
 
     verificationSessionId = otpSession.id
+    otpTiming = getOtpSessionTiming(otpSession)
     mockCode = getMockOtpCode()
   }
 
@@ -67,6 +69,7 @@ export async function updateOwnerProfile(params: {
   return {
     owner,
     verificationSessionId,
+    ...(otpTiming ?? {}),
     mockCode
   }
 }

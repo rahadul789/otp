@@ -57,7 +57,11 @@ import {
   type AdminRiderAssignmentOption,
 } from "@/lib/admin-api"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
-import { connectAdminSocket, joinAdminSocketScope, leaveAdminSocketScope } from "@/lib/socket-client"
+import {
+  connectAdminSocket,
+  joinAdminSocketScope,
+  leaveAdminSocketScope,
+} from "@/lib/socket-client"
 import { useAdminRefreshPolicy } from "@/lib/refresh-policy"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -128,7 +132,9 @@ const netrokonaCenter: [number, number] = [24.8835, 90.7271]
 const LIVE_MAP_SOCKET_REFETCH_THROTTLE_MS = 3_500
 const LIVE_MAP_VIEW_PADDING_DEGREES = 0.035
 
-function isValidCoordinate(value?: Coordinate | null): value is ValidCoordinate {
+function isValidCoordinate(
+  value?: Coordinate | null
+): value is ValidCoordinate {
   return (
     typeof value?.latitude === "number" &&
     Number.isFinite(value.latitude) &&
@@ -163,7 +169,10 @@ function distanceBetweenKm(
   return 6371 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
 }
 
-function midpoint(firstPoint: [number, number] | null, secondPoint: [number, number] | null) {
+function midpoint(
+  firstPoint: [number, number] | null,
+  secondPoint: [number, number] | null
+) {
   if (!firstPoint || !secondPoint) return null
   return [
     (firstPoint[0] + secondPoint[0]) / 2,
@@ -301,20 +310,96 @@ function markerIcon(params: {
   })
 }
 
-const idleRiderIcon = markerIcon({ icon: "rider", background: "#111827", size: 34 })
-const activeRiderIcon = markerIcon({ icon: "rider", background: "#0ea5e9", size: 38, active: true })
-const busyRiderIcon = markerIcon({ icon: "rider", background: "#fb3f8a", size: 38, active: true })
-const staleRiderIcon = markerIcon({ icon: "rider", background: "#f59e0b", size: 36 })
-const restaurantIcon = markerIcon({ icon: "restaurant", background: "#ffffff", color: "#111827", border: "#111827", size: 34 })
-const activeRestaurantIcon = markerIcon({ icon: "restaurant", background: "#fb3f8a", size: 38, active: true })
-const onlineRestaurantIcon = markerIcon({ icon: "restaurant", background: "#22c55e", size: 36, active: true })
-const customerIcon = markerIcon({ icon: "customer", background: "#10b981", size: 34 })
-const activeRestaurantWarningIcon = markerIcon({ icon: "restaurant", background: "#fb3f8a", size: 38, active: true, warning: "warning" })
-const activeRestaurantCriticalIcon = markerIcon({ icon: "restaurant", background: "#fb3f8a", size: 38, active: true, warning: "critical" })
-const onlineRestaurantWarningIcon = markerIcon({ icon: "restaurant", background: "#22c55e", size: 36, active: true, warning: "warning" })
-const onlineRestaurantCriticalIcon = markerIcon({ icon: "restaurant", background: "#22c55e", size: 36, active: true, warning: "critical" })
-const quietRestaurantWarningIcon = markerIcon({ icon: "restaurant", background: "#ffffff", color: "#111827", border: "#111827", size: 34, warning: "warning" })
-const quietRestaurantCriticalIcon = markerIcon({ icon: "restaurant", background: "#ffffff", color: "#111827", border: "#111827", size: 34, warning: "critical" })
+const idleRiderIcon = markerIcon({
+  icon: "rider",
+  background: "#111827",
+  size: 34,
+})
+const activeRiderIcon = markerIcon({
+  icon: "rider",
+  background: "#0ea5e9",
+  size: 38,
+  active: true,
+})
+const busyRiderIcon = markerIcon({
+  icon: "rider",
+  background: "#fb3f8a",
+  size: 38,
+  active: true,
+})
+const staleRiderIcon = markerIcon({
+  icon: "rider",
+  background: "#f59e0b",
+  size: 36,
+})
+const restaurantIcon = markerIcon({
+  icon: "restaurant",
+  background: "#ffffff",
+  color: "#111827",
+  border: "#111827",
+  size: 34,
+})
+const activeRestaurantIcon = markerIcon({
+  icon: "restaurant",
+  background: "#fb3f8a",
+  size: 38,
+  active: true,
+})
+const onlineRestaurantIcon = markerIcon({
+  icon: "restaurant",
+  background: "#22c55e",
+  size: 36,
+  active: true,
+})
+const customerIcon = markerIcon({
+  icon: "customer",
+  background: "#10b981",
+  size: 34,
+})
+const activeRestaurantWarningIcon = markerIcon({
+  icon: "restaurant",
+  background: "#fb3f8a",
+  size: 38,
+  active: true,
+  warning: "warning",
+})
+const activeRestaurantCriticalIcon = markerIcon({
+  icon: "restaurant",
+  background: "#fb3f8a",
+  size: 38,
+  active: true,
+  warning: "critical",
+})
+const onlineRestaurantWarningIcon = markerIcon({
+  icon: "restaurant",
+  background: "#22c55e",
+  size: 36,
+  active: true,
+  warning: "warning",
+})
+const onlineRestaurantCriticalIcon = markerIcon({
+  icon: "restaurant",
+  background: "#22c55e",
+  size: 36,
+  active: true,
+  warning: "critical",
+})
+const quietRestaurantWarningIcon = markerIcon({
+  icon: "restaurant",
+  background: "#ffffff",
+  color: "#111827",
+  border: "#111827",
+  size: 34,
+  warning: "warning",
+})
+const quietRestaurantCriticalIcon = markerIcon({
+  icon: "restaurant",
+  background: "#ffffff",
+  color: "#111827",
+  border: "#111827",
+  size: 34,
+  warning: "critical",
+})
 
 function clusterIcon(count: number) {
   return L.divIcon({
@@ -467,7 +552,10 @@ function MapCameraTracker({
   return null
 }
 
-function isPointInsideBounds(point: [number, number] | null, camera: MapCamera) {
+function isPointInsideBounds(
+  point: [number, number] | null,
+  camera: MapCamera
+) {
   if (!point || !camera.bounds) return true
 
   const [latitude, longitude] = point
@@ -580,7 +668,9 @@ function getDeliveryOriginPoint(delivery: AdminLiveMapDelivery) {
 }
 
 function getDeliveryTargetLabel(delivery: AdminLiveMapDelivery) {
-  return delivery.status === "PickedUp" ? "Customer dropoff" : "Restaurant pickup"
+  return delivery.status === "PickedUp"
+    ? "Customer dropoff"
+    : "Restaurant pickup"
 }
 
 function getDeliveryMapState(delivery: AdminLiveMapDelivery) {
@@ -618,7 +708,10 @@ function getGoogleMapsDirectionsUrl(
   return url.toString()
 }
 
-function openDirections(destination: [number, number] | null, origin?: [number, number] | null) {
+function openDirections(
+  destination: [number, number] | null,
+  origin?: [number, number] | null
+) {
   const url = getGoogleMapsDirectionsUrl(destination, origin)
   if (!url) {
     toast.info("Location is not available for directions.")
@@ -654,17 +747,25 @@ function getNearbyRiders(
   return riders
     .map((rider) => ({
       rider,
-      distanceKm: distanceBetweenKm(getPoint(rider.currentLocation), targetPoint),
+      distanceKm: distanceBetweenKm(
+        getPoint(rider.currentLocation),
+        targetPoint
+      ),
       freshness: riderFreshness(rider),
     }))
     .filter((candidate) => {
       if (!Number.isFinite(candidate.distanceKm)) return false
       if (candidate.rider.status !== "active") return false
-      return candidate.rider.isAvailableForAssignments || candidate.rider.liveOrderId
+      return (
+        candidate.rider.isAvailableForAssignments || candidate.rider.liveOrderId
+      )
     })
     .sort((left, right) => {
-      if (left.freshness !== right.freshness) return left.freshness === "live" ? -1 : 1
-      if (Boolean(left.rider.liveOrderId) !== Boolean(right.rider.liveOrderId)) {
+      if (left.freshness !== right.freshness)
+        return left.freshness === "live" ? -1 : 1
+      if (
+        Boolean(left.rider.liveOrderId) !== Boolean(right.rider.liveOrderId)
+      ) {
         return left.rider.liveOrderId ? 1 : -1
       }
       return left.distanceKm - right.distanceKm
@@ -673,7 +774,10 @@ function getNearbyRiders(
 }
 
 function getDeliveryPriorityScore(delivery: AdminLiveMapDelivery) {
-  let score = delivery.status === "ReadyForPickup" ? delivery.readyWaitMinutes : delivery.pickedUpMinutes
+  let score =
+    delivery.status === "ReadyForPickup"
+      ? delivery.readyWaitMinutes
+      : delivery.pickedUpMinutes
   if (delivery.status === "ReadyForPickup" && !delivery.rider) score += 120
   if (delivery.delaySeverity === "critical") score += 90
   if (delivery.delaySeverity === "warning") score += 45
@@ -683,9 +787,12 @@ function getDeliveryPriorityScore(delivery: AdminLiveMapDelivery) {
 }
 
 function getDeliveryQueueReason(delivery: AdminLiveMapDelivery) {
-  if (delivery.status === "ReadyForPickup" && !delivery.rider) return "Needs rider"
-  if (delivery.delaySeverity !== "none") return delivery.delayReason || "Delayed"
-  if (delivery.status === "PickedUp" && !delivery.isTrackingActive) return "Tracking inactive"
+  if (delivery.status === "ReadyForPickup" && !delivery.rider)
+    return "Needs rider"
+  if (delivery.delaySeverity !== "none")
+    return delivery.delayReason || "Delayed"
+  if (delivery.status === "PickedUp" && !delivery.isTrackingActive)
+    return "Tracking inactive"
   if (delivery.isNearCustomer) return "Near customer"
   if (delivery.status === "ReadyForPickup") return "Waiting pickup"
   if (delivery.status === "PickedUp") return "On trip"
@@ -703,8 +810,10 @@ function getDeliveryStatusLabel(status: AdminLiveMapDelivery["status"]) {
 function getDeliveryStatusBadgeClass(status: AdminLiveMapDelivery["status"]) {
   if (status === "New") return "border-violet-200 bg-violet-50 text-violet-700"
   if (status === "Accepted") return "border-sky-200 bg-sky-50 text-sky-700"
-  if (status === "Preparing") return "border-amber-200 bg-amber-50 text-amber-700"
-  if (status === "ReadyForPickup") return "border-pink-200 bg-pink-50 text-pink-700"
+  if (status === "Preparing")
+    return "border-amber-200 bg-amber-50 text-amber-700"
+  if (status === "ReadyForPickup")
+    return "border-pink-200 bg-pink-50 text-pink-700"
   return "border-blue-200 bg-blue-50 text-blue-700"
 }
 
@@ -721,8 +830,10 @@ function isLiveOrderDrawerDelivery(delivery: AdminLiveMapDelivery) {
 function getDeliveryReasonBadgeClass(delivery: AdminLiveMapDelivery) {
   if (delivery.delaySeverity === "critical") return "bg-rose-600 text-white"
   if (delivery.delaySeverity === "warning") return "bg-amber-500 text-white"
-  if (delivery.status === "ReadyForPickup" && !delivery.rider) return "bg-orange-500 text-white"
-  if (delivery.status === "PickedUp" && !delivery.isTrackingActive) return "bg-rose-500 text-white"
+  if (delivery.status === "ReadyForPickup" && !delivery.rider)
+    return "bg-orange-500 text-white"
+  if (delivery.status === "PickedUp" && !delivery.isTrackingActive)
+    return "bg-rose-500 text-white"
   if (delivery.isNearCustomer) return "bg-violet-500 text-white"
   if (delivery.status === "ReadyForPickup") return "bg-pink-500 text-white"
   if (delivery.status === "PickedUp") return "bg-blue-500 text-white"
@@ -867,8 +978,16 @@ function StatCard({
   tone: string
 }) {
   return (
-    <Badge variant="outline" className="inline-flex items-center gap-1.5 rounded-full border-white/70 bg-white/94 px-2.5 py-1.5 shadow-[0_12px_32px_rgba(15,23,42,.12)] backdrop-blur">
-      <span className={cn("flex size-5 items-center justify-center rounded-full", tone)}>
+    <Badge
+      variant="outline"
+      className="inline-flex items-center gap-1.5 rounded-full border-white/70 bg-white/94 px-2.5 py-1.5 shadow-[0_12px_32px_rgba(15,23,42,.12)] backdrop-blur"
+    >
+      <span
+        className={cn(
+          "flex size-5 items-center justify-center rounded-full",
+          tone
+        )}
+      >
         <Icon className="size-2.5" />
       </span>
       <span className="text-[11px] font-semibold text-slate-500">{label}</span>
@@ -911,12 +1030,22 @@ export function LiveMapPage() {
   const [opsDrawerOpen, setOpsDrawerOpen] = React.useState(false)
   const [liveOrdersDrawerOpen, setLiveOrdersDrawerOpen] = React.useState(false)
   const [priorityMode, setPriorityMode] = React.useState(false)
-  const [connectionState, setConnectionState] = React.useState<LiveMapConnectionState>("connecting")
-  const [focusedSelectedKey, setFocusedSelectedKey] = React.useState<string | null>(null)
+  const [connectionState, setConnectionState] =
+    React.useState<LiveMapConnectionState>("connecting")
+  const [focusedSelectedKey, setFocusedSelectedKey] = React.useState<
+    string | null
+  >(null)
   const [fitVersion, setFitVersion] = React.useState(0)
-  const [camera, setCamera] = React.useState<MapCamera>({ zoom: 12, bounds: null })
-  const [assignmentDrafts, setAssignmentDrafts] = React.useState<Record<string, string>>({})
-  const liveMapRefreshTimerRef = React.useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const [camera, setCamera] = React.useState<MapCamera>({
+    zoom: 12,
+    bounds: null,
+  })
+  const [assignmentDrafts, setAssignmentDrafts] = React.useState<
+    Record<string, string>
+  >({})
+  const liveMapRefreshTimerRef = React.useRef<ReturnType<
+    typeof window.setTimeout
+  > | null>(null)
   const lastLiveMapRefreshAtRef = React.useRef(0)
   const pendingHiddenRefreshRef = React.useRef(false)
   const didInitialFitRef = React.useRef(false)
@@ -986,7 +1115,8 @@ export function LiveMapPage() {
     staleTime: 30_000,
   })
   const autoAssignMutation = useMutation({
-    mutationFn: (orderId: string) => bulkAssignAdminRiders({ orderIds: [orderId] }),
+    mutationFn: (orderId: string) =>
+      bulkAssignAdminRiders({ orderIds: [orderId] }),
     onSuccess: (result) => {
       toast.success(
         result.assigned > 0
@@ -995,11 +1125,15 @@ export function LiveMapPage() {
       )
       void queryClient.invalidateQueries({ queryKey: ["admin-live-map"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
-      void queryClient.invalidateQueries({ queryKey: ["admin-rider-candidates"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-rider-candidates"],
+      })
       void queryClient.invalidateQueries({ queryKey: ["admin-dispatch-logs"] })
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Auto dispatch failed.")
+      toast.error(
+        error instanceof Error ? error.message : "Auto dispatch failed."
+      )
     },
   })
   const assignRiderMutation = useMutation({
@@ -1014,11 +1148,15 @@ export function LiveMapPage() {
       void queryClient.invalidateQueries({ queryKey: ["admin-live-map"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-orders-monitor"] })
-      void queryClient.invalidateQueries({ queryKey: ["admin-rider-assignment-options"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-rider-assignment-options"],
+      })
       void queryClient.invalidateQueries({ queryKey: ["admin-dispatch-logs"] })
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Rider assignment failed.")
+      toast.error(
+        error instanceof Error ? error.message : "Rider assignment failed."
+      )
     },
   })
   const statusMutation = useMutation({
@@ -1040,14 +1178,19 @@ export function LiveMapPage() {
       void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Order status update failed.")
+      toast.error(
+        error instanceof Error ? error.message : "Order status update failed."
+      )
     },
   })
   const snapshot = liveMapQuery.data
 
-  const handleAssignmentDraftChange = React.useCallback((orderId: string, riderId: string) => {
-    setAssignmentDrafts((current) => ({ ...current, [orderId]: riderId }))
-  }, [])
+  const handleAssignmentDraftChange = React.useCallback(
+    (orderId: string, riderId: string) => {
+      setAssignmentDrafts((current) => ({ ...current, [orderId]: riderId }))
+    },
+    []
+  )
 
   const handleManualAssign = React.useCallback(
     (orderId: string, riderId: string) => {
@@ -1084,13 +1227,17 @@ export function LiveMapPage() {
 
   React.useEffect(() => {
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && pendingHiddenRefreshRef.current) {
+      if (
+        document.visibilityState === "visible" &&
+        pendingHiddenRefreshRef.current
+      ) {
         requestLiveMapRefresh()
       }
     }
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange)
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
   }, [requestLiveMapRefresh])
 
   React.useEffect(() => {
@@ -1104,26 +1251,38 @@ export function LiveMapPage() {
   React.useEffect(() => {
     if (!selected || !snapshot) return
     if (selected.type === "delivery") {
-      const next = snapshot.deliveries.find((item) => item.id === selected.item.id)
-      if (next && next !== selected.item) setSelected({ type: "delivery", item: next })
+      const next = snapshot.deliveries.find(
+        (item) => item.id === selected.item.id
+      )
+      if (next && next !== selected.item)
+        setSelected({ type: "delivery", item: next })
     }
     if (selected.type === "rider") {
       const next = snapshot.riders.find((item) => item.id === selected.item.id)
-      if (next && next !== selected.item) setSelected({ type: "rider", item: next })
+      if (next && next !== selected.item)
+        setSelected({ type: "rider", item: next })
     }
     if (selected.type === "restaurant") {
-      const next = snapshot.restaurants.find((item) => item.id === selected.item.id)
-      if (next && next !== selected.item) setSelected({ type: "restaurant", item: next })
+      const next = snapshot.restaurants.find(
+        (item) => item.id === selected.item.id
+      )
+      if (next && next !== selected.item)
+        setSelected({ type: "restaurant", item: next })
     }
   }, [selected, snapshot])
 
   const deliveries = React.useMemo(() => {
     const items = snapshot?.deliveries ?? []
     return items.filter((delivery) => {
-      if (debouncedSearch && !matchesSearch(deliverySearchText(delivery), debouncedSearch)) return false
+      if (
+        debouncedSearch &&
+        !matchesSearch(deliverySearchText(delivery), debouncedSearch)
+      )
+        return false
       if (priorityMode && !isPriorityDelivery(delivery)) return false
       if (layer === "orders" || layer === "all") return true
-      if (layer === "issues") return delivery.isDelayed || delivery.delaySeverity !== "none"
+      if (layer === "issues")
+        return delivery.isDelayed || delivery.delaySeverity !== "none"
       return false
     })
   }, [debouncedSearch, layer, priorityMode, snapshot?.deliveries])
@@ -1131,7 +1290,11 @@ export function LiveMapPage() {
   const riders = React.useMemo(() => {
     const items = snapshot?.riders ?? []
     return items.filter((rider) => {
-      if (debouncedSearch && !matchesSearch(riderSearchText(rider), debouncedSearch)) return false
+      if (
+        debouncedSearch &&
+        !matchesSearch(riderSearchText(rider), debouncedSearch)
+      )
+        return false
       if (priorityMode && !isPriorityRider(rider)) return false
       if (layer === "riders" || layer === "all") return true
       if (layer === "issues") return riderFreshness(rider) === "stale"
@@ -1142,26 +1305,44 @@ export function LiveMapPage() {
   const restaurants = React.useMemo(() => {
     const items = snapshot?.restaurants ?? []
     return items.filter((restaurant) => {
-      if (debouncedSearch && !matchesSearch(restaurantSearchText(restaurant), debouncedSearch)) return false
+      if (
+        debouncedSearch &&
+        !matchesSearch(restaurantSearchText(restaurant), debouncedSearch)
+      )
+        return false
       if (priorityMode && !isPriorityRestaurant(restaurant)) return false
-      if (layer === "all" && !showQuietRestaurants && restaurant.activeOrders === 0) {
+      if (
+        layer === "all" &&
+        !showQuietRestaurants &&
+        restaurant.activeOrders === 0
+      ) {
         return false
       }
       if (layer === "restaurants" || layer === "all") return true
       if (layer === "issues") return restaurant.delayedOrders > 0
       return false
     })
-  }, [debouncedSearch, layer, priorityMode, showQuietRestaurants, snapshot?.restaurants])
+  }, [
+    debouncedSearch,
+    layer,
+    priorityMode,
+    showQuietRestaurants,
+    snapshot?.restaurants,
+  ])
 
-  const selectedDeliveryId = selected?.type === "delivery" ? selected.item.id : null
+  const selectedDeliveryId =
+    selected?.type === "delivery" ? selected.item.id : null
   const selectedRiderId = selected?.type === "rider" ? selected.item.id : null
-  const selectedRestaurantId = selected?.type === "restaurant" ? selected.item.id : null
+  const selectedRestaurantId =
+    selected?.type === "restaurant" ? selected.item.id : null
 
   const visibleDeliveries = React.useMemo(
     () =>
       deliveries.filter((delivery) => {
         if (selectedDeliveryId === delivery.id) return true
-        return getDeliveryPoints(delivery).some((point) => isPointInsideBounds(point, camera))
+        return getDeliveryPoints(delivery).some((point) =>
+          isPointInsideBounds(point, camera)
+        )
       }),
     [camera, deliveries, selectedDeliveryId]
   )
@@ -1170,8 +1351,15 @@ export function LiveMapPage() {
     () =>
       riders.filter((rider) => {
         if (selectedRiderId === rider.id) return true
-        if (!isPointInsideBounds(getPoint(rider.currentLocation), camera)) return false
-        if (layer === "all" || isDetailedZoom || hasActiveSearch || layer === "riders" || layer === "issues") {
+        if (!isPointInsideBounds(getPoint(rider.currentLocation), camera))
+          return false
+        if (
+          layer === "all" ||
+          isDetailedZoom ||
+          hasActiveSearch ||
+          layer === "riders" ||
+          layer === "issues"
+        ) {
           return true
         }
         return Boolean(rider.liveOrderId) || riderFreshness(rider) === "stale"
@@ -1234,17 +1422,24 @@ export function LiveMapPage() {
     setFitVersion((current) => current + 1)
   }, [mapPoints.length])
 
-  const selectedPoints = React.useMemo(() => getSelectedPoints(selected), [selected])
+  const selectedPoints = React.useMemo(
+    () => getSelectedPoints(selected),
+    [selected]
+  )
   const currentSelectedKey = selectedKey(selected)
-  const shouldFocusSelected = Boolean(selected && focusedSelectedKey === currentSelectedKey)
-  const viewportPoints = shouldFocusSelected && selectedPoints.length ? selectedPoints : mapPoints
+  const shouldFocusSelected = Boolean(
+    selected && focusedSelectedKey === currentSelectedKey
+  )
+  const viewportPoints =
+    shouldFocusSelected && selectedPoints.length ? selectedPoints : mapPoints
   const viewportTriggerKey = `${shouldFocusSelected ? currentSelectedKey : "all"}:${layer}:${debouncedSearch.trim()}:${showQuietRestaurants}:${fitVersion}`
 
   const summary = snapshot?.summary
   const isInitialLoading = liveMapQuery.isLoading && !snapshot
   const visibleMarkerCount =
     visibleDeliveries.length + visibleRiders.length + visibleRestaurants.length
-  const totalFilteredMarkerCount = deliveries.length + riders.length + restaurants.length
+  const totalFilteredMarkerCount =
+    deliveries.length + riders.length + restaurants.length
   const issues = React.useMemo<LiveMapIssue[]>(() => {
     const items: LiveMapIssue[] = []
 
@@ -1252,9 +1447,11 @@ export function LiveMapPage() {
       if (delivery.isDelayed || delivery.delaySeverity !== "none") {
         items.push({
           id: `delivery-delay-${delivery.id}`,
-          severity: delivery.delaySeverity === "critical" ? "critical" : "warning",
+          severity:
+            delivery.delaySeverity === "critical" ? "critical" : "warning",
           title: `${delivery.orderNumber} needs attention`,
-          description: delivery.delayReason || `${delivery.status} order is delayed.`,
+          description:
+            delivery.delayReason || `${delivery.status} order is delayed.`,
           selected: { type: "delivery", item: delivery },
         })
       }
@@ -1316,9 +1513,12 @@ export function LiveMapPage() {
 
   const liveOrderDeliveries = React.useMemo(
     () =>
-      [...(snapshot?.deliveries ?? [])].filter(isLiveOrderDrawerDelivery).sort(
-        (left, right) => getDeliveryPriorityScore(right) - getDeliveryPriorityScore(left)
-      ),
+      [...(snapshot?.deliveries ?? [])]
+        .filter(isLiveOrderDrawerDelivery)
+        .sort(
+          (left, right) =>
+            getDeliveryPriorityScore(right) - getDeliveryPriorityScore(left)
+        ),
     [snapshot?.deliveries]
   )
 
@@ -1339,7 +1539,10 @@ export function LiveMapPage() {
 
     return {
       total: liveOrderDeliveries.length,
-      totalValue: liveOrderDeliveries.reduce((sum, delivery) => sum + delivery.total, 0),
+      totalValue: liveOrderDeliveries.reduce(
+        (sum, delivery) => sum + delivery.total,
+        0
+      ),
       statusCounts,
       delayed: liveOrderDeliveries.filter(
         (delivery) => delivery.isDelayed || delivery.delaySeverity !== "none"
@@ -1366,20 +1569,19 @@ export function LiveMapPage() {
     >()
 
     liveOrderDeliveries.forEach((delivery) => {
-      const current =
-        restaurantsById.get(delivery.restaurant.id) ??
-        {
-          id: delivery.restaurant.id,
-          name: delivery.restaurant.name,
-          count: 0,
-          totalValue: 0,
-          delayed: 0,
-          ready: 0,
-          pickedUp: 0,
-        }
+      const current = restaurantsById.get(delivery.restaurant.id) ?? {
+        id: delivery.restaurant.id,
+        name: delivery.restaurant.name,
+        count: 0,
+        totalValue: 0,
+        delayed: 0,
+        ready: 0,
+        pickedUp: 0,
+      }
       current.count += 1
       current.totalValue += delivery.total
-      if (delivery.isDelayed || delivery.delaySeverity !== "none") current.delayed += 1
+      if (delivery.isDelayed || delivery.delaySeverity !== "none")
+        current.delayed += 1
       if (delivery.status === "ReadyForPickup") current.ready += 1
       if (delivery.status === "PickedUp") current.pickedUp += 1
       restaurantsById.set(delivery.restaurant.id, current)
@@ -1409,10 +1611,15 @@ export function LiveMapPage() {
   const missingLocationSummary = React.useMemo(() => {
     const hiddenOrders = deliveries.filter(
       (delivery) =>
-        !getPoint(delivery.restaurant) || !getPoint(delivery.customer.deliveryAddress)
+        !getPoint(delivery.restaurant) ||
+        !getPoint(delivery.customer.deliveryAddress)
     ).length
-    const hiddenRiders = riders.filter((rider) => !getPoint(rider.currentLocation)).length
-    const hiddenRestaurants = restaurants.filter((restaurant) => !getPoint(restaurant)).length
+    const hiddenRiders = riders.filter(
+      (rider) => !getPoint(rider.currentLocation)
+    ).length
+    const hiddenRestaurants = restaurants.filter(
+      (restaurant) => !getPoint(restaurant)
+    ).length
 
     return {
       hiddenOrders,
@@ -1431,17 +1638,25 @@ export function LiveMapPage() {
       return getNearbyRiders(riders, getPoint(selected.item), 4)
     }
     if (!selected.item.liveOrderId) return []
-    const activeDelivery = deliveries.find((delivery) => delivery.id === selected.item.liveOrderId)
-    return activeDelivery ? getNearbyRiders(riders, getDeliveryTargetPoint(activeDelivery), 4) : []
+    const activeDelivery = deliveries.find(
+      (delivery) => delivery.id === selected.item.liveOrderId
+    )
+    return activeDelivery
+      ? getNearbyRiders(riders, getDeliveryTargetPoint(activeDelivery), 4)
+      : []
   }, [deliveries, riders, selected])
 
   const fleetPulse = React.useMemo(() => {
-    const staleRiders = riders.filter((rider) => riderFreshness(rider) === "stale").length
+    const staleRiders = riders.filter(
+      (rider) => riderFreshness(rider) === "stale"
+    ).length
     const busyRiders = riders.filter((rider) => rider.liveOrderId).length
     const readyWithoutRider = deliveries.filter(
       (delivery) => delivery.status === "ReadyForPickup" && !delivery.rider
     ).length
-    const activeStores = restaurants.filter((restaurant) => restaurant.activeOrders > 0).length
+    const activeStores = restaurants.filter(
+      (restaurant) => restaurant.activeOrders > 0
+    ).length
 
     return {
       staleRiders,
@@ -1465,11 +1680,21 @@ export function LiveMapPage() {
     []
   )
   const riderClusters = React.useMemo(
-    () => clusterMapPoints(visibleRiders, (rider) => getPoint(rider.currentLocation), 0.018),
+    () =>
+      clusterMapPoints(
+        visibleRiders,
+        (rider) => getPoint(rider.currentLocation),
+        0.018
+      ),
     [visibleRiders]
   )
   const restaurantClusters = React.useMemo(
-    () => clusterMapPoints(visibleRestaurants, (restaurant) => getPoint(restaurant), 0.018),
+    () =>
+      clusterMapPoints(
+        visibleRestaurants,
+        (restaurant) => getPoint(restaurant),
+        0.018
+      ),
     [visibleRestaurants]
   )
   const customerClusters = React.useMemo(
@@ -1496,7 +1721,10 @@ export function LiveMapPage() {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          <MapViewportSync points={viewportPoints} triggerKey={viewportTriggerKey} />
+          <MapViewportSync
+            points={viewportPoints}
+            triggerKey={viewportTriggerKey}
+          />
           <MapResizeObserver />
           <MapCameraTracker onChange={handleCameraChange} />
           {shouldClusterMarkers
@@ -1509,28 +1737,39 @@ export function LiveMapPage() {
                     click: () => {
                       const firstRestaurant = cluster.items[0]
                       if (firstRestaurant) {
-                        setSelected({ type: "restaurant", item: firstRestaurant })
+                        setSelected({
+                          type: "restaurant",
+                          item: firstRestaurant,
+                        })
                       }
                     },
                   }}
                 />
               ))
             : visibleRestaurants.map((restaurant) => {
-            const point = getPoint(restaurant)
-            if (!point) return null
-            const isSelected = selected?.type === "restaurant" && selected.item.id === restaurant.id
-            const delaySeverity = restaurantDelaySeverityById.get(restaurant.id) ?? "none"
-            return (
-              <Marker
-                key={`restaurant-${restaurant.id}`}
-                position={point}
-                icon={getRestaurantMarkerIcon(restaurant, isSelected, delaySeverity)}
-                eventHandlers={{
-                  click: () => setSelected({ type: "restaurant", item: restaurant }),
-                }}
-              />
-            )
-          })}
+                const point = getPoint(restaurant)
+                if (!point) return null
+                const isSelected =
+                  selected?.type === "restaurant" &&
+                  selected.item.id === restaurant.id
+                const delaySeverity =
+                  restaurantDelaySeverityById.get(restaurant.id) ?? "none"
+                return (
+                  <Marker
+                    key={`restaurant-${restaurant.id}`}
+                    position={point}
+                    icon={getRestaurantMarkerIcon(
+                      restaurant,
+                      isSelected,
+                      delaySeverity
+                    )}
+                    eventHandlers={{
+                      click: () =>
+                        setSelected({ type: "restaurant", item: restaurant }),
+                    }}
+                  />
+                )
+              })}
           {visibleDeliveries.map((delivery) => {
             const customerPoint = getPoint(delivery.customer.deliveryAddress)
             const activeRoutePoints = getActiveRoutePoints(delivery)
@@ -1543,11 +1782,20 @@ export function LiveMapPage() {
                   : delivery.status === "PickedUp"
                     ? "#0ea5e9"
                     : "#fb3f8a"
-            const isSelected = selected?.type === "delivery" && selected.item.id === delivery.id
+            const isSelected =
+              selected?.type === "delivery" && selected.item.id === delivery.id
             const shouldShowRoute =
-              isSelected || isDetailedZoom || hasActiveSearch || layer === "orders" || layer === "issues"
-            const activeRouteLabelPoint = midpoint(activeRoutePoints[0] ?? null, activeRoutePoints[1] ?? null)
-            const routeLabelTone = delivery.status === "PickedUp" ? "dropoff" : "pickup"
+              isSelected ||
+              isDetailedZoom ||
+              hasActiveSearch ||
+              layer === "orders" ||
+              layer === "issues"
+            const activeRouteLabelPoint = midpoint(
+              activeRoutePoints[0] ?? null,
+              activeRoutePoints[1] ?? null
+            )
+            const routeLabelTone =
+              delivery.status === "PickedUp" ? "dropoff" : "pickup"
 
             return (
               <React.Fragment key={`delivery-${delivery.id}`}>
@@ -1561,7 +1809,8 @@ export function LiveMapPage() {
                       dashArray: "4 10",
                     }}
                     eventHandlers={{
-                      click: () => setSelected({ type: "delivery", item: delivery }),
+                      click: () =>
+                        setSelected({ type: "delivery", item: delivery }),
                     }}
                   />
                 ) : null}
@@ -1572,12 +1821,14 @@ export function LiveMapPage() {
                       color: routeColor,
                       weight: isSelected ? 8 : selected ? 4 : 5,
                       opacity: isSelected ? 0.95 : selected ? 0.38 : 0.78,
-                      dashArray: delivery.status === "PickedUp" ? undefined : "12 8",
+                      dashArray:
+                        delivery.status === "PickedUp" ? undefined : "12 8",
                       lineCap: "round",
                       lineJoin: "round",
                     }}
                     eventHandlers={{
-                      click: () => setSelected({ type: "delivery", item: delivery }),
+                      click: () =>
+                        setSelected({ type: "delivery", item: delivery }),
                     }}
                   />
                 ) : null}
@@ -1585,7 +1836,9 @@ export function LiveMapPage() {
                   <Marker
                     position={activeRouteLabelPoint}
                     icon={labelIcon(
-                      delivery.status === "PickedUp" ? "To customer" : "To pickup",
+                      delivery.status === "PickedUp"
+                        ? "To customer"
+                        : "To pickup",
                       routeLabelTone
                     )}
                     interactive={false}
@@ -1596,7 +1849,8 @@ export function LiveMapPage() {
                     position={customerPoint}
                     icon={customerIcon}
                     eventHandlers={{
-                      click: () => setSelected({ type: "delivery", item: delivery }),
+                      click: () =>
+                        setSelected({ type: "delivery", item: delivery }),
                     }}
                   />
                 ) : null}
@@ -1637,26 +1891,30 @@ export function LiveMapPage() {
                 />
               ))
             : visibleRiders.map((rider) => {
-            const point = getPoint(rider.currentLocation)
-            if (!point) return null
-            const isSelected = selected?.type === "rider" && selected.item.id === rider.id
-            return (
-              <Marker
-                key={`rider-${rider.id}`}
-                position={point}
-                icon={getRiderMarkerIcon(rider, isSelected)}
-                eventHandlers={{
-                  click: () => setSelected({ type: "rider", item: rider }),
-                }}
-              />
-            )
-          })}
+                const point = getPoint(rider.currentLocation)
+                if (!point) return null
+                const isSelected =
+                  selected?.type === "rider" && selected.item.id === rider.id
+                return (
+                  <Marker
+                    key={`rider-${rider.id}`}
+                    position={point}
+                    icon={getRiderMarkerIcon(rider, isSelected)}
+                    eventHandlers={{
+                      click: () => setSelected({ type: "rider", item: rider }),
+                    }}
+                  />
+                )
+              })}
         </MapContainer>
       </div>
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-[40] p-4">
         <div className="pointer-events-auto flex w-full max-w-none flex-col items-start gap-2">
-          <Card size="sm" className="border-white/70 bg-white/94 py-2 shadow-[0_20px_70px_rgba(15,23,42,.18)] backdrop-blur">
+          <Card
+            size="sm"
+            className="border-white/70 bg-white/94 py-2 shadow-[0_20px_70px_rgba(15,23,42,.18)] backdrop-blur"
+          >
             <CardContent className="px-2">
               <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
                 <div className="relative min-w-0 lg:w-[25vw] lg:max-w-md lg:min-w-72">
@@ -1680,7 +1938,10 @@ export function LiveMapPage() {
                     </Button>
                   ) : null}
                 </div>
-                <Select value={layer} onValueChange={(value) => setLayer(value as LayerFilter)}>
+                <Select
+                  value={layer}
+                  onValueChange={(value) => setLayer(value as LayerFilter)}
+                >
                   <SelectTrigger className="h-9 w-full rounded-2xl bg-white lg:w-40">
                     <SelectValue />
                   </SelectTrigger>
@@ -1688,7 +1949,9 @@ export function LiveMapPage() {
                     <SelectItem value="all">All layers</SelectItem>
                     <SelectItem value="orders">Orders only</SelectItem>
                     <SelectItem value="riders">Riders only</SelectItem>
-                    <SelectItem value="restaurants">Restaurants only</SelectItem>
+                    <SelectItem value="restaurants">
+                      Restaurants only
+                    </SelectItem>
                     <SelectItem value="issues">Issues only</SelectItem>
                   </SelectContent>
                 </Select>
@@ -1713,7 +1976,11 @@ export function LiveMapPage() {
                   size="icon-lg"
                   className="rounded-2xl bg-white"
                   onClick={() => setShowQuietRestaurants((current) => !current)}
-                  aria-label={showQuietRestaurants ? "Show active stores only" : "Show all stores"}
+                  aria-label={
+                    showQuietRestaurants
+                      ? "Show active stores only"
+                      : "Show all stores"
+                  }
                 >
                   {showQuietRestaurants ? (
                     <Eye className="size-4" />
@@ -1754,12 +2021,42 @@ export function LiveMapPage() {
           </Card>
 
           <div className="flex max-w-[calc(100vw-2rem)] flex-wrap gap-1.5">
-            <StatCard label="Live trips" value={summary?.liveTrips ?? 0} icon={Truck} tone="bg-sky-100 text-sky-700" />
-            <StatCard label="Ready" value={summary?.readyForPickup ?? 0} icon={PackageCheck} tone="bg-pink-100 text-pink-700" />
-            <StatCard label="Riders" value={summary?.availableRiders ?? 0} icon={Bike} tone="bg-emerald-100 text-emerald-700" />
-            <StatCard label="Stores" value={`${summary?.onlineRestaurants ?? 0}/${summary?.restaurants ?? 0}`} icon={Store} tone="bg-orange-100 text-orange-700" />
-            <StatCard label="Delayed" value={summary?.delayedTrips ?? 0} icon={AlertTriangle} tone="bg-rose-100 text-rose-700" />
-            <StatCard label="Near" value={summary?.nearCustomer ?? 0} icon={MapPin} tone="bg-violet-100 text-violet-700" />
+            <StatCard
+              label="Live trips"
+              value={summary?.liveTrips ?? 0}
+              icon={Truck}
+              tone="bg-sky-100 text-sky-700"
+            />
+            <StatCard
+              label="Ready"
+              value={summary?.readyForPickup ?? 0}
+              icon={PackageCheck}
+              tone="bg-pink-100 text-pink-700"
+            />
+            <StatCard
+              label="Riders"
+              value={summary?.availableRiders ?? 0}
+              icon={Bike}
+              tone="bg-emerald-100 text-emerald-700"
+            />
+            <StatCard
+              label="Stores"
+              value={`${summary?.onlineRestaurants ?? 0}/${summary?.restaurants ?? 0}`}
+              icon={Store}
+              tone="bg-orange-100 text-orange-700"
+            />
+            <StatCard
+              label="Delayed"
+              value={summary?.delayedTrips ?? 0}
+              icon={AlertTriangle}
+              tone="bg-rose-100 text-rose-700"
+            />
+            <StatCard
+              label="Near"
+              value={summary?.nearCustomer ?? 0}
+              icon={MapPin}
+              tone="bg-violet-100 text-violet-700"
+            />
           </div>
         </div>
       </div>
@@ -1832,19 +2129,25 @@ export function LiveMapPage() {
           </div>
           <p>Last synced {formatDateTime(snapshot?.lastUpdatedAt)}</p>
           <p className="mt-1 font-semibold text-slate-700">
-            Rendering {visibleMarkerCount}/{totalFilteredMarkerCount} markers - zoom {camera.zoom}
+            Rendering {visibleMarkerCount}/{totalFilteredMarkerCount} markers -
+            zoom {camera.zoom}
           </p>
           {missingLocationSummary.total > 0 ? (
             <p className="mt-1 text-[11px] text-slate-500">
-              Hidden: {missingLocationSummary.hiddenOrders} orders, {missingLocationSummary.hiddenRiders} riders, {missingLocationSummary.hiddenRestaurants} stores.
+              Hidden: {missingLocationSummary.hiddenOrders} orders,{" "}
+              {missingLocationSummary.hiddenRiders} riders,{" "}
+              {missingLocationSummary.hiddenRestaurants} stores.
             </p>
           ) : null}
         </div>
       </div>
 
       <Sheet open={liveOrdersDrawerOpen} onOpenChange={setLiveOrdersDrawerOpen}>
-        <SheetContent side="left" className="z-[1200] w-full overflow-hidden p-0 sm:!max-w-xl">
-          <SheetHeader className="border-b">
+        <SheetContent
+          side="left"
+          className="z-[1200] flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-xl! md:max-w-xl!"
+        >
+          <SheetHeader className="border-b px-6 py-5">
             <SheetTitle className="flex items-center gap-2">
               <ListChecks className="size-5 text-pink-500" />
               Live orders
@@ -1869,8 +2172,11 @@ export function LiveMapPage() {
       </Sheet>
 
       <Sheet open={opsDrawerOpen} onOpenChange={setOpsDrawerOpen}>
-        <SheetContent side="left" className="z-[1200] w-full overflow-hidden p-0 sm:!max-w-md">
-          <SheetHeader className="border-b">
+        <SheetContent
+          side="left"
+          className="z-[1200] flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!"
+        >
+          <SheetHeader className="border-b px-6 py-5">
             <SheetTitle className="flex items-center gap-2">
               <SlidersHorizontal className="size-5 text-pink-500" />
               Map operations
@@ -1901,7 +2207,10 @@ export function LiveMapPage() {
         </SheetContent>
       </Sheet>
 
-      <Sheet open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
+      <Sheet
+        open={Boolean(selected)}
+        onOpenChange={(open) => !open && setSelected(null)}
+      >
         {selected ? (
           <DetailsPanel
             selected={selected}
@@ -1936,8 +2245,12 @@ export function LiveMapPage() {
         <div className="absolute inset-0 z-[600] flex items-center justify-center bg-slate-950/45 backdrop-blur-sm">
           <div className="rounded-3xl border border-white/20 bg-white px-6 py-5 text-center shadow-2xl">
             <Loader2 className="mx-auto size-8 animate-spin text-pink-500" />
-            <p className="mt-3 text-sm font-semibold text-slate-950">Loading live map</p>
-            <p className="mt-1 text-xs text-slate-500">Preparing riders, restaurants, and active routes.</p>
+            <p className="mt-3 text-sm font-semibold text-slate-950">
+              Loading live map
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Preparing riders, restaurants, and active routes.
+            </p>
           </div>
         </div>
       ) : null}
@@ -1979,13 +2292,20 @@ function DetailsPanel({
   isCancellingOrder: boolean
 }) {
   return (
-    <SheetContent side="right" className="z-[1200] w-full overflow-hidden p-0 sm:!max-w-md">
-      <SheetHeader className="border-b">
+    <SheetContent
+      side="right"
+      className="z-[1200] flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-xl! md:max-w-xl!"
+    >
+      <SheetHeader className="border-b px-6 py-5">
         <div className="flex items-center gap-3">
           <span className="flex size-10 items-center justify-center rounded-2xl bg-slate-950 text-white">
-            {selected.type === "delivery" ? <PackageCheck className="size-5" /> : null}
+            {selected.type === "delivery" ? (
+              <PackageCheck className="size-5" />
+            ) : null}
             {selected.type === "rider" ? <Bike className="size-5" /> : null}
-            {selected.type === "restaurant" ? <Building2 className="size-5" /> : null}
+            {selected.type === "restaurant" ? (
+              <Building2 className="size-5" />
+            ) : null}
           </span>
           <div>
             <SheetTitle className="text-sm font-black text-slate-950">
@@ -2024,14 +2344,29 @@ function DetailsPanel({
               />
             ) : null}
             {selected.type === "rider" ? (
-              <RiderDetails rider={selected.item} nearbyRiders={nearbyRiders} onFocus={onFocus} onOpen={onOpen} />
+              <RiderDetails
+                rider={selected.item}
+                nearbyRiders={nearbyRiders}
+                onFocus={onFocus}
+                onOpen={onOpen}
+              />
             ) : null}
             {selected.type === "restaurant" ? (
-              <RestaurantDetails restaurant={selected.item} nearbyRiders={nearbyRiders} onFocus={onFocus} onOpen={onOpen} />
+              <RestaurantDetails
+                restaurant={selected.item}
+                nearbyRiders={nearbyRiders}
+                onFocus={onFocus}
+                onOpen={onOpen}
+              />
             ) : null}
           </TabsContent>
           <TabsContent value="route" className="space-y-4 p-5">
-            <SelectedRouteTab selected={selected} nearbyRiders={nearbyRiders} onFocus={onFocus} onOpen={onOpen} />
+            <SelectedRouteTab
+              selected={selected}
+              nearbyRiders={nearbyRiders}
+              onFocus={onFocus}
+              onOpen={onOpen}
+            />
           </TabsContent>
           <TabsContent value="actions" className="space-y-4 p-5">
             <SelectedActionsTab
@@ -2057,11 +2392,19 @@ function DetailsPanel({
   )
 }
 
-function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+function DetailRow({
+  label,
+  value,
+}: {
+  label: string
+  value: React.ReactNode
+}) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-2xl bg-slate-50 px-4 py-3">
       <span className="text-xs font-medium text-slate-500">{label}</span>
-      <span className="max-w-[230px] text-right text-sm font-semibold text-slate-950">{value}</span>
+      <span className="max-w-[230px] text-right text-sm font-semibold text-slate-950">
+        {value}
+      </span>
     </div>
   )
 }
@@ -2082,7 +2425,10 @@ function SelectedRouteTab({
     return (
       <>
         <DetailRow label="Map state" value={getDeliveryMapState(delivery)} />
-        <DetailRow label="Next target" value={getDeliveryTargetLabel(delivery)} />
+        <DetailRow
+          label="Next target"
+          value={getDeliveryTargetLabel(delivery)}
+        />
         <DetailRow
           label="Remaining"
           value={`${formatDistance(delivery.tracking.remainingDistanceKm)} - ${formatMinutes(delivery.tracking.remainingDurationMinutes)}`}
@@ -2096,7 +2442,12 @@ function SelectedRouteTab({
           <Button
             variant="outline"
             className="rounded-2xl"
-            onClick={() => openDirections(getDeliveryTargetPoint(delivery), getDeliveryOriginPoint(delivery))}
+            onClick={() =>
+              openDirections(
+                getDeliveryTargetPoint(delivery),
+                getDeliveryOriginPoint(delivery)
+              )
+            }
           >
             <Navigation className="size-4" />
             Directions
@@ -2111,17 +2462,34 @@ function SelectedRouteTab({
     const riderPoint = getPoint(rider.currentLocation)
     return (
       <>
-        <DetailRow label="Current order" value={rider.liveOrderNumber || "No active trip"} />
+        <DetailRow
+          label="Current order"
+          value={rider.liveOrderNumber || "No active trip"}
+        />
         <DetailRow label="Phone" value={rider.phone || "Not added"} />
-        <DetailRow label="Last location" value={formatDateTime(rider.currentLocation?.lastUpdatedAt)} />
-        <DetailRow label="Speed" value={`${Math.round(rider.currentLocation?.speedKmph ?? 0)} km/h`} />
-        <NearbyRidersPanel riders={nearbyRiders} title="Riders near this trip target" onOpen={onOpen} />
+        <DetailRow
+          label="Last location"
+          value={formatDateTime(rider.currentLocation?.lastUpdatedAt)}
+        />
+        <DetailRow
+          label="Speed"
+          value={`${Math.round(rider.currentLocation?.speedKmph ?? 0)} km/h`}
+        />
+        <NearbyRidersPanel
+          riders={nearbyRiders}
+          title="Riders near this trip target"
+          onOpen={onOpen}
+        />
         <div className="grid grid-cols-2 gap-2">
           <Button variant="outline" className="rounded-2xl" onClick={onFocus}>
             <Crosshair className="size-4" />
             Focus
           </Button>
-          <Button variant="outline" className="rounded-2xl" onClick={() => openMapMarker(riderPoint, "Rider location")}>
+          <Button
+            variant="outline"
+            className="rounded-2xl"
+            onClick={() => openMapMarker(riderPoint, "Rider location")}
+          >
             <Navigation className="size-4" />
             Show marker
           </Button>
@@ -2134,15 +2502,25 @@ function SelectedRouteTab({
   return (
     <>
       <DetailRow label="Live orders" value={restaurant.activeOrders} />
-      <DetailRow label="Ready / picked" value={`${restaurant.readyForPickup} ready - ${restaurant.pickedUp} picked`} />
-      <DetailRow label="Address" value={restaurant.address || restaurant.city || "Address unavailable"} />
+      <DetailRow
+        label="Ready / picked"
+        value={`${restaurant.readyForPickup} ready - ${restaurant.pickedUp} picked`}
+      />
+      <DetailRow
+        label="Address"
+        value={restaurant.address || restaurant.city || "Address unavailable"}
+      />
       <NearbyRidersPanel riders={nearbyRiders} onOpen={onOpen} />
       <div className="grid grid-cols-2 gap-2">
         <Button variant="outline" className="rounded-2xl" onClick={onFocus}>
           <Crosshair className="size-4" />
           Focus
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => openDirections(getPoint(restaurant))}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => openDirections(getPoint(restaurant))}
+        >
           <Navigation className="size-4" />
           Directions
         </Button>
@@ -2184,14 +2562,17 @@ function SelectedActionsTab({
 }) {
   if (selected.type === "delivery") {
     const delivery = selected.item
-    const canAutoAssign = delivery.status === "ReadyForPickup" && !delivery.rider
+    const canAutoAssign =
+      delivery.status === "ReadyForPickup" && !delivery.rider
     const canCancel = delivery.status === "ReadyForPickup"
     return (
       <>
         <ManualRiderAssignmentControl
           delivery={delivery}
           riders={riderOptions}
-          selectedRiderId={assignmentDrafts[delivery.id] ?? delivery.rider?.id ?? ""}
+          selectedRiderId={
+            assignmentDrafts[delivery.id] ?? delivery.rider?.id ?? ""
+          }
           isLoading={isRiderOptionsLoading}
           isAssigning={isAssigningRider && assigningOrderId === delivery.id}
           onChange={(riderId) => onAssignmentDraftChange(delivery.id, riderId)}
@@ -2203,7 +2584,10 @@ function SelectedActionsTab({
           }
         />
         <div className="grid grid-cols-2 gap-2">
-          <Button className="rounded-2xl bg-pink-500 hover:bg-pink-600" onClick={() => onOpen(`/orders?orderId=${delivery.id}`)}>
+          <Button
+            className="rounded-2xl bg-pink-500 hover:bg-pink-600"
+            onClick={() => onOpen(`/orders?orderId=${delivery.id}`)}
+          >
             Open order
           </Button>
           <Button variant="outline" className="rounded-2xl" onClick={onFocus}>
@@ -2211,24 +2595,49 @@ function SelectedActionsTab({
             Focus
           </Button>
           {canAutoAssign ? (
-            <Button className="rounded-2xl bg-slate-950 hover:bg-slate-800" disabled={isAutoAssigning} onClick={() => onAutoAssign(delivery.id)}>
-              {isAutoAssigning ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            <Button
+              className="rounded-2xl bg-slate-950 hover:bg-slate-800"
+              disabled={isAutoAssigning}
+              onClick={() => onAutoAssign(delivery.id)}
+            >
+              {isAutoAssigning ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Send className="size-4" />
+              )}
               Auto assign
             </Button>
           ) : null}
           {delivery.rider?.phone ? (
-            <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(delivery.rider?.phone)}>
+            <Button
+              variant="outline"
+              className="rounded-2xl"
+              onClick={() => callPhone(delivery.rider?.phone)}
+            >
               <Phone className="size-4" />
               Call rider
             </Button>
           ) : null}
-          <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(delivery.restaurant.phone)}>
+          <Button
+            variant="outline"
+            className="rounded-2xl"
+            onClick={() => callPhone(delivery.restaurant.phone)}
+          >
             <Phone className="size-4" />
             Call store
           </Button>
           {canCancel ? (
-            <Button variant="destructive" className="rounded-2xl" disabled={isCancellingOrder} onClick={() => onCancelOrder(delivery)}>
-              {isCancellingOrder ? <Loader2 className="size-4 animate-spin" /> : <Ban className="size-4" />}
+            <Button
+              variant="destructive"
+              className="rounded-2xl"
+              disabled={isCancellingOrder}
+              onClick={() => onCancelOrder(delivery)}
+            >
+              {isCancellingOrder ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Ban className="size-4" />
+              )}
               Cancel order
             </Button>
           ) : null}
@@ -2241,19 +2650,38 @@ function SelectedActionsTab({
     const rider = selected.item
     return (
       <div className="grid grid-cols-2 gap-2">
-        <Button className="rounded-2xl bg-slate-950 hover:bg-slate-800" onClick={() => onOpen(`/riders?riderId=${rider.id}&riderTab=live-assignment`)}>
+        <Button
+          className="rounded-2xl bg-slate-950 hover:bg-slate-800"
+          onClick={() =>
+            onOpen(`/riders?riderId=${rider.id}&riderTab=live-assignment`)
+          }
+        >
           Open rider
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(rider.phone)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => callPhone(rider.phone)}
+        >
           <Phone className="size-4" />
           Call rider
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => openMapMarker(getPoint(rider.currentLocation), "Rider location")}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() =>
+            openMapMarker(getPoint(rider.currentLocation), "Rider location")
+          }
+        >
           <Navigation className="size-4" />
           Marker
         </Button>
         {rider.liveOrderId ? (
-          <Button variant="outline" className="rounded-2xl" onClick={() => onOpen(`/orders?orderId=${rider.liveOrderId}`)}>
+          <Button
+            variant="outline"
+            className="rounded-2xl"
+            onClick={() => onOpen(`/orders?orderId=${rider.liveOrderId}`)}
+          >
             Open order
           </Button>
         ) : null}
@@ -2264,19 +2692,36 @@ function SelectedActionsTab({
   const restaurant = selected.item
   return (
     <div className="grid grid-cols-2 gap-2">
-      <Button className="rounded-2xl bg-pink-500 hover:bg-pink-600" onClick={() => onOpen(`/restaurants?restaurantId=${restaurant.id}`)}>
+      <Button
+        className="rounded-2xl bg-pink-500 hover:bg-pink-600"
+        onClick={() => onOpen(`/restaurants?restaurantId=${restaurant.id}`)}
+      >
         Open restaurant
       </Button>
-      <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(restaurant.phone)}>
+      <Button
+        variant="outline"
+        className="rounded-2xl"
+        onClick={() => callPhone(restaurant.phone)}
+      >
         <Phone className="size-4" />
         Call store
       </Button>
-      <Button variant="outline" className="rounded-2xl" onClick={() => openDirections(getPoint(restaurant))}>
+      <Button
+        variant="outline"
+        className="rounded-2xl"
+        onClick={() => openDirections(getPoint(restaurant))}
+      >
         <Navigation className="size-4" />
         Directions
       </Button>
       {restaurant.latestOrder ? (
-        <Button variant="outline" className="rounded-2xl" onClick={() => onOpen(`/orders?orderId=${restaurant.latestOrder?.id}`)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() =>
+            onOpen(`/orders?orderId=${restaurant.latestOrder?.id}`)
+          }
+        >
           Open order
         </Button>
       ) : null}
@@ -2303,7 +2748,8 @@ function ManualRiderAssignmentControl({
 }) {
   const canAssign = delivery.status === "ReadyForPickup"
   const currentRiderId = delivery.rider?.id ?? ""
-  const hasSelectionChanged = Boolean(selectedRiderId) && selectedRiderId !== currentRiderId
+  const hasSelectionChanged =
+    Boolean(selectedRiderId) && selectedRiderId !== currentRiderId
   const activeOptions = riders.filter(
     (rider) => rider.isAvailableForAssignments || rider.id === currentRiderId
   )
@@ -2313,7 +2759,9 @@ function ManualRiderAssignmentControl({
       <CardHeader className="px-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <CardTitle className="text-sm font-black text-slate-950">Rider assignment</CardTitle>
+            <CardTitle className="text-sm font-black text-slate-950">
+              Rider assignment
+            </CardTitle>
             <p className="mt-1 text-xs text-slate-500">
               {canAssign
                 ? "Choose the best rider for this ready order."
@@ -2377,7 +2825,8 @@ function ManualRiderAssignmentControl({
         </div>
         {canAssign && activeOptions.length === 0 && !isLoading ? (
           <p className="rounded-2xl bg-white px-3 py-2 text-xs font-medium text-amber-700">
-            No eligible rider is available right now. Check rider availability or use dispatch controls.
+            No eligible rider is available right now. Check rider availability
+            or use dispatch controls.
           </p>
         ) : null}
       </CardContent>
@@ -2387,39 +2836,82 @@ function ManualRiderAssignmentControl({
 
 function LegendPanel() {
   const items = [
-    { label: "Available rider", color: "bg-sky-500", detail: "ready for assignment" },
+    {
+      label: "Available rider",
+      color: "bg-sky-500",
+      detail: "ready for assignment",
+    },
     { label: "Busy rider", color: "bg-pink-500", detail: "currently assigned" },
     { label: "Stale rider", color: "bg-amber-500", detail: "GPS is old" },
-    { label: "Live-order store", color: "bg-pink-500", detail: "has active order" },
-    { label: "Online store", color: "bg-emerald-500", detail: "open but quiet" },
-    { label: "Quiet store", color: "bg-white ring-1 ring-slate-900", detail: "no live order" },
+    {
+      label: "Live-order store",
+      color: "bg-pink-500",
+      detail: "has active order",
+    },
+    {
+      label: "Online store",
+      color: "bg-emerald-500",
+      detail: "open but quiet",
+    },
+    {
+      label: "Quiet store",
+      color: "bg-white ring-1 ring-slate-900",
+      detail: "no live order",
+    },
     { label: "Customer", color: "bg-emerald-500", detail: "dropoff point" },
-    { label: "Critical issue", color: "bg-rose-600", detail: "needs attention" },
+    {
+      label: "Critical issue",
+      color: "bg-rose-600",
+      detail: "needs attention",
+    },
   ]
 
   return (
-    <Card size="sm" className="pointer-events-auto border-white/70 bg-white/94 shadow-xl backdrop-blur">
+    <Card
+      size="sm"
+      className="pointer-events-auto border-white/70 bg-white/94 shadow-xl backdrop-blur"
+    >
       <CardHeader className="flex flex-row items-center justify-between gap-3 px-3">
-        <CardTitle className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Map legend</CardTitle>
+        <CardTitle className="text-xs font-black tracking-[0.18em] text-slate-500 uppercase">
+          Map legend
+        </CardTitle>
         <Badge variant="secondary" className="rounded-full text-[10px]">
           Live
         </Badge>
       </CardHeader>
       <CardContent className="space-y-3 px-3">
         <div className="grid grid-cols-2 gap-2">
-        {items.map((item) => (
-          <div key={item.label} className="flex items-start gap-2 text-xs text-slate-600">
-            <span className={cn("mt-0.5 size-3 rounded-full shadow-sm", item.color)} />
-            <span className="min-w-0">
-              <span className="block font-bold text-slate-800">{item.label}</span>
-              <span className="block truncate text-[10px] text-slate-500">{item.detail}</span>
-            </span>
-          </div>
-        ))}
+          {items.map((item) => (
+            <div
+              key={item.label}
+              className="flex items-start gap-2 text-xs text-slate-600"
+            >
+              <span
+                className={cn(
+                  "mt-0.5 size-3 rounded-full shadow-sm",
+                  item.color
+                )}
+              />
+              <span className="min-w-0">
+                <span className="block font-bold text-slate-800">
+                  {item.label}
+                </span>
+                <span className="block truncate text-[10px] text-slate-500">
+                  {item.detail}
+                </span>
+              </span>
+            </div>
+          ))}
         </div>
         <div className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          <p><span className="font-bold text-pink-600">Pink dashed</span> means rider is going to restaurant.</p>
-          <p><span className="font-bold text-sky-600">Blue solid</span> means rider is delivering to customer.</p>
+          <p>
+            <span className="font-bold text-pink-600">Pink dashed</span> means
+            rider is going to restaurant.
+          </p>
+          <p>
+            <span className="font-bold text-sky-600">Blue solid</span> means
+            rider is delivering to customer.
+          </p>
         </div>
       </CardContent>
     </Card>
@@ -2470,13 +2962,18 @@ function FleetPulsePanel({
   ]
 
   return (
-    <Card size="sm" className="pointer-events-auto border-white/70 bg-white/94 shadow-xl backdrop-blur">
+    <Card
+      size="sm"
+      className="pointer-events-auto border-white/70 bg-white/94 shadow-xl backdrop-blur"
+    >
       <CardHeader className="flex flex-row items-start justify-between gap-3 px-3">
         <div>
-          <CardTitle className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+          <CardTitle className="text-xs font-black tracking-[0.18em] text-slate-500 uppercase">
             Fleet pulse
           </CardTitle>
-          <p className="text-xs text-slate-500">Live signals and assignment policy.</p>
+          <p className="text-xs text-slate-500">
+            Live signals and assignment policy.
+          </p>
         </div>
         <Button
           type="button"
@@ -2513,7 +3010,10 @@ function FleetPulsePanel({
           {items.map((item) => {
             const Icon = item.icon
             return (
-              <div key={item.label} className={cn("rounded-2xl px-3 py-2", item.tone)}>
+              <div
+                key={item.label}
+                className={cn("rounded-2xl px-3 py-2", item.tone)}
+              >
                 <div className="flex items-center justify-between gap-2">
                   <Icon className="size-4" />
                   <span className="text-base font-black">{item.value}</span>
@@ -2538,13 +3038,25 @@ function IssuePanel({
   onShowIssues: () => void
 }) {
   return (
-    <Card size="sm" className="pointer-events-auto overflow-hidden border-white/70 bg-white/94 shadow-xl backdrop-blur">
+    <Card
+      size="sm"
+      className="pointer-events-auto overflow-hidden border-white/70 bg-white/94 shadow-xl backdrop-blur"
+    >
       <CardHeader className="flex flex-row items-center justify-between gap-3 border-b px-3">
         <div>
-          <CardTitle className="text-sm font-black text-slate-950">Critical issues</CardTitle>
-          <p className="text-xs text-slate-500">Delayed, stale, and unassigned work.</p>
+          <CardTitle className="text-sm font-black text-slate-950">
+            Critical issues
+          </CardTitle>
+          <p className="text-xs text-slate-500">
+            Delayed, stale, and unassigned work.
+          </p>
         </div>
-        <Button size="sm" variant="outline" className="rounded-full" onClick={onShowIssues}>
+        <Button
+          size="sm"
+          variant="outline"
+          className="rounded-full"
+          onClick={onShowIssues}
+        >
           Issues
         </Button>
       </CardHeader>
@@ -2566,7 +3078,9 @@ function IssuePanel({
                 <span
                   className={cn(
                     "mt-1 size-2.5 shrink-0 rounded-full",
-                    issue.severity === "critical" ? "bg-rose-600" : "bg-amber-500"
+                    issue.severity === "critical"
+                      ? "bg-rose-600"
+                      : "bg-amber-500"
                   )}
                 />
                 <span className="min-w-0">
@@ -2661,9 +3175,13 @@ function LiveOrdersDrawerContent({
                 <Badge
                   key={status}
                   variant="outline"
-                  className={cn("rounded-full", getDeliveryStatusBadgeClass(status))}
+                  className={cn(
+                    "rounded-full",
+                    getDeliveryStatusBadgeClass(status)
+                  )}
                 >
-                  {getDeliveryStatusLabel(status)} {metrics.statusCounts[status]}
+                  {getDeliveryStatusLabel(status)}{" "}
+                  {metrics.statusCounts[status]}
                 </Badge>
               ))}
             </div>
@@ -2674,16 +3192,25 @@ function LiveOrdersDrawerContent({
                   ? `${metrics.topOrder.orderNumber} - ${getDeliveryQueueReason(metrics.topOrder)}`
                   : "No live order"}
               </p>
-              <p className="mt-1">Last synced {formatDateTime(lastUpdatedAt)}</p>
+              <p className="mt-1">
+                Last synced {formatDateTime(lastUpdatedAt)}
+              </p>
             </div>
           </CardContent>
         </Card>
 
-        <Card size="sm" className="overflow-hidden border-slate-200 bg-white shadow-none">
+        <Card
+          size="sm"
+          className="overflow-hidden border-slate-200 bg-white shadow-none"
+        >
           <CardHeader className="flex flex-row items-center justify-between gap-3 border-b px-4">
             <div>
-              <CardTitle className="text-sm font-black text-slate-950">Restaurant load</CardTitle>
-              <p className="text-xs text-slate-500">Live orders and value by store.</p>
+              <CardTitle className="text-sm font-black text-slate-950">
+                Restaurant load
+              </CardTitle>
+              <p className="text-xs text-slate-500">
+                Live orders and value by store.
+              </p>
             </div>
             <Badge variant="secondary" className="rounded-full">
               {restaurantSummary.length} stores
@@ -2711,7 +3238,8 @@ function LiveOrdersDrawerContent({
                           {restaurant.name}
                         </span>
                         <span className="block text-xs text-slate-500">
-                          {restaurant.count} orders - {formatCurrency(restaurant.totalValue)}
+                          {restaurant.count} orders -{" "}
+                          {formatCurrency(restaurant.totalValue)}
                         </span>
                       </span>
                     </span>
@@ -2739,131 +3267,153 @@ function LiveOrdersDrawerContent({
           </div>
         </Card>
 
-        <Card size="sm" className="overflow-hidden border-slate-200 bg-white shadow-none">
+        <Card
+          size="sm"
+          className="overflow-hidden border-slate-200 bg-white shadow-none"
+        >
           <CardHeader className="flex flex-row items-center justify-between gap-3 border-b px-4">
             <div>
               <CardTitle className="flex items-center gap-2 text-sm font-black text-slate-950">
                 <ListChecks className="size-4 text-pink-500" />
                 Live order queue
               </CardTitle>
-              <p className="text-xs text-slate-500">Priority sorted from current live data.</p>
+              <p className="text-xs text-slate-500">
+                Priority sorted from current live data.
+              </p>
             </div>
-            <Button size="sm" variant="outline" className="rounded-full" onClick={onShowOrders}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="rounded-full"
+              onClick={onShowOrders}
+            >
               Show layer
             </Button>
           </CardHeader>
           <div className="space-y-2 p-3">
-          {deliveries.length === 0 ? (
-            <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
-              No live order right now.
-            </div>
-          ) : null}
-          {deliveries.map((delivery, index) => {
-            const isSelected = selectedDeliveryId === delivery.id
-            const canAutoAssign = delivery.status === "ReadyForPickup" && !delivery.rider
-            const etaLabel = getDeliveryEtaLabel(delivery)
-            const showReasonBadge = shouldShowDeliveryReasonBadge(delivery)
+            {deliveries.length === 0 ? (
+              <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
+                No live order right now.
+              </div>
+            ) : null}
+            {deliveries.map((delivery, index) => {
+              const isSelected = selectedDeliveryId === delivery.id
+              const canAutoAssign =
+                delivery.status === "ReadyForPickup" && !delivery.rider
+              const etaLabel = getDeliveryEtaLabel(delivery)
+              const showReasonBadge = shouldShowDeliveryReasonBadge(delivery)
 
-            return (
-              <div
-                key={delivery.id}
-                className={cn(
-                  "rounded-2xl border bg-white p-2.5 transition",
-                  isSelected ? "border-pink-300 bg-pink-50" : "hover:border-pink-200"
-                )}
-              >
-                <button
-                  type="button"
-                  className="w-full text-left"
-                  onClick={() => onSelect(delivery)}
+              return (
+                <div
+                  key={delivery.id}
+                  className={cn(
+                    "rounded-2xl border bg-white p-2.5 transition",
+                    isSelected
+                      ? "border-pink-300 bg-pink-50"
+                      : "hover:border-pink-200"
+                  )}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="flex min-w-0 items-start gap-2">
-                      <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-slate-950 text-[10px] font-black text-white">
-                        {index + 1}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-black text-slate-950">
-                          {delivery.orderNumber}
+                  <button
+                    type="button"
+                    className="w-full text-left"
+                    onClick={() => onSelect(delivery)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="flex min-w-0 items-start gap-2">
+                        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-slate-950 text-[10px] font-black text-white">
+                          {index + 1}
                         </span>
-                        <span className="mt-0.5 block truncate text-xs text-slate-500">
-                          {delivery.restaurant.name} - {delivery.customer.name}
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-black text-slate-950">
+                            {delivery.orderNumber}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs text-slate-500">
+                            {delivery.restaurant.name} -{" "}
+                            {delivery.customer.name}
+                          </span>
                         </span>
                       </span>
-                    </span>
-                    <span className="flex shrink-0 flex-col items-end gap-1">
-                      <Badge
-                        variant="outline"
-                        className={cn("rounded-full", getDeliveryStatusBadgeClass(delivery.status))}
-                      >
-                        {getDeliveryStatusLabel(delivery.status)}
-                      </Badge>
-                      {showReasonBadge ? (
-                        <Badge className={cn("rounded-full", getDeliveryReasonBadgeClass(delivery))}>
-                          {getDeliveryQueueReason(delivery)}
+                      <span className="flex shrink-0 flex-col items-end gap-1">
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "rounded-full",
+                            getDeliveryStatusBadgeClass(delivery.status)
+                          )}
+                        >
+                          {getDeliveryStatusLabel(delivery.status)}
                         </Badge>
+                        {showReasonBadge ? (
+                          <Badge
+                            className={cn(
+                              "rounded-full",
+                              getDeliveryReasonBadgeClass(delivery)
+                            )}
+                          >
+                            {getDeliveryQueueReason(delivery)}
+                          </Badge>
+                        ) : null}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid gap-1.5 text-xs text-slate-500">
+                      <span className="flex items-center gap-1">
+                        <Clock className="size-3.5" />
+                        {getDeliveryRealtimeLabel(delivery)}
+                      </span>
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="truncate font-semibold text-slate-700">
+                          {getDeliveryMapState(delivery)}
+                        </span>
+                        <span className="shrink-0 font-black text-slate-950">
+                          {formatCurrency(delivery.total)}
+                        </span>
+                      </span>
+                      {etaLabel ? (
+                        <span className="flex items-center gap-1 font-semibold text-blue-600">
+                          <Route className="size-3.5" />
+                          {etaLabel}
+                        </span>
                       ) : null}
-                    </span>
-                  </div>
-                  <div className="mt-2 grid gap-1.5 text-xs text-slate-500">
-                    <span className="flex items-center gap-1">
-                      <Clock className="size-3.5" />
-                      {getDeliveryRealtimeLabel(delivery)}
-                    </span>
-                    <span className="flex items-center justify-between gap-2">
-                      <span className="truncate font-semibold text-slate-700">
-                        {getDeliveryMapState(delivery)}
-                      </span>
-                      <span className="shrink-0 font-black text-slate-950">
-                        {formatCurrency(delivery.total)}
-                      </span>
-                    </span>
-                    {etaLabel ? (
-                      <span className="flex items-center gap-1 font-semibold text-blue-600">
-                        <Route className="size-3.5" />
-                        {etaLabel}
-                      </span>
-                    ) : null}
-                  </div>
-                </button>
-                <div className="mt-2 grid grid-cols-2 gap-1.5">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 rounded-xl text-xs"
-                    onClick={() => onSelect(delivery, true)}
-                  >
-                    <Crosshair className="size-4" />
-                    Focus
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 rounded-xl text-xs"
-                    onClick={() => onOpen(`/orders?orderId=${delivery.id}`)}
-                  >
-                    <ExternalLink className="size-4" />
-                    Open
-                  </Button>
-                  {canAutoAssign ? (
+                    </div>
+                  </button>
+                  <div className="mt-2 grid grid-cols-2 gap-1.5">
                     <Button
                       size="sm"
-                      className="col-span-2 h-8 rounded-xl bg-slate-950 text-xs hover:bg-slate-800"
-                      disabled={isAutoAssigning}
-                      onClick={() => onAutoAssign(delivery.id)}
+                      variant="outline"
+                      className="h-8 rounded-xl text-xs"
+                      onClick={() => onSelect(delivery, true)}
                     >
-                      {isAutoAssigning ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Send className="size-4" />
-                      )}
-                      Auto assign rider
+                      <Crosshair className="size-4" />
+                      Focus
                     </Button>
-                  ) : null}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 rounded-xl text-xs"
+                      onClick={() => onOpen(`/orders?orderId=${delivery.id}`)}
+                    >
+                      <ExternalLink className="size-4" />
+                      Open
+                    </Button>
+                    {canAutoAssign ? (
+                      <Button
+                        size="sm"
+                        className="col-span-2 h-8 rounded-xl bg-slate-950 text-xs hover:bg-slate-800"
+                        disabled={isAutoAssigning}
+                        onClick={() => onAutoAssign(delivery.id)}
+                      >
+                        {isAutoAssigning ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Send className="size-4" />
+                        )}
+                        Auto assign rider
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })}
           </div>
         </Card>
       </div>
@@ -2913,7 +3463,9 @@ function NearbyRidersPanel({
   return (
     <Card size="sm" className="bg-white">
       <CardHeader className="flex flex-row items-center justify-between gap-3 px-3">
-        <CardTitle className="text-sm font-black text-slate-950">{title}</CardTitle>
+        <CardTitle className="text-sm font-black text-slate-950">
+          {title}
+        </CardTitle>
         <Route className="size-4 text-pink-500" />
       </CardHeader>
       <CardContent className="space-y-2 px-3">
@@ -2928,12 +3480,16 @@ function NearbyRidersPanel({
               </p>
               <p className="text-xs text-slate-500">
                 {formatDistance(candidate.distanceKm)} away
-                {candidate.rider.liveOrderNumber ? ` - on ${candidate.rider.liveOrderNumber}` : ""}
+                {candidate.rider.liveOrderNumber
+                  ? ` - on ${candidate.rider.liveOrderNumber}`
+                  : ""}
               </p>
             </div>
             <div className="flex items-center gap-1">
               <Badge
-                variant={candidate.freshness === "live" ? "default" : "destructive"}
+                variant={
+                  candidate.freshness === "live" ? "default" : "destructive"
+                }
                 className="rounded-full"
               >
                 {candidate.freshness}
@@ -2942,7 +3498,11 @@ function NearbyRidersPanel({
                 size="sm"
                 variant="ghost"
                 className="size-8 rounded-full p-0"
-                onClick={() => onOpen(`/riders?riderId=${candidate.rider.id}&riderTab=live-assignment`)}
+                onClick={() =>
+                  onOpen(
+                    `/riders?riderId=${candidate.rider.id}&riderTab=live-assignment`
+                  )
+                }
               >
                 <ExternalLink className="size-4" />
               </Button>
@@ -2983,30 +3543,57 @@ function DeliveryDetails({
       <div className="flex flex-wrap gap-2">
         <Badge className="rounded-full bg-slate-950">{delivery.status}</Badge>
         {delivery.delaySeverity !== "none" ? (
-          <Badge className={cn("rounded-full", delivery.delaySeverity === "critical" ? "bg-rose-600" : "bg-amber-500")}>
+          <Badge
+            className={cn(
+              "rounded-full",
+              delivery.delaySeverity === "critical"
+                ? "bg-rose-600"
+                : "bg-amber-500"
+            )}
+          >
             {delivery.delayReason || "Needs attention"}
           </Badge>
         ) : (
-          <Badge variant="secondary" className="rounded-full">On track</Badge>
+          <Badge variant="secondary" className="rounded-full">
+            On track
+          </Badge>
         )}
       </div>
       <DetailRow label="Restaurant" value={delivery.restaurant.name} />
       <DetailRow label="Customer" value={delivery.customer.name} />
-      <DetailRow label="Rider" value={delivery.rider?.fullName || "Unassigned"} />
+      <DetailRow
+        label="Rider"
+        value={delivery.rider?.fullName || "Unassigned"}
+      />
       <DetailRow label="Next target" value={getDeliveryTargetLabel(delivery)} />
       <DetailRow label="Map state" value={getDeliveryMapState(delivery)} />
       <DetailRow
         label="Remaining"
         value={`${formatDistance(delivery.tracking.remainingDistanceKm)} - ${formatMinutes(delivery.tracking.remainingDurationMinutes)}`}
       />
-      <DetailRow label="Last tracking" value={formatDateTime(delivery.tracking.lastUpdatedAt)} />
-      <DetailRow label="Dropoff" value={delivery.customer.deliveryAddress.addressLine || "Address unavailable"} />
+      <DetailRow
+        label="Last tracking"
+        value={formatDateTime(delivery.tracking.lastUpdatedAt)}
+      />
+      <DetailRow
+        label="Dropoff"
+        value={
+          delivery.customer.deliveryAddress.addressLine || "Address unavailable"
+        }
+      />
       <NearbyRidersPanel riders={nearbyRiders} onOpen={onOpen} />
       <div className="grid grid-cols-2 gap-2">
-        <Button className="rounded-2xl bg-pink-500 hover:bg-pink-600" onClick={() => onOpen(`/orders?orderId=${delivery.id}`)}>
+        <Button
+          className="rounded-2xl bg-pink-500 hover:bg-pink-600"
+          onClick={() => onOpen(`/orders?orderId=${delivery.id}`)}
+        >
           Open order
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => openDirections(destinationPoint, originPoint)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => openDirections(destinationPoint, originPoint)}
+        >
           <Navigation className="size-4" />
           Directions
         </Button>
@@ -3014,7 +3601,15 @@ function DeliveryDetails({
           <Crosshair className="size-4" />
           Focus route
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => onOpen(`/riders${delivery.rider?.id ? `?riderId=${delivery.rider.id}&riderTab=live-assignment` : ""}`)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() =>
+            onOpen(
+              `/riders${delivery.rider?.id ? `?riderId=${delivery.rider.id}&riderTab=live-assignment` : ""}`
+            )
+          }
+        >
           View rider
         </Button>
         {canAutoAssign ? (
@@ -3032,12 +3627,20 @@ function DeliveryDetails({
           </Button>
         ) : null}
         {delivery.rider?.phone ? (
-          <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(delivery.rider?.phone)}>
+          <Button
+            variant="outline"
+            className="rounded-2xl"
+            onClick={() => callPhone(delivery.rider?.phone)}
+          >
             <Phone className="size-4" />
             Call rider
           </Button>
         ) : null}
-        <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(delivery.restaurant.phone)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => callPhone(delivery.restaurant.phone)}
+        >
           <Phone className="size-4" />
           Call store
         </Button>
@@ -3077,38 +3680,76 @@ function RiderDetails({
   return (
     <>
       <div className="flex flex-wrap gap-2">
-        <Badge className={cn("rounded-full", rider.isAvailableForAssignments ? "bg-emerald-600" : "bg-slate-700")}>
+        <Badge
+          className={cn(
+            "rounded-full",
+            rider.isAvailableForAssignments ? "bg-emerald-600" : "bg-slate-700"
+          )}
+        >
           {rider.isAvailableForAssignments ? "Available" : "Unavailable"}
         </Badge>
-        <Badge variant={freshness === "live" ? "default" : "destructive"} className="rounded-full">
+        <Badge
+          variant={freshness === "live" ? "default" : "destructive"}
+          className="rounded-full"
+        >
           {freshness === "live" ? "Live location" : "Stale location"}
         </Badge>
       </div>
       <DetailRow label="Phone" value={rider.phone || "Not added"} />
-      <DetailRow label="Current order" value={rider.liveOrderNumber || "No active trip"} />
-      <DetailRow label="Last location" value={formatDateTime(rider.currentLocation?.lastUpdatedAt)} />
-      <DetailRow label="Speed" value={`${Math.round(rider.currentLocation?.speedKmph ?? 0)} km/h`} />
+      <DetailRow
+        label="Current order"
+        value={rider.liveOrderNumber || "No active trip"}
+      />
+      <DetailRow
+        label="Last location"
+        value={formatDateTime(rider.currentLocation?.lastUpdatedAt)}
+      />
+      <DetailRow
+        label="Speed"
+        value={`${Math.round(rider.currentLocation?.speedKmph ?? 0)} km/h`}
+      />
       {rider.liveOrderId ? (
-        <NearbyRidersPanel riders={nearbyRiders} title="Riders near this trip target" onOpen={onOpen} />
+        <NearbyRidersPanel
+          riders={nearbyRiders}
+          title="Riders near this trip target"
+          onOpen={onOpen}
+        />
       ) : null}
       <div className="grid grid-cols-2 gap-2">
-        <Button className="rounded-2xl bg-slate-950 hover:bg-slate-800" onClick={() => onOpen(`/riders?riderId=${rider.id}&riderTab=live-assignment`)}>
+        <Button
+          className="rounded-2xl bg-slate-950 hover:bg-slate-800"
+          onClick={() =>
+            onOpen(`/riders?riderId=${rider.id}&riderTab=live-assignment`)
+          }
+        >
           Open rider
         </Button>
         <Button variant="outline" className="rounded-2xl" onClick={onFocus}>
           <Crosshair className="size-4" />
           Focus
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => openMapMarker(riderPoint, "Rider location")}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => openMapMarker(riderPoint, "Rider location")}
+        >
           <Navigation className="size-4" />
           Marker
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(rider.phone)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => callPhone(rider.phone)}
+        >
           <Phone className="size-4" />
           Call rider
         </Button>
         {rider.liveOrderId ? (
-          <Button variant="outline" className="rounded-2xl" onClick={() => onOpen(`/orders?orderId=${rider.liveOrderId}`)}>
+          <Button
+            variant="outline"
+            className="rounded-2xl"
+            onClick={() => onOpen(`/orders?orderId=${rider.liveOrderId}`)}
+          >
             Open order
           </Button>
         ) : null}
@@ -3131,26 +3772,51 @@ function RestaurantDetails({
   return (
     <>
       <div className="flex flex-wrap gap-2">
-        <Badge className={cn("rounded-full", restaurant.isOnline ? "bg-emerald-600" : "bg-slate-700")}>
+        <Badge
+          className={cn(
+            "rounded-full",
+            restaurant.isOnline ? "bg-emerald-600" : "bg-slate-700"
+          )}
+        >
           {restaurant.isOnline ? "Online" : "Offline"}
         </Badge>
         {restaurant.delayedOrders > 0 ? (
-          <Badge className="rounded-full bg-rose-600">{restaurant.delayedOrders} delayed</Badge>
+          <Badge className="rounded-full bg-rose-600">
+            {restaurant.delayedOrders} delayed
+          </Badge>
         ) : (
-          <Badge variant="secondary" className="rounded-full">No delay</Badge>
+          <Badge variant="secondary" className="rounded-full">
+            No delay
+          </Badge>
         )}
       </div>
       <DetailRow label="Live orders" value={restaurant.activeOrders} />
-      <DetailRow label="Ready / picked" value={`${restaurant.readyForPickup} ready - ${restaurant.pickedUp} picked`} />
-      <DetailRow label="Latest order" value={restaurant.latestOrder?.orderNumber || "No live order"} />
+      <DetailRow
+        label="Ready / picked"
+        value={`${restaurant.readyForPickup} ready - ${restaurant.pickedUp} picked`}
+      />
+      <DetailRow
+        label="Latest order"
+        value={restaurant.latestOrder?.orderNumber || "No live order"}
+      />
       <DetailRow label="Phone" value={restaurant.phone || "Not added"} />
-      <DetailRow label="Address" value={restaurant.address || restaurant.city || "Address unavailable"} />
+      <DetailRow
+        label="Address"
+        value={restaurant.address || restaurant.city || "Address unavailable"}
+      />
       <NearbyRidersPanel riders={nearbyRiders} onOpen={onOpen} />
       <div className="grid grid-cols-2 gap-2">
-        <Button className="rounded-2xl bg-pink-500 hover:bg-pink-600" onClick={() => onOpen(`/restaurants?restaurantId=${restaurant.id}`)}>
+        <Button
+          className="rounded-2xl bg-pink-500 hover:bg-pink-600"
+          onClick={() => onOpen(`/restaurants?restaurantId=${restaurant.id}`)}
+        >
           Open restaurant
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => openDirections(getPoint(restaurant))}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => openDirections(getPoint(restaurant))}
+        >
           <Navigation className="size-4" />
           Directions
         </Button>
@@ -3158,13 +3824,23 @@ function RestaurantDetails({
           <Crosshair className="size-4" />
           Focus
         </Button>
-        <Button variant="outline" className="rounded-2xl" onClick={() => callPhone(restaurant.phone)}>
+        <Button
+          variant="outline"
+          className="rounded-2xl"
+          onClick={() => callPhone(restaurant.phone)}
+        >
           <Phone className="size-4" />
           Call store
         </Button>
       </div>
       {restaurant.latestOrder ? (
-        <Button variant="outline" className="w-full rounded-2xl" onClick={() => onOpen(`/orders?orderId=${restaurant.latestOrder?.id}`)}>
+        <Button
+          variant="outline"
+          className="w-full rounded-2xl"
+          onClick={() =>
+            onOpen(`/orders?orderId=${restaurant.latestOrder?.id}`)
+          }
+        >
           Open latest order
         </Button>
       ) : null}

@@ -1,4 +1,9 @@
 import { emitSocketEvent } from "../../config/socket";
+import {
+  classifyAdminAlertType,
+  getAdminNotificationSettings,
+  isAdminNotificationCategoryEnabled,
+} from "./admin-notification-settings";
 import { AdminOperationalAlertModel } from "./admin-alert.model";
 
 const RESOLVED_ALERT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
@@ -77,6 +82,12 @@ async function updateExistingAlert(input: AdminOperationalAlertInput) {
 export async function createAdminOperationalAlert(
   input: AdminOperationalAlertInput,
 ) {
+  const settings = await getAdminNotificationSettings();
+  const category = classifyAdminAlertType(input.alertType);
+  if (!isAdminNotificationCategoryEnabled(settings, category)) {
+    return { alert: null, created: false, skipped: true };
+  }
+
   const existing = await updateExistingAlert(input);
 
   if (existing) {

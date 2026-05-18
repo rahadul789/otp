@@ -31,7 +31,9 @@ import {
   placeCustomerOrder,
   quoteCustomerCart,
   refreshCustomerSession,
+  requestCustomerPasswordReset,
   requestCustomerAccountChange,
+  resetCustomerPassword,
   signinCustomerWithGoogle,
   startCustomerPhoneSignin,
   signinCustomerWithPassword,
@@ -40,44 +42,90 @@ import {
   toggleCustomerFavoriteRestaurant,
   verifyCustomerPhoneOtp,
   updateCustomerProfile,
+  updateCustomerPassword,
   updateCustomerSavedLocation,
   unregisterCustomerPushToken,
   verifyCustomerPhoneChange,
-  verifyCustomerPhoneSignin
+  verifyCustomerPhoneSignin,
+  verifyCustomerPasswordResetOtp
 } from "./customer.service"
 import { recordVoucherDisplayEvent, recordVoucherPushOpenEvent } from "../promotions/promotions.service"
 import { recordCustomerHomePushOpen } from "../public/content.service"
 import {
+  getCustomerNotificationByCampaignId,
   listCustomerNotifications,
   markAllCustomerNotificationsAsRead,
   markCustomerNotificationAsRead,
   markCustomerNotificationOpened
 } from "./push.service"
+import {
+  applyReferralCodeToCustomer,
+  getCustomerReferralSummary,
+} from "./referral.service"
+
+const CUSTOMER_AUTH_OTP_CODE_LENGTH = 4
+const CUSTOMER_PASSWORD_MIN_LENGTH = 6
 
 const customerPhoneStartSchema = z.object({
-  phone: z.string().regex(/^01\d{9}$/)
+  phone: z.string().regex(/^01\d{9}$/),
+  useOtp: z.boolean().optional()
 })
 
 const customerPhoneVerifySchema = z.object({
   verificationSessionId: z.string().min(1),
   fullName: z.string().optional(),
   email: z.string().email().or(z.literal("")).optional(),
-  password: z.string().optional()
+  password: z.string().optional(),
+  referralCode: z.string().optional(),
+  installId: z.string().trim().max(160).optional()
 })
 
 const customerPhoneOtpVerifySchema = z.object({
   verificationSessionId: z.string().min(1),
-  otpCode: z.string().length(6)
+  otpCode: z.string().length(CUSTOMER_AUTH_OTP_CODE_LENGTH)
 })
 
 const customerPasswordSigninSchema = z.object({
   phone: z.string().regex(/^01\d{9}$/),
-  password: z.string().min(1)
+  password: z.string().min(1),
+  installId: z.string().trim().max(160).optional()
+})
+
+const customerPasswordResetStartSchema = z.object({
+  phone: z.string().regex(/^01\d{9}$/)
+})
+
+const customerPasswordResetOtpVerifySchema = z.object({
+  verificationSessionId: z.string().min(1),
+  otpCode: z.string().length(CUSTOMER_AUTH_OTP_CODE_LENGTH)
+})
+
+const customerPasswordResetSchema = z.object({
+  verificationSessionId: z.string().min(1),
+  newPassword: z.string().min(CUSTOMER_PASSWORD_MIN_LENGTH)
+})
+
+const customerPasswordUpdateSchema = z.object({
+  currentPassword: z.string().optional(),
+  newPassword: z.string().min(CUSTOMER_PASSWORD_MIN_LENGTH)
 })
 
 const customerOrdersQuerySchema = z.object({
   page: z.coerce.number().int().positive().optional(),
-  pageSize: z.coerce.number().int().positive().optional()
+  pageSize: z.coerce.number().int().positive().optional(),
+  statusGroup: z.enum(["live", "history"]).optional(),
+  status: z
+    .enum([
+      "New",
+      "Accepted",
+      "Preparing",
+      "ReadyForPickup",
+      "PickedUp",
+      "Delivered",
+      "Rejected",
+      "Cancelled"
+    ])
+    .optional()
 })
 
 const customerGoogleSigninSchema = z.object({
@@ -106,7 +154,8 @@ const pushOpenEventSchema = z.object({
 })
 
 const logoutSchema = z.object({
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1),
+  expoPushToken: z.string().min(1).optional()
 })
 
 const discoveryListQuerySchema = z.object({
@@ -124,7 +173,7 @@ const restaurantDetailsQuerySchema = z.object({
 
 const cartItemSchema = z.object({
   itemId: z.string().min(1),
-  quantity: z.number().int().positive(),
+  quantity: z.number().int().positive().max(50),
   selectedVariantOptions: z
     .array(
       z.object({
@@ -145,7 +194,7 @@ const cartItemSchema = z.object({
 
 const cartQuoteSchema = z.object({
   restaurantId: z.string().min(1),
-  items: z.array(cartItemSchema).min(1),
+  items: z.array(cartItemSchema).min(1).max(50),
   voucherCode: z.string().optional(),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
@@ -153,7 +202,8 @@ const cartQuoteSchema = z.object({
 
 const placeOrderSchema = z.object({
   restaurantId: z.string().min(1),
-  items: z.array(cartItemSchema).min(1),
+  clientOrderId: z.string().trim().min(8).max(120).optional(),
+  items: z.array(cartItemSchema).min(1).max(50),
   voucherCode: z.string().optional(),
   paymentMethod: z.enum(["Cash", "Bkash"]),
   paymentReference: z
@@ -167,18 +217,25 @@ const placeOrderSchema = z.object({
   deliveryAddress: z.object({
     label: z.string().min(1),
     addressLine: z.string().min(1),
-    latitude: z.number().nullable().optional(),
-    longitude: z.number().nullable().optional()
+    addressDetails: z.string().trim().max(240).optional(),
+    latitude: z.number(),
+    longitude: z.number()
   })
 })
 
 const bkashInitiateSchema = z.object({
   restaurantId: z.string().min(1),
-  items: z.array(cartItemSchema).min(1),
+  clientOrderId: z.string().trim().min(8).max(120).optional(),
+  items: z.array(cartItemSchema).min(1).max(50),
   voucherCode: z.string().optional(),
   walletNumber: z.string().regex(/^01\d{9}$/),
-  latitude: z.number().optional(),
-  longitude: z.number().optional(),
+  deliveryAddress: z.object({
+    label: z.string().min(1),
+    addressLine: z.string().min(1),
+    addressDetails: z.string().trim().max(240).optional(),
+    latitude: z.number(),
+    longitude: z.number()
+  }),
 })
 
 const cancelOrderSchema = z.object({
@@ -193,6 +250,7 @@ const createReviewSchema = z.object({
 const savedLocationSchema = z.object({
   label: z.string().min(1),
   address: z.string().min(1),
+  addressDetails: z.string().trim().max(240).optional(),
   latitude: z.number(),
   longitude: z.number(),
   source: z.enum(["gps", "manual", "saved"]).optional(),
@@ -268,6 +326,11 @@ const voucherDisplayEventSchema = z.object({
   eventType: z.enum(["impression", "click", "modal_open", "strip_click"])
 })
 
+const referralApplySchema = z.object({
+  referralCode: z.string().trim().min(1).max(16),
+  installId: z.string().trim().max(160).optional()
+})
+
 function getStringValue(value: unknown) {
   if (typeof value === "string") return value
   if (Array.isArray(value)) {
@@ -289,7 +352,11 @@ function getOptionalNumberValue(value: unknown) {
 
 export const startCustomerPhoneAuth = asyncHandler(async (req: Request, res: Response) => {
   const payload = customerPhoneStartSchema.parse(req.body)
-  const data = await startCustomerPhoneSignin(payload.phone)
+  const data = await startCustomerPhoneSignin(payload.phone, {
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip,
+    useOtp: payload.useOtp
+  })
 
   return sendSuccess(res, {
     statusCode: StatusCodes.ACCEPTED,
@@ -304,6 +371,7 @@ export const verifyCustomerPhoneAuth = asyncHandler(async (req: Request, res: Re
     ...payload,
     email: payload.email,
     password: payload.password,
+    referralCode: payload.referralCode,
     userAgent: req.headers["user-agent"],
     ipAddress: req.ip
   })
@@ -314,9 +382,38 @@ export const verifyCustomerPhoneAuth = asyncHandler(async (req: Request, res: Re
   })
 })
 
+export const getCustomerReferralSummaryController = asyncHandler(async (req: Request, res: Response) => {
+  const data = await getCustomerReferralSummary(req.user?.id ?? "")
+
+  return sendSuccess(res, {
+    message: "Customer referral summary loaded successfully",
+    data
+  })
+})
+
+export const postCustomerReferralApplyController = asyncHandler(async (req: Request, res: Response) => {
+  const payload = referralApplySchema.parse(req.body)
+  const data = await applyReferralCodeToCustomer({
+    customerId: req.user?.id ?? "",
+    referralCode: payload.referralCode,
+    installId: payload.installId,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
+
+  return sendSuccess(res, {
+    message: "Referral code applied successfully",
+    data
+  })
+})
+
 export const verifyCustomerPhoneOtpCode = asyncHandler(async (req: Request, res: Response) => {
   const payload = customerPhoneOtpVerifySchema.parse(req.body)
-  const data = await verifyCustomerPhoneOtp(payload)
+  const data = await verifyCustomerPhoneOtp({
+    ...payload,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
 
   return sendSuccess(res, {
     message: "OTP verified successfully",
@@ -338,11 +435,52 @@ export const signinCustomerWithPasswordController = asyncHandler(async (req: Req
   })
 })
 
+export const startCustomerPasswordReset = asyncHandler(async (req: Request, res: Response) => {
+  const payload = customerPasswordResetStartSchema.parse(req.body)
+  const data = await requestCustomerPasswordReset({
+    phone: payload.phone,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.ACCEPTED,
+    message: "Password reset OTP sent successfully",
+    data
+  })
+})
+
+export const verifyCustomerPasswordResetOtpCode = asyncHandler(async (req: Request, res: Response) => {
+  const payload = customerPasswordResetOtpVerifySchema.parse(req.body)
+  const data = await verifyCustomerPasswordResetOtp({
+    ...payload,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
+  })
+
+  return sendSuccess(res, {
+    message: "Password reset OTP verified successfully",
+    data
+  })
+})
+
+export const resetCustomerPasswordController = asyncHandler(async (req: Request, res: Response) => {
+  const payload = customerPasswordResetSchema.parse(req.body)
+  const data = await resetCustomerPassword(payload)
+
+  return sendSuccess(res, {
+    message: "Password reset successfully",
+    data
+  })
+})
+
 export const startCustomerPhoneChangeOtp = asyncHandler(async (req: Request, res: Response) => {
   const payload = customerPhoneChangeStartSchema.parse(req.body)
   const data = await startCustomerPhoneChange({
     customerId: req.user?.id ?? "",
-    phone: payload.phone
+    phone: payload.phone,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
   })
 
   return sendSuccess(res, {
@@ -357,7 +495,9 @@ export const verifyCustomerPhoneChangeOtp = asyncHandler(async (req: Request, re
   const data = await verifyCustomerPhoneChange({
     customerId: req.user?.id ?? "",
     verificationSessionId: payload.verificationSessionId,
-    otpCode: payload.otpCode
+    otpCode: payload.otpCode,
+    userAgent: req.headers["user-agent"],
+    ipAddress: req.ip
   })
 
   return sendSuccess(res, {
@@ -378,6 +518,20 @@ export const patchCustomerProfile = asyncHandler(async (req: Request, res: Respo
 
   return sendSuccess(res, {
     message: "Profile updated successfully",
+    data
+  })
+})
+
+export const patchCustomerPassword = asyncHandler(async (req: Request, res: Response) => {
+  const payload = customerPasswordUpdateSchema.parse(req.body)
+  const data = await updateCustomerPassword({
+    customerId: req.user?.id ?? "",
+    currentPassword: payload.currentPassword,
+    newPassword: payload.newPassword
+  })
+
+  return sendSuccess(res, {
+    message: "Password updated successfully",
     data
   })
 })
@@ -498,7 +652,9 @@ export const refreshCustomerAuth = asyncHandler(async (req: Request, res: Respon
 
 export const logoutCustomerAuth = asyncHandler(async (req: Request, res: Response) => {
   const payload = logoutSchema.parse(req.body)
-  const data = await logoutCustomerSession(payload.refreshToken)
+  const data = await logoutCustomerSession(payload.refreshToken, {
+    expoPushToken: payload.expoPushToken
+  })
 
   return sendSuccess(res, {
     message: "Customer signed out successfully",
@@ -585,7 +741,10 @@ export const getCustomerRestaurant = asyncHandler(async (req: Request, res: Resp
 
 export const postCustomerCartQuote = asyncHandler(async (req: Request, res: Response) => {
   const payload = cartQuoteSchema.parse(req.body)
-  const data = await quoteCustomerCart(payload)
+  const data = await quoteCustomerCart({
+    ...payload,
+    customerId: req.user?.role === "customer" ? req.user.id : undefined
+  })
 
   return sendSuccess(res, {
     message: "Cart quote calculated successfully",
@@ -823,9 +982,23 @@ export const deleteCustomerPushToken = asyncHandler(async (req: Request, res: Re
 export const getCustomerNotifications = asyncHandler(async (req: Request, res: Response) => {
   const page = Number.parseInt(getStringValue(req.query.page), 10)
   const limit = Number.parseInt(getStringValue(req.query.limit), 10)
+  const rawCategory = getStringValue(req.query.category)
+  const category = ["orders", "offers"].includes(rawCategory)
+    ? (rawCategory as "orders" | "offers")
+    : "all"
   const data = await listCustomerNotifications(req.user?.id ?? "", {
     page: Number.isFinite(page) ? page : 1,
-    limit: Number.isFinite(limit) ? limit : 20
+    limit: Number.isFinite(limit) ? limit : 20,
+    category
+  })
+
+  return sendSuccess(res, { data })
+})
+
+export const getCustomerNotificationCampaign = asyncHandler(async (req: Request, res: Response) => {
+  const data = await getCustomerNotificationByCampaignId({
+    customerId: req.user?.id ?? "",
+    campaignId: getStringValue(req.params.campaignId)
   })
 
   return sendSuccess(res, { data })

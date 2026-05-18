@@ -6,8 +6,10 @@ import { emitSocketEvent } from "../../config/socket"
 import { slugify } from "../../common/utils/slugify"
 import { AppError } from "../../common/utils/app-error"
 import { runAutoDispatchForReadyOrders } from "../admin/orders-monitor.service"
-import { OwnerModel, RiderModel } from "../auth/auth.model"
+import { OwnerModel, RestaurantModel, RiderModel } from "../auth/auth.model"
 import { sendPushToCustomer } from "../customer/push.service"
+import { VoucherRedemptionModel } from "../customer/customer.model"
+import { grantReferralRewardForDeliveredOrder } from "../customer/referral.service"
 import { getPlatformContent } from "../public/content.service"
 import { sendPushToRider } from "../rider/push.service"
 import { syncOrderLedgerForFinalStatus } from "./finance.service"
@@ -17,23 +19,21 @@ import {
   NotificationModel,
   OrderModel
 } from "./operational.model"
+import {
+  buildOrderPreparationTiming,
+  buildPreparationMetaForExtension,
+  buildPreparationMetaForStart
+} from "./preparation-timing"
+import { buildDhakaPresetRange, type OwnerDateRange } from "./date-ranges"
 
 const liveStatuses = new Set(["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"])
 const historyStatuses = new Set(["Delivered", "Rejected", "Cancelled"])
 const MAX_ORDER_HISTORY_ENTRIES = 100
-const DHAKA_TIME_ZONE = "Asia/Dhaka"
-const DHAKA_UTC_OFFSET = "+06:00"
-
-type DateParts = {
-  year: number
-  month: number
-  day: number
-}
 
 const ownerOrderTransitions: Record<string, string[]> = {
   New: ["Accepted", "Rejected"],
-  Accepted: ["Preparing"],
-  Preparing: ["ReadyForPickup"]
+  Accepted: ["Preparing", "Cancelled"],
+  Preparing: ["ReadyForPickup", "Cancelled"]
 }
 
 const systemOrderTransitions: Record<string, string[]> = {
@@ -67,11 +67,21 @@ function getOwnerAutoCancelSettings(content: Record<string, any>) {
     autoCancelNotifyBeforeMinutes:
       typeof dispatch.autoCancelNotifyBeforeMinutes === "number"
         ? dispatch.autoCancelNotifyBeforeMinutes
-        : 3
+        : 3,
+    prepStartGraceMinutes:
+      typeof dispatch.prepStartGraceMinutes === "number" ? dispatch.prepStartGraceMinutes : 3,
+    preparationMaxExtraMinutes:
+      typeof dispatch.preparationMaxExtraMinutes === "number"
+        ? dispatch.preparationMaxExtraMinutes
+        : 20
   }
 }
 
-function decorateOwnerOrderAutomation(order: Record<string, any>, settings: ReturnType<typeof getOwnerAutoCancelSettings>) {
+function decorateOwnerOrderAutomation(
+  order: Record<string, any>,
+  settings: ReturnType<typeof getOwnerAutoCancelSettings>,
+  restaurant?: Record<string, any> | null
+) {
   const createdAt = order.createdAt ? new Date(order.createdAt).getTime() : 0
   const applies =
     settings.autoCancelUnacceptedOrdersEnabled &&
@@ -93,7 +103,48 @@ function decorateOwnerOrderAutomation(order: Record<string, any>, settings: Retu
       remainingSeconds: autoCancelAt
         ? Math.max(0, Math.ceil((autoCancelAt.getTime() - Date.now()) / 1000))
         : null
-    }
+    },
+    preparationTiming: buildOrderPreparationTiming({
+      order,
+      restaurant,
+      prepStartGraceMinutes: settings.prepStartGraceMinutes,
+      maxExtraMinutes: settings.preparationMaxExtraMinutes
+    })
+  }
+}
+
+async function clearRiderActiveTrackingForFinalOrder(order: {
+  _id?: unknown
+  id?: string
+  riderId?: unknown
+}) {
+  const riderId = String(order.riderId ?? "").trim()
+  const orderId = String(order._id ?? order.id ?? "").trim()
+
+  if (!riderId || !orderId) {
+    return
+  }
+
+  const nextPickedUpOrder = await OrderModel.findOne({
+    riderId,
+    status: "PickedUp",
+    _id: { $ne: orderId }
+  })
+    .sort({ "timestamps.PickedUp": 1, createdAt: 1 })
+    .select("_id")
+
+  const updatedRider = await RiderModel.findByIdAndUpdate(
+    riderId,
+    {
+      $set: {
+        activeTrackingOrderId: nextPickedUpOrder?.id ?? ""
+      }
+    },
+    { new: true }
+  )
+
+  if (updatedRider) {
+    emitSocketEvent(`rider:${updatedRider.id}`, "rider.profile.updated", updatedRider.toObject())
   }
 }
 
@@ -237,49 +288,55 @@ function getOrderActionTitle(nextStatus: string) {
   }
 }
 
-function getCustomerOrderStatusMessage(orderNumber: string, nextStatus: string) {
+function getCustomerOrderStatusMessage(nextStatus: string) {
   switch (nextStatus) {
     case "Accepted":
       return {
-        title: "Order accepted",
-        body: `Good news. ${orderNumber} has been accepted and the kitchen will begin shortly.`
+        title: "✅ Order accepted",
+        body: "Your order is confirmed. The kitchen will start soon."
       }
     case "Preparing":
       return {
-        title: "Cooking has started",
-        body: `${orderNumber} is now being prepared in the kitchen.`
+        title: "🍳 Food is preparing",
+        body: "Your food is being prepared now."
       }
     case "ReadyForPickup":
       return {
-        title: "Ready for pickup",
-        body: `${orderNumber} is packed and waiting for the rider.`
+        title: "📦 Ready for pickup",
+        body: "Your order is packed. A rider will pick it up soon."
       }
     case "PickedUp":
       return {
-        title: "On the way",
-        body: `${orderNumber} has been picked up and is heading to your location.`
+        title: "🛵 On the way",
+        body: "Your rider picked up the order and is heading to you."
       }
     case "Delivered":
       return {
-        title: "Delivered successfully",
-        body: `${orderNumber} has arrived. Enjoy your meal.`
+        title: "🎉 Delivered",
+        body: "Your food has arrived. Tap to rate your order."
       }
     case "Rejected":
       return {
-        title: "Order was not accepted",
-        body: `${orderNumber} could not be accepted by the restaurant.`
+        title: "😕 Order not accepted",
+        body: "The restaurant could not accept your order. Please try another restaurant."
       }
     case "Cancelled":
       return {
-        title: "Order cancelled",
-        body: `${orderNumber} has been cancelled. You can place a new order any time.`
+        title: "❌ Order cancelled",
+        body: "Your order was cancelled. You can order again anytime."
       }
     default:
       return {
-        title: "Order updated",
-        body: `There is a fresh update on ${orderNumber}.`
+        title: "🔔 Order update",
+        body: "There is a new update on your order."
       }
   }
+}
+
+async function getMaxActiveOrdersPerRider() {
+  const content = await getPlatformContent()
+  const value = content.operations?.dispatch?.maxActiveOrdersPerRider
+  return typeof value === "number" && Number.isFinite(value) ? value : 3
 }
 
 async function safeSendCustomerOrderStatusPush(params: {
@@ -288,7 +345,7 @@ async function safeSendCustomerOrderStatusPush(params: {
   orderNumber: string
   nextStatus: string
 }) {
-  const customerMessage = getCustomerOrderStatusMessage(params.orderNumber, params.nextStatus)
+  const customerMessage = getCustomerOrderStatusMessage(params.nextStatus)
 
   try {
     await sendPushToCustomer({
@@ -298,127 +355,14 @@ async function safeSendCustomerOrderStatusPush(params: {
         body: customerMessage.body,
         data: {
           type: "order_status",
+          status: params.nextStatus,
           orderId: params.orderId,
-          path: `/orders/${params.orderId}`
+          path: `/orders/${params.orderId}/tracking`
         }
       }
     })
   } catch {
     // Order state must remain successful even when external push delivery is unavailable.
-  }
-}
-
-function getDhakaDateParts(date: Date): DateParts {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: DHAKA_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  })
-  const parts = formatter.formatToParts(date)
-  const year = parts.find((part) => part.type === "year")?.value ?? "1970"
-  const month = parts.find((part) => part.type === "month")?.value ?? "01"
-  const day = parts.find((part) => part.type === "day")?.value ?? "01"
-
-  return {
-    year: Number(year),
-    month: Number(month),
-    day: Number(day)
-  }
-}
-
-function parseDateOnlyParts(value?: string): DateParts | null {
-  if (!value) return null
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
-  if (!match) {
-    const parsedDate = new Date(value)
-    return Number.isNaN(parsedDate.getTime()) ? null : getDhakaDateParts(parsedDate)
-  }
-
-  return {
-    year: Number(match[1]),
-    month: Number(match[2]),
-    day: Number(match[3])
-  }
-}
-
-function shiftDateParts(parts: DateParts, offsetDays: number): DateParts {
-  const anchor = new Date(Date.UTC(parts.year, parts.month - 1, parts.day))
-  anchor.setUTCDate(anchor.getUTCDate() + offsetDays)
-
-  return {
-    year: anchor.getUTCFullYear(),
-    month: anchor.getUTCMonth() + 1,
-    day: anchor.getUTCDate()
-  }
-}
-
-function getDatePartsWeekday(parts: DateParts) {
-  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay()
-}
-
-function buildDhakaDayRange(parts: DateParts) {
-  const month = String(parts.month).padStart(2, "0")
-  const day = String(parts.day).padStart(2, "0")
-  const isoDate = `${parts.year}-${month}-${day}`
-
-  return {
-    start: new Date(`${isoDate}T00:00:00.000${DHAKA_UTC_OFFSET}`),
-    end: new Date(`${isoDate}T23:59:59.999${DHAKA_UTC_OFFSET}`)
-  }
-}
-
-function buildDhakaPresetRange(params: {
-  preset?: string
-  from?: string
-  to?: string
-}) {
-  if (!params.preset) return null
-
-  const todayParts = getDhakaDateParts(new Date())
-
-  switch (params.preset) {
-    case "today":
-      return buildDhakaDayRange(todayParts)
-    case "yesterday":
-      return buildDhakaDayRange(shiftDateParts(todayParts, -1))
-    case "last7Days":
-      return {
-        start: buildDhakaDayRange(shiftDateParts(todayParts, -6)).start,
-        end: buildDhakaDayRange(todayParts).end
-      }
-    case "last30Days":
-      return {
-        start: buildDhakaDayRange(shiftDateParts(todayParts, -29)).start,
-        end: buildDhakaDayRange(todayParts).end
-      }
-    case "thisWeek": {
-      const weekStartParts = shiftDateParts(todayParts, -getDatePartsWeekday(todayParts))
-      return {
-        start: buildDhakaDayRange(weekStartParts).start,
-        end: buildDhakaDayRange(todayParts).end
-      }
-    }
-    case "thisMonth":
-      return {
-        start: buildDhakaDayRange({
-          year: todayParts.year,
-          month: todayParts.month,
-          day: 1
-        }).start,
-        end: buildDhakaDayRange(todayParts).end
-      }
-    case "custom": {
-      const fromParts = parseDateOnlyParts(params.from)
-      if (!fromParts) return null
-      const toParts = parseDateOnlyParts(params.to ?? params.from) ?? fromParts
-      return {
-        start: buildDhakaDayRange(fromParts).start,
-        end: buildDhakaDayRange(toParts).end
-      }
-    }
-    default:
-      return null
   }
 }
 
@@ -438,6 +382,37 @@ function applyOrderStatusTimestamp(
   }
 
   return nextTimestamps
+}
+
+function buildOrderHistoryDateRangeMatch(
+  params: { status?: string; tab?: "live" | "history" },
+  range: OwnerDateRange
+) {
+  const statuses =
+    params.status && historyStatuses.has(params.status)
+      ? [params.status]
+      : [...historyStatuses]
+  const clauses = statuses.flatMap((status) => {
+    const timestampField = orderTimestampFieldByStatus[status]
+    return [
+      { [`timestamps.${status}`]: { $gte: range.start, $lte: range.end } },
+      ...(timestampField
+        ? [{ [`timestamps.${timestampField}`]: { $gte: range.start, $lte: range.end } }]
+        : [])
+    ]
+  })
+
+  return clauses.length ? { $or: clauses } : null
+}
+
+function shouldUseHistoryDateRange(params: {
+  tab?: "live" | "history"
+  status?: string
+  dateBasis?: string
+}) {
+  if (params.dateBasis === "history") return true
+  if (params.dateBasis === "created") return false
+  return params.tab === "history" || Boolean(params.status && historyStatuses.has(params.status))
 }
 
 export async function getOwnerRestaurantContext(ownerId: string) {
@@ -651,6 +626,7 @@ export async function listMenuItemsWithFilters(params: {
   ownerId: string
   search?: string
   status?: string
+  availability?: "all" | "available" | "unavailable"
   categoryId?: string
   popularFilter?: string
   sortBy?: string
@@ -658,10 +634,19 @@ export async function listMenuItemsWithFilters(params: {
   pageSize?: number
 }) {
   const { restaurantId } = await getOwnerRestaurantContext(params.ownerId)
-  const query: Record<string, unknown> = { restaurantId }
+  const query: Record<string, unknown> = { restaurantId, status: "active" }
 
   if (params.status && params.status !== "all") {
-    query.status = params.status === "Hidden" ? "archived" : params.status
+    query.status =
+      params.status === "Hidden"
+        ? "archived"
+        : params.status === "Active"
+          ? "active"
+          : params.status
+  }
+
+  if (params.availability && params.availability !== "all") {
+    query.availability = params.availability
   }
 
   if (params.categoryId && params.categoryId !== "all") {
@@ -707,6 +692,7 @@ export async function createMenuItem(params: {
   categoryId: string
   name: string
   description?: string
+  images?: Array<{ url?: string; publicId?: string }>
   status: "active" | "archived"
   availability: "available" | "unavailable"
   kind: "simple" | "variant"
@@ -732,6 +718,7 @@ export async function createMenuItem(params: {
     name: params.name,
     slug: slugify(params.name),
     description: params.description ?? "",
+    images: params.images ?? [],
     status: params.status,
     availability: params.availability,
     kind: params.kind,
@@ -740,6 +727,9 @@ export async function createMenuItem(params: {
     addOnGroups: params.addOnGroups ?? [],
     isPopular: params.isPopular ?? false
   })
+
+  emitSocketEvent(`owner:${params.ownerId}`, "menu.updated", menuItem.toObject())
+  emitSocketEvent(`restaurant:${restaurantId}`, "menu.updated", menuItem.toObject())
 
   return menuItem
 }
@@ -750,6 +740,7 @@ export async function updateMenuItem(params: {
   categoryId?: string
   name?: string
   description?: string
+  images?: Array<{ url?: string; publicId?: string }>
   status?: "active" | "archived"
   availability?: "available" | "unavailable"
   kind?: "simple" | "variant"
@@ -785,6 +776,9 @@ export async function updateMenuItem(params: {
   }
 
   if (params.description !== undefined) menuItem.description = params.description
+  if (params.images !== undefined) {
+    menuItem.set("images", params.images)
+  }
   if (params.status !== undefined) menuItem.status = params.status
   if (params.availability !== undefined) menuItem.availability = params.availability
   if (params.kind !== undefined) menuItem.kind = params.kind
@@ -798,6 +792,8 @@ export async function updateMenuItem(params: {
   if (params.isPopular !== undefined) menuItem.isPopular = params.isPopular
 
   await menuItem.save()
+  emitSocketEvent(`owner:${params.ownerId}`, "menu.updated", menuItem.toObject())
+  emitSocketEvent(`restaurant:${restaurantId}`, "menu.updated", menuItem.toObject())
   return menuItem
 }
 
@@ -818,6 +814,14 @@ export async function deleteMenuItemPermanently(params: { ownerId: string; itemI
   }
 
   await MenuItemModel.deleteOne({ _id: params.itemId, restaurantId })
+  emitSocketEvent(`owner:${params.ownerId}`, "menu.updated", {
+    itemId: params.itemId,
+    deleted: true
+  })
+  emitSocketEvent(`restaurant:${restaurantId}`, "menu.updated", {
+    itemId: params.itemId,
+    deleted: true
+  })
 
   return { deleted: true }
 }
@@ -832,6 +836,7 @@ export async function listOrders(params: {
   preset?: string
   from?: string
   to?: string
+  dateBasis?: "created" | "history" | "activity"
   page?: number
   pageSize?: number
 }) {
@@ -868,7 +873,21 @@ export async function listOrders(params: {
   const range = buildDhakaPresetRange(params)
 
   if (range) {
-    query.createdAt = { $gte: range.start, $lte: range.end }
+    const createdRangeClause = { createdAt: { $gte: range.start, $lte: range.end } }
+    const historyRangeClause = buildOrderHistoryDateRangeMatch(params, range)
+
+    if (params.dateBasis === "activity") {
+      andClauses.push({
+        $or: [
+          createdRangeClause,
+          ...(historyRangeClause?.$or ?? [])
+        ]
+      })
+    } else if (shouldUseHistoryDateRange(params) && historyRangeClause) {
+      andClauses.push(historyRangeClause)
+    } else {
+      query.createdAt = createdRangeClause.createdAt
+    }
   }
 
   if (andClauses.length > 0) {
@@ -882,33 +901,41 @@ export async function listOrders(params: {
         ? { "pricing.total": -1, createdAt: -1 }
         : { createdAt: -1 }
   const page = Math.max(1, params.page ?? 1)
-  const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 20))
+  const pageSize = Math.min(500, Math.max(1, params.pageSize ?? 20))
 
-  const [items, total, content] = await Promise.all([
+  const [items, total, content, restaurant] = await Promise.all([
     OrderModel.find(query).sort(sort).skip((page - 1) * pageSize).limit(pageSize).lean(),
     OrderModel.countDocuments(query),
     getPlatformContent(),
+    RestaurantModel.findById(restaurantId).lean()
   ])
   const autoCancelSettings = getOwnerAutoCancelSettings(content as Record<string, any>)
 
   return {
-    items: items.map((order) => decorateOwnerOrderAutomation(order, autoCancelSettings)),
+    items: items.map((order) =>
+      decorateOwnerOrderAutomation(order, autoCancelSettings, restaurant as Record<string, any> | null)
+    ),
     total
   }
 }
 
 export async function getOrderById(params: { ownerId: string; orderId: string }) {
   const { restaurantId } = await getOwnerRestaurantContext(params.ownerId)
-  const [order, content] = await Promise.all([
+  const [order, content, restaurant] = await Promise.all([
     OrderModel.findOne({ _id: params.orderId, restaurantId }).lean(),
-    getPlatformContent()
+    getPlatformContent(),
+    RestaurantModel.findById(restaurantId).lean()
   ])
 
   if (!order) {
     throw new AppError(StatusCodes.NOT_FOUND, "ORDER_NOT_FOUND", "Order not found")
   }
 
-  return decorateOwnerOrderAutomation(order, getOwnerAutoCancelSettings(content as Record<string, any>))
+  return decorateOwnerOrderAutomation(
+    order,
+    getOwnerAutoCancelSettings(content as Record<string, any>),
+    restaurant as Record<string, any> | null
+  )
 }
 
 export async function listOwnerRidersForAssignment(ownerId: string) {
@@ -993,6 +1020,24 @@ export async function assignOwnerRiderToOrder(params: {
   }
 
   const previousRiderId = typeof order.riderId === "string" ? order.riderId : ""
+  if (previousRiderId !== rider.id) {
+    const [activeOrdersCount, maxActiveOrdersPerRider] = await Promise.all([
+      OrderModel.countDocuments({
+        _id: { $ne: order._id },
+        riderId: rider.id,
+        status: { $in: ["ReadyForPickup", "PickedUp"] }
+      }),
+      getMaxActiveOrdersPerRider()
+    ])
+
+    if (activeOrdersCount >= maxActiveOrdersPerRider) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "RIDER_CAPACITY_REACHED",
+        `This rider already has ${activeOrdersCount} active orders. Choose another rider or increase the dispatch capacity.`
+      )
+    }
+  }
   order.riderId = rider.id
   order.riderSnapshot = {
     ...(order.riderSnapshot ?? {}),
@@ -1028,6 +1073,7 @@ export async function assignOwnerRiderToOrder(params: {
     }
   }
 
+  emitSocketEvent(`owner:${params.ownerId}`, "order.updated", order.toObject())
   emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", order.toObject())
   emitSocketEvent(`rider:${rider.id}`, "rider.assignment.updated", {
     orderId: order.id,
@@ -1065,15 +1111,15 @@ export async function assignOwnerRiderToOrder(params: {
     await sendPushToCustomer({
       customerId: order.customerId,
       payload: {
-        title: previousRiderId && previousRiderId !== rider.id ? "Rider updated" : "Rider assigned",
+        title: previousRiderId && previousRiderId !== rider.id ? "🛵 Rider updated" : "🛵 Rider assigned",
         body:
           previousRiderId && previousRiderId !== rider.id
-            ? `${rider.fullName} will now deliver ${order.orderNumber}.`
-            : `${rider.fullName} is assigned to deliver ${order.orderNumber}.`,
+            ? `${rider.fullName} will now deliver your order.`
+            : `${rider.fullName} is assigned to deliver your order.`,
         data: {
           type: "rider_assigned",
           orderId: order.id,
-          path: `/orders/${order.id}`
+          path: `/orders/${order.id}/tracking`
         }
       }
     })
@@ -1087,7 +1133,7 @@ export async function assignOwnerRiderToOrder(params: {
 export async function transitionOrder(params: {
   ownerId: string
   orderId: string
-  nextStatus: "Accepted" | "Rejected" | "Preparing" | "ReadyForPickup"
+  nextStatus: "Accepted" | "Rejected" | "Preparing" | "ReadyForPickup" | "Cancelled"
   actor: "owner"
   note?: string
 }) {
@@ -1109,6 +1155,10 @@ export async function transitionOrder(params: {
   }
 
   const now = new Date()
+  const restaurant =
+    params.nextStatus === "Preparing"
+      ? await RestaurantModel.findById(restaurantId).lean()
+      : null
   const setPayload: Record<string, unknown> = {
     status: params.nextStatus,
     timestamps: applyOrderStatusTimestamp(
@@ -1118,9 +1168,35 @@ export async function transitionOrder(params: {
     )
   }
 
+  if (params.nextStatus === "Preparing") {
+    const content = await getPlatformContent()
+    const settings = getOwnerAutoCancelSettings(content)
+    setPayload.preparationMeta = buildPreparationMetaForStart({
+      order: currentOrder,
+      restaurant: restaurant as Record<string, any> | null,
+      startedAt: now,
+      autoStarted: false,
+      maxExtraMinutes: settings.preparationMaxExtraMinutes
+    })
+  }
+
   if (params.nextStatus === "Rejected") {
     setPayload.rejectionReason = params.note ?? ""
     setPayload.terminalReason = "owner_rejected"
+
+    if (currentOrder.paymentMethod === "Bkash" && currentOrder.paymentStatus === "paid") {
+      setPayload.paymentStatus = "refund_pending"
+      setPayload["paymentSnapshot.refundStatus"] = "pending"
+      setPayload["paymentSnapshot.refundRequestedAt"] = now
+    }
+  }
+
+  if (params.nextStatus === "Cancelled") {
+    setPayload.cancelledBy = "owner"
+    setPayload.terminalReason = params.note ?? "owner_cancelled"
+    setPayload["riderTracking.isActive"] = false
+    setPayload["riderTracking.completedAt"] = now
+    setPayload["riderTracking.endedAt"] = now
 
     if (currentOrder.paymentMethod === "Bkash" && currentOrder.paymentStatus === "paid") {
       setPayload.paymentStatus = "refund_pending"
@@ -1159,13 +1235,25 @@ export async function transitionOrder(params: {
     )
   }
 
-  if (params.nextStatus === "Rejected") {
-    await syncOrderLedgerForFinalStatus({
-      restaurantId,
-      orderId: order.id,
-      nextStatus: "Rejected",
-      finalizedAt: now
-    })
+  if (params.nextStatus === "Rejected" || params.nextStatus === "Cancelled") {
+    await Promise.all([
+      syncOrderLedgerForFinalStatus({
+        restaurantId,
+        orderId: order.id,
+        nextStatus: params.nextStatus,
+        finalizedAt: now
+      }),
+      VoucherRedemptionModel.updateMany(
+        { orderId: order._id, releasedAt: null },
+        {
+          $set: {
+            releasedAt: now,
+            releaseReason:
+              params.nextStatus === "Rejected" ? "owner_rejected" : "owner_cancelled"
+          }
+        }
+      )
+    ])
   }
 
   const orderObject = order.toObject()
@@ -1190,6 +1278,106 @@ export async function transitionOrder(params: {
   }
 
   return order
+}
+
+export async function extendOrderPreparation(params: {
+  ownerId: string
+  orderId: string
+  minutes: 5 | 10
+}) {
+  const { owner, restaurantId } = await getOwnerRestaurantContext(params.ownerId)
+  const [currentOrder, restaurant, content] = await Promise.all([
+    OrderModel.findOne({ _id: params.orderId, restaurantId }).lean(),
+    RestaurantModel.findById(restaurantId).lean(),
+    getPlatformContent()
+  ])
+
+  if (!currentOrder) {
+    throw new AppError(StatusCodes.NOT_FOUND, "ORDER_NOT_FOUND", "Order not found")
+  }
+
+  if (currentOrder.status !== "Preparing") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "PREPARATION_EXTENSION_NOT_ALLOWED",
+      "Extra preparation time can only be added while food is being prepared"
+    )
+  }
+
+  const currentExtraMinutes =
+    typeof currentOrder.preparationMeta?.extraMinutes === "number"
+      ? currentOrder.preparationMeta.extraMinutes
+      : 0
+  const settings = getOwnerAutoCancelSettings(content)
+  const remainingExtraMinutes = Math.max(
+    0,
+    settings.preparationMaxExtraMinutes - currentExtraMinutes
+  )
+
+  if (remainingExtraMinutes <= 0 || params.minutes > remainingExtraMinutes) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "PREPARATION_EXTENSION_LIMIT_REACHED",
+      `Only ${remainingExtraMinutes} minutes can be added to this order`
+    )
+  }
+
+  const now = new Date()
+  const preparationMeta = buildPreparationMetaForExtension({
+    order: currentOrder,
+    restaurant: restaurant as Record<string, any> | null,
+    minutesToAdd: params.minutes,
+    extendedAt: now,
+    maxExtraMinutes: settings.preparationMaxExtraMinutes
+  })
+
+  const updatedOrder = await OrderModel.findOneAndUpdate(
+    { _id: currentOrder._id, restaurantId, status: "Preparing" },
+    {
+      $set: {
+        preparationMeta
+      },
+      $push: {
+        history: {
+          $each: [
+            {
+              status: "Preparing",
+              actor: "owner",
+              note: `Owner added ${params.minutes} minutes to preparation time.`,
+              createdAt: now
+            }
+          ],
+          $slice: -MAX_ORDER_HISTORY_ENTRIES
+        }
+      }
+    },
+    { new: true }
+  )
+
+  if (!updatedOrder) {
+    const latestOrder = await OrderModel.findById(params.orderId).lean()
+    throw new AppError(
+      StatusCodes.CONFLICT,
+      "ORDER_STATUS_CHANGED",
+      `Order status is already ${latestOrder?.status ?? "updated"}`
+    )
+  }
+
+  const orderObject = updatedOrder.toObject()
+  emitSocketEvent(`owner:${owner.id}`, "order.updated", orderObject)
+  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", orderObject)
+  emitSocketEvent(`customer:${updatedOrder.customerId}`, "customer.order.updated", orderObject)
+  emitSocketEvent("admin:live-map", "admin.live-map.updated", {
+    type: "order.preparation_extended",
+    orderId: updatedOrder.id,
+    status: updatedOrder.status
+  })
+
+  return decorateOwnerOrderAutomation(
+    orderObject,
+    getOwnerAutoCancelSettings(content as Record<string, any>),
+    restaurant as Record<string, any> | null
+  )
 }
 
 export async function transitionOrderBySystem(params: {
@@ -1222,6 +1410,12 @@ export async function transitionOrderBySystem(params: {
   if (params.nextStatus === "Cancelled") {
     setPayload.cancelledBy = params.actor
     setPayload.terminalReason = params.note ?? "system_cancelled"
+
+    if (order.paymentMethod === "Bkash" && order.paymentStatus === "paid") {
+      setPayload.paymentStatus = "refund_pending"
+      setPayload["paymentSnapshot.refundStatus"] = "pending"
+      setPayload["paymentSnapshot.refundRequestedAt"] = now
+    }
   }
 
   if (params.nextStatus === "Delivered") {
@@ -1279,12 +1473,31 @@ export async function transitionOrderBySystem(params: {
   }
 
   if (params.nextStatus === "Delivered" || params.nextStatus === "Cancelled") {
-    await syncOrderLedgerForFinalStatus({
-      restaurantId: updatedOrder.restaurantId.toString(),
-      orderId: updatedOrder.id,
-      nextStatus: params.nextStatus,
-      finalizedAt: now
-    })
+    await Promise.all([
+      syncOrderLedgerForFinalStatus({
+        restaurantId: updatedOrder.restaurantId.toString(),
+        orderId: updatedOrder.id,
+        nextStatus: params.nextStatus,
+        finalizedAt: now
+      }),
+      params.nextStatus === "Cancelled"
+        ? VoucherRedemptionModel.updateMany(
+            { orderId: updatedOrder._id, releasedAt: null },
+            {
+              $set: {
+                releasedAt: now,
+                releaseReason: params.note ?? "system_cancelled"
+              }
+            }
+          )
+        : Promise.resolve()
+    ])
+
+    await clearRiderActiveTrackingForFinalOrder(updatedOrder)
+  }
+
+  if (params.nextStatus === "Delivered") {
+    await grantReferralRewardForDeliveredOrder({ orderId: updatedOrder.id }).catch(() => undefined)
   }
 
   const restaurantOwner = await OwnerModel.findOne({ activeRestaurantId: updatedOrder.restaurantId })
@@ -1368,6 +1581,7 @@ export async function updateOrderRiderLocation(params: {
 
   const currentTracking =
     (order.get("riderTracking") as {
+      isFocused?: boolean
       currentLocation?: {
         latitude?: number
         longitude?: number
@@ -1390,6 +1604,7 @@ export async function updateOrderRiderLocation(params: {
 
   const trackingSnapshot = {
     isActive: true,
+    isFocused: Boolean(currentTracking.isFocused),
     startedAt: currentTracking.lastUpdatedAt ?? order.timestamps?.PickedUp ?? order.createdAt,
     lastUpdatedAt: new Date(),
     currentLocation: {
@@ -1430,6 +1645,11 @@ export async function updateOrderRiderLocation(params: {
   order.set("riderTracking", trackingSnapshot)
   await order.save()
 
+  const restaurantOwner = await OwnerModel.findOne({ activeRestaurantId: order.restaurantId })
+
+  if (restaurantOwner) {
+    emitSocketEvent(`owner:${restaurantOwner.id}`, "order.updated", order.toObject())
+  }
   emitSocketEvent(`restaurant:${order.restaurantId.toString()}`, "order.updated", order.toObject())
   emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", order.toObject())
   if (order.riderId) {
@@ -1446,12 +1666,12 @@ export async function updateOrderRiderLocation(params: {
       await sendPushToCustomer({
         customerId: order.customerId,
         payload: {
-          title: "Rider is nearby",
-          body: `${order.orderNumber} is almost at your location. Please get ready to receive it.`,
+          title: "📍 Rider is nearby",
+          body: "Your rider is almost there. Please be ready to receive your order.",
           data: {
             type: "rider_near",
             orderId: order.id,
-            path: `/orders/${order.id}`
+            path: `/orders/${order.id}/tracking`
           }
         }
       })

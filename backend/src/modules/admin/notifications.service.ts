@@ -11,6 +11,13 @@ import { getPlatformContent } from "../public/content.service";
 import { sendPushToRider } from "../rider/push.service";
 import { OwnerModel, RestaurantModel, RiderModel } from "../auth/auth.model";
 import { recordBusinessEvent } from "./business-event.service";
+import {
+  classifyCustomerNotification,
+  getAdminNotificationSettings,
+  isAdminNotificationCategoryEnabled,
+  isAdminNotificationItemEnabled,
+} from "./admin-notification-settings";
+import { AdminCustomerGroupModel } from "./customer-group.model";
 import { AdminNotificationScheduleModel } from "./notification-schedule.model";
 import {
   listAdminOperationalAlerts,
@@ -45,6 +52,8 @@ type SendParams = {
   title: string;
   body: string;
   path?: string;
+  ctaLabel?: string;
+  ctaPath?: string;
   type?: string;
   contentType?: "text" | "image" | "image_text";
   imageUrl?: string;
@@ -71,6 +80,7 @@ type SendParams = {
 const MAX_PAGE_SIZE = 100;
 const MAX_NOTIFICATION_SOURCE_FETCH = 1000;
 const EMBEDDED_NOTIFICATION_SCAN_WINDOW = 100;
+const CUSTOMER_PROMO_TYPES = new Set(["promotion", "voucher", "campaign"]);
 
 type NotificationListItem = Record<string, any>;
 type NotificationQueryResult = {
@@ -132,17 +142,6 @@ function filterStatus(item: Record<string, any>, status?: NotificationStatus) {
   return item.isRead === false;
 }
 
-function countActiveTokens(tokens: unknown) {
-  if (!Array.isArray(tokens)) return { active: 0, disabled: 0 };
-  return tokens.reduce(
-    (total, token: Record<string, any>) => {
-      if (token.disabledAt) return { ...total, disabled: total.disabled + 1 };
-      return { ...total, active: total.active + 1 };
-    },
-    { active: 0, disabled: 0 },
-  );
-}
-
 function emptyNotificationResult(): NotificationQueryResult {
   return { items: [], total: 0, unread: 0 };
 }
@@ -156,6 +155,31 @@ function buildSearchRegex(search?: string) {
   return value ? new RegExp(escapeRegexValue(value), "i") : null;
 }
 
+function isCustomerPromoNotification(recipientType: RecipientType, type: string) {
+  return recipientType === "customers" && CUSTOMER_PROMO_TYPES.has(type);
+}
+
+function buildPromoDetailsPath(campaignId: string) {
+  return `/promo-details?campaignId=${encodeURIComponent(campaignId)}`;
+}
+
+function resolveNotificationOpenPath(params: {
+  recipientType: RecipientType;
+  type: string;
+  path: string;
+  campaignId: string;
+}) {
+  if (isCustomerPromoNotification(params.recipientType, params.type)) {
+    if (/^\/restaurants\/[A-Za-z0-9_-]+(?:[?#].*)?$/.test(params.path)) {
+      return params.path;
+    }
+
+    return buildPromoDetailsPath(params.campaignId);
+  }
+
+  return params.path;
+}
+
 function shouldLoadSource(params: ListParams, source: NotificationSource) {
   return !params.source || params.source === "all" || params.source === source;
 }
@@ -164,7 +188,10 @@ function shouldLoadScheduleHistory(params: ListParams) {
   return !params.source || params.source === "all" || params.source === "campaign" || params.source === "scheduled";
 }
 
-function embeddedNotificationMatch(params: ListParams) {
+function embeddedNotificationMatch(
+  params: ListParams,
+  settings?: Awaited<ReturnType<typeof getAdminNotificationSettings>>,
+) {
   const match: Record<string, any> = {
     $or: [
       { "notifications.campaignId": { $exists: false } },
@@ -172,6 +199,19 @@ function embeddedNotificationMatch(params: ListParams) {
       { "notifications.campaignId": null },
     ],
   };
+  const hiddenTypes = settings
+    ? ["order_status", "rider_assigned", "rider_near", "promotion", "voucher", "campaign", "support"]
+        .filter((type) =>
+          !isAdminNotificationCategoryEnabled(
+            settings,
+            classifyCustomerNotification(type),
+          ),
+        )
+    : [];
+
+  if (hiddenTypes.length) {
+    match["notifications.type"] = { $nin: hiddenTypes };
+  }
 
   if (params.status === "read") {
     match["notifications.isRead"] = true;
@@ -216,6 +256,7 @@ function activePushTokenExpression() {
 async function getCustomerNotificationItems(
   params: ListParams,
   fetchLimit: number,
+  settings: Awaited<ReturnType<typeof getAdminNotificationSettings>>,
 ): Promise<NotificationQueryResult> {
   const [result] = await CustomerModel.aggregate([
     {
@@ -232,7 +273,7 @@ async function getCustomerNotificationItems(
       },
     },
     { $unwind: "$notifications" },
-    { $match: embeddedNotificationMatch(params) },
+    { $match: embeddedNotificationMatch(params, settings) },
     ...embeddedNotificationSearchMatch(params),
     { $sort: { "notifications.createdAt": -1 } },
     {
@@ -252,6 +293,8 @@ async function getCustomerNotificationItems(
               recipientPhone: { $ifNull: ["$phone", ""] },
               path: { $ifNull: ["$notifications.path", ""] },
               campaignId: { $ifNull: ["$notifications.campaignId", ""] },
+              ctaLabel: { $ifNull: ["$notifications.ctaLabel", ""] },
+              ctaPath: { $ifNull: ["$notifications.ctaPath", ""] },
               contentType: { $ifNull: ["$notifications.contentType", "text"] },
               imageUrl: { $ifNull: ["$notifications.imageUrl", ""] },
               isRead: { $eq: ["$notifications.isRead", true] },
@@ -268,6 +311,10 @@ async function getCustomerNotificationItems(
           },
         ],
         total: [{ $count: "count" }],
+        unread: [
+          { $match: { "notifications.isRead": { $ne: true } } },
+          { $count: "count" },
+        ],
       },
     },
   ]);
@@ -279,12 +326,39 @@ async function getCustomerNotificationItems(
       createdAt: serializeDate(item.createdAt),
     })),
     total: Number(result?.total?.[0]?.count ?? 0),
-    unread: 0,
+    unread: Number(result?.unread?.[0]?.count ?? 0),
   };
 }
 
-function buildOwnerNotificationQuery(params: ListParams) {
+function buildOwnerNotificationQuery(
+  params: ListParams,
+  settings: Awaited<ReturnType<typeof getAdminNotificationSettings>>,
+) {
   const query: Record<string, any> = { entityType: { $ne: "admin_notification" } };
+  const hiddenRules: Record<string, unknown>[] = [];
+
+  if (!settings.orderPlaced) {
+    hiddenRules.push({ eventType: "order.created" });
+  }
+  if (!settings.payoutRequests) {
+    hiddenRules.push({
+      $or: [{ type: "payout" }, { eventType: /^payout\./ }],
+    });
+  }
+  if (!settings.support) {
+    hiddenRules.push({
+      $or: [{ type: "support" }, { eventType: /support/i }],
+    });
+  }
+  if (!settings.campaigns) {
+    hiddenRules.push({
+      $or: [{ type: "promotion" }, { eventType: /campaign/i }],
+    });
+  }
+  if (hiddenRules.length) {
+    query.$nor = hiddenRules;
+  }
+
   if (params.status === "read") {
     query.isRead = true;
   } else if (params.status === "unread") {
@@ -307,8 +381,9 @@ function buildOwnerNotificationQuery(params: ListParams) {
 async function getOwnerNotificationItems(
   params: ListParams,
   fetchLimit: number,
+  settings: Awaited<ReturnType<typeof getAdminNotificationSettings>>,
 ): Promise<NotificationQueryResult> {
-  const query = buildOwnerNotificationQuery(params);
+  const query = buildOwnerNotificationQuery(params, settings);
   const [rows, total, unread] = await Promise.all([
     NotificationModel.find(query)
     .sort({ createdAt: -1 })
@@ -328,6 +403,7 @@ async function getOwnerNotificationItems(
       id: objectIdString(notification._id),
       source: "owner" as const,
       type: stringValue(notification.type, "system"),
+      eventType: stringValue(notification.eventType),
       title: stringValue(notification.title),
       description: stringValue(notification.description),
       recipientId: objectIdString(notification.ownerId?._id ?? notification.ownerId),
@@ -386,6 +462,8 @@ async function getRiderNotificationItems(
               recipientPhone: { $ifNull: ["$phone", ""] },
               path: { $ifNull: ["$notifications.path", ""] },
               campaignId: { $ifNull: ["$notifications.campaignId", ""] },
+              ctaLabel: { $ifNull: ["$notifications.ctaLabel", ""] },
+              ctaPath: { $ifNull: ["$notifications.ctaPath", ""] },
               contentType: { $ifNull: ["$notifications.contentType", "text"] },
               imageUrl: { $ifNull: ["$notifications.imageUrl", ""] },
               isRead: { $eq: ["$notifications.isRead", true] },
@@ -581,6 +659,8 @@ async function getScheduledItems() {
             : `${Array.isArray(schedule.recipientIds) ? schedule.recipientIds.length : 0} selected`,
         recipientPhone: "",
         path: stringValue(schedule.path),
+        ctaLabel: stringValue(schedule.ctaLabel),
+        ctaPath: stringValue(schedule.ctaPath),
         campaignId: scheduleId,
         recipientType: stringValue(schedule.recipientType),
         audience: stringValue(schedule.audience),
@@ -614,6 +694,7 @@ async function getScheduledItems() {
 
 export async function listAdminNotifications(params: ListParams = {}) {
   const { page, pageSize } = normalizePage(params);
+  const notificationSettings = await getAdminNotificationSettings();
   const fetchLimit = Math.min(
     MAX_NOTIFICATION_SOURCE_FETCH,
     Math.max(page * pageSize + pageSize * 2, pageSize * 4),
@@ -621,16 +702,20 @@ export async function listAdminNotifications(params: ListParams = {}) {
   const [customerResult, ownerResult, riderResult, campaignItems, scheduledItems, opsItems, customerTokenSummary, riderTokenSummary] =
     await Promise.all([
       shouldLoadSource(params, "customer")
-        ? getCustomerNotificationItems(params, fetchLimit)
+        ? getCustomerNotificationItems(params, fetchLimit, notificationSettings)
         : Promise.resolve(emptyNotificationResult()),
       shouldLoadSource(params, "owner")
-        ? getOwnerNotificationItems(params, fetchLimit)
+        ? getOwnerNotificationItems(params, fetchLimit, notificationSettings)
         : Promise.resolve(emptyNotificationResult()),
       shouldLoadSource(params, "rider")
         ? getRiderNotificationItems(params, fetchLimit)
         : Promise.resolve(emptyNotificationResult()),
-      shouldLoadSource(params, "campaign") ? getCampaignItems() : Promise.resolve([]),
-      shouldLoadScheduleHistory(params) ? getScheduledItems() : Promise.resolve([]),
+      shouldLoadSource(params, "campaign") && notificationSettings.campaigns
+        ? getCampaignItems()
+        : Promise.resolve([]),
+      shouldLoadScheduleHistory(params) && notificationSettings.campaigns
+        ? getScheduledItems()
+        : Promise.resolve([]),
       shouldLoadSource(params, "ops") ? listAdminOperationalAlerts() : Promise.resolve([]),
       getEmbeddedNotificationSummary(CustomerModel),
       getEmbeddedNotificationSummary(RiderModel),
@@ -644,6 +729,7 @@ export async function listAdminNotifications(params: ListParams = {}) {
     ...campaignItems,
     ...scheduledItems,
   ]
+    .filter((item) => isAdminNotificationItemEnabled(item, notificationSettings))
     .filter((item) => params.source && params.source !== "all" ? item.source === params.source : true)
     .filter((item) => filterStatus(item, params.status))
     .filter((item) => matchesSearch(item, params.search))
@@ -654,7 +740,10 @@ export async function listAdminNotifications(params: ListParams = {}) {
     });
 
   const ownerUnread = ownerResult.unread;
-  const opsUnread = opsItems.filter((item) => !item.isRead).length;
+  const visibleOpsItems = opsItems.filter((item) =>
+    isAdminNotificationItemEnabled(item, notificationSettings),
+  );
+  const opsUnread = visibleOpsItems.filter((item) => !item.isRead).length;
   const allCampaignItems = [
     ...campaignItems,
     ...scheduledItems.filter((item) => item.source === "campaign"),
@@ -666,7 +755,7 @@ export async function listAdminNotifications(params: ListParams = {}) {
   const scheduledCount = scheduledOnlyItems.filter((item) => item.deliveryStatus === "scheduled").length;
   const start = (page - 1) * pageSize;
   const campaignScheduledOpsTotal = [
-    ...opsItems,
+    ...visibleOpsItems,
     ...campaignItems,
     ...scheduledItems,
   ]
@@ -683,7 +772,7 @@ export async function listAdminNotifications(params: ListParams = {}) {
     pageCount: Math.max(1, Math.ceil(total / pageSize)),
     summary: {
       totalNotifications: customerResult.total + ownerResult.total + riderResult.total,
-      customerUnread: customerTokenSummary.unread,
+      customerUnread: customerResult.unread,
       ownerUnread: ownerUnread + opsUnread,
       customerPushActiveTokens: customerTokenSummary.active,
       customerPushDisabledTokens: customerTokenSummary.disabled,
@@ -711,8 +800,25 @@ async function resolveCustomerTargets(params: SendParams) {
     query._id = { $in: await OrderModel.distinct("customerId", {}) };
   }
 
-  if (params.customerGroupKey === "has_push_token") {
-    query["pushTokens.0"] = { $exists: true };
+  if (params.customerGroupKey?.startsWith("manual:")) {
+    const groupId = params.customerGroupKey.replace("manual:", "").trim();
+    const group = mongoose.Types.ObjectId.isValid(groupId)
+      ? await AdminCustomerGroupModel.findOne({
+          _id: groupId,
+          archivedAt: null,
+        }).lean()
+      : null;
+    query._id = {
+      ...(typeof query._id === "object" && query._id ? query._id : {}),
+      $in: (group?.customerIds ?? []).map(objectIdString).filter(Boolean),
+    };
+  } else if (params.customerGroupKey === "has_push_token") {
+    query.pushTokens = {
+      $elemMatch: {
+        token: { $exists: true, $ne: "" },
+        disabledAt: null,
+      },
+    };
   } else if (params.customerGroupKey === "ordered_last_30_days") {
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const customerIds = await OrderModel.distinct("customerId", { createdAt: { $gte: since } });
@@ -771,22 +877,10 @@ async function resolveRiderTargets(params: SendParams) {
   return RiderModel.find(query).select("_id fullName phone pushTokens").limit(5000).lean();
 }
 
-function reportStatusFromNotification(notification?: Record<string, any>) {
-  if (!notification) return "not_reached";
-  return notification.isRead === true ? "opened" : "received";
-}
-
 function reportStatusLabel(status: string) {
   if (status === "opened") return "Opened";
   if (status === "received") return "Received";
   return "Not reached";
-}
-
-function matchesRecipientReportStatus(item: Record<string, any>, status: RecipientReportStatus) {
-  if (status === "all") return true;
-  if (status === "opened") return item.status === "opened";
-  if (status === "received") return item.status === "received" || item.status === "opened";
-  return item.status === "not_reached";
 }
 
 function recipientStatusMatch(status: RecipientReportStatus) {
@@ -1358,6 +1452,8 @@ async function recordInstantAdminNotificationCampaign(params: SendParams, result
     title: params.title.trim(),
     body: params.body.trim(),
     path: params.path?.trim() ?? "",
+    ctaLabel: params.ctaLabel?.trim() ?? "",
+    ctaPath: params.ctaPath?.trim() ?? "",
     notificationType: params.type?.trim() || "system",
     contentType: params.contentType ?? "text",
     imageUrl: params.imageUrl?.trim() ?? "",
@@ -1382,6 +1478,8 @@ export async function sendAdminNotification(params: SendParams) {
   const title = params.title.trim();
   const body = params.body.trim();
   const path = params.path?.trim() ?? "";
+  const ctaLabel = params.ctaLabel?.trim() ?? "";
+  const ctaPath = params.ctaPath?.trim() ?? "";
   const type = params.type?.trim() || "system";
   const contentType = params.contentType ?? "text";
   const imageUrl = params.imageUrl?.trim() ?? "";
@@ -1404,6 +1502,8 @@ export async function sendAdminNotification(params: SendParams) {
       title,
       body,
       path,
+      ctaLabel,
+      ctaPath,
       notificationType: type,
       contentType,
       imageUrl,
@@ -1435,6 +1535,12 @@ export async function sendAdminNotification(params: SendParams) {
 
   if (params.recipientType === "customers") {
     const customers = await resolveCustomerTargets(params);
+    const campaignOpenPath = resolveNotificationOpenPath({
+      recipientType: params.recipientType,
+      type,
+      path,
+      campaignId,
+    });
     let sentCount = 0;
     let disabledCount = 0;
     let inAppCount = 0;
@@ -1452,9 +1558,12 @@ export async function sendAdminNotification(params: SendParams) {
       const variant = useVariantB ? "B" : "A";
       const variantTitle = useVariantB ? params.abTest?.variantBTitle?.trim() || title : title;
       const variantBody = useVariantB ? params.abTest?.variantBBody?.trim() || body : body;
-      const variantPath = useVariantB && params.abTest?.variantBPath?.trim()
-        ? params.abTest.variantBPath.trim()
-        : path;
+      const variantPath =
+        isCustomerPromoNotification(params.recipientType, type)
+          ? campaignOpenPath
+          : useVariantB && params.abTest?.variantBPath?.trim()
+            ? params.abTest.variantBPath.trim()
+            : campaignOpenPath;
       if (pushEnabled) {
         const result = await sendPushToCustomer({
           customerId: objectIdString(customer._id),
@@ -1469,6 +1578,8 @@ export async function sendAdminNotification(params: SendParams) {
               type,
               campaignId,
               variant,
+              ctaLabel,
+              ctaPath,
               contentType,
               imageUrl: contentType === "text" ? "" : imageUrl,
             },
@@ -1516,6 +1627,8 @@ export async function sendAdminNotification(params: SendParams) {
               type,
               campaignId,
               variant,
+              ctaLabel,
+              ctaPath,
               contentType,
               imageUrl: contentType === "text" ? "" : imageUrl,
             },
@@ -1646,6 +1759,8 @@ export async function processDueAdminNotificationSchedules() {
         title: schedule.title,
         body: schedule.body,
         path: schedule.path,
+        ctaLabel: schedule.ctaLabel,
+        ctaPath: schedule.ctaPath,
         type: schedule.notificationType,
         campaignId: String(schedule._id ?? ""),
         contentType: schedule.contentType,
@@ -1847,6 +1962,8 @@ export async function retryAdminNotificationSchedule(scheduleId: string) {
       title: schedule.title,
       body: schedule.body,
       path: schedule.path,
+      ctaLabel: schedule.ctaLabel,
+      ctaPath: schedule.ctaPath,
       type: schedule.notificationType,
       campaignId: String(schedule._id ?? ""),
       contentType: schedule.contentType,

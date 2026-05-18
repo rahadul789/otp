@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import {
   apiDelete,
@@ -9,6 +9,10 @@ import {
   apiProtectedGet,
   apiProtectedPost,
 } from "@/src/lib/api";
+import {
+  clearRegisteredCustomerPushToken,
+  getRegisteredCustomerPushToken,
+} from "@/src/lib/customer-push-token-store";
 import { buildQueryString, compactQueryParams } from "@/src/lib/query-params";
 import type {
   CustomerDiscoveryHome,
@@ -18,6 +22,7 @@ import type {
 import { useAppBannerStore } from "@/src/store/app-banner-store";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { buildCartItemKey, useCartStore } from "@/src/store/cart-store";
+import { useLocationStore } from "@/src/store/location-store";
 
 type NearbyRestaurantsParams = {
   latitude?: number;
@@ -30,6 +35,7 @@ type CustomerSavedLocationResponse = {
   id: string;
   label: string;
   address: string;
+  addressDetails?: string;
   latitude: number;
   longitude: number;
   source: "gps" | "manual" | "saved";
@@ -43,11 +49,75 @@ type CustomerFavoriteToggleResponse = {
   favoriteRestaurantIds: string[];
 };
 
+export type CustomerPaymentSettings = {
+  cashOnDeliveryEnabled: boolean;
+  bkashEnabled: boolean;
+  bkashLabel: string;
+  bkashSubtitle: string;
+};
+
+type PlatformContentResponse = {
+  operations?: {
+    payments?: Partial<CustomerPaymentSettings>;
+  };
+};
+
+function buildRestaurantDetailsSeed(
+  restaurant: DiscoverableRestaurant,
+  activeOffers: CustomerDiscoveryHome["activeOffers"] = []
+): CustomerRestaurantDetails {
+  return {
+    restaurant,
+    categories: [],
+    menuItems: [],
+    activeOffers,
+    recentReviews: [],
+  };
+}
+
+function findCachedRestaurantDetailsSeed(
+  queryClient: QueryClient,
+  restaurantId: string
+) {
+  const nearbyQueries = queryClient.getQueriesData<DiscoverableRestaurant[]>({
+    queryKey: ["customer", "nearby-restaurants"],
+  });
+  const favoriteQueries = queryClient.getQueriesData<DiscoverableRestaurant[]>({
+    queryKey: ["customer", "favorite-restaurants"],
+  });
+
+  for (const [, restaurants] of [...nearbyQueries, ...favoriteQueries]) {
+    const restaurant = restaurants?.find((item) => item._id === restaurantId);
+    if (restaurant) return buildRestaurantDetailsSeed(restaurant);
+  }
+
+  const homeQueries = queryClient.getQueriesData<CustomerDiscoveryHome>({
+    queryKey: ["customer", "discovery-home"],
+  });
+  for (const [, home] of homeQueries) {
+    if (!home) continue;
+    const restaurant = [
+      ...(home.featuredRestaurants ?? []),
+      ...(home.restaurantsWithOffers ?? []),
+    ].find((item) => item._id === restaurantId);
+    if (!restaurant) continue;
+
+    const activeOffers = (home.activeOffers ?? []).filter(
+      (offer) => !offer.restaurantId || offer.restaurantId === restaurantId
+    );
+    return buildRestaurantDetailsSeed(restaurant, activeOffers);
+  }
+
+  return undefined;
+}
+
 type CustomerProfile = {
   id: string;
   fullName: string;
   phone: string;
   email: string;
+  referralCode?: string;
+  hasPassword?: boolean;
   notificationSettings?: {
     orderUpdates?: boolean;
     restaurantStatus?: boolean;
@@ -80,6 +150,52 @@ type CustomerProfile = {
   };
 };
 
+export type CustomerReferralReward = {
+  referredCustomerName: string;
+  referredAt: string | null;
+  status:
+    | "pending"
+    | "rewarded"
+    | "capped"
+    | "disabled"
+    | "under_review"
+    | "rejected";
+  rewardedAt: string | null;
+  skippedAt?: string | null;
+  skippedReason?: string;
+  rewardOrderId: string;
+  voucher: {
+    id: string;
+    code: string;
+    amount: number;
+    minimumOrderAmount: number;
+    expiresAt: string | null;
+    status: string;
+  } | null;
+};
+
+export type CustomerReferralSummary = {
+  enabled: boolean;
+  referralCode: string;
+  canApplyReferralCode?: boolean;
+  referralCodeIneligibleReason?: string;
+  shareLink?: string;
+  shareMessage?: string;
+  rewardAmount: number;
+  minimumOrderAmount: number;
+  rewardExpiryDays: number;
+  monthlyRewardCap: number;
+  monthlyRewardCount: number;
+  totalReferrals: number;
+  pendingReferrals: number;
+  rewardedReferrals: number;
+  cappedReferrals?: number;
+  disabledReferrals?: number;
+  underReviewReferrals?: number;
+  rejectedReferrals?: number;
+  rewards: CustomerReferralReward[];
+};
+
 export function useCustomerProfileQuery(enabled = true) {
   const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
   const updateCustomerProfile = useCustomerAuthStore((state) => state.updateCustomerProfile);
@@ -102,13 +218,53 @@ export function useCustomerProfileQuery(enabled = true) {
   return query;
 }
 
-type CustomerNotification = {
+export function useCustomerReferralSummaryQuery(enabled = true) {
+  const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
+
+  return useQuery({
+    queryKey: ["customer", "referrals", "summary"],
+    enabled: enabled && isAuthenticated,
+    queryFn: async () => {
+      const response = await apiProtectedGet<CustomerReferralSummary>(
+        "/customer/referrals/summary"
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useCustomerApplyReferralCodeMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (body: { referralCode: string; installId?: string }) => {
+      const response = await apiProtectedPost<{
+        applied: boolean;
+        referralCode: string;
+        referrerName: string;
+        message: string;
+      }>("/customer/referrals/apply", body);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["customer", "referrals", "summary"],
+      });
+      await queryClient.invalidateQueries({ queryKey: ["customer", "profile"] });
+    },
+  });
+}
+
+export type CustomerNotification = {
   id: string;
   type: string;
   title: string;
   description: string;
   path: string;
   campaignId?: string;
+  campaignVariant?: string;
+  ctaLabel?: string;
+  ctaPath?: string;
   contentType?: "text" | "image" | "image_text" | string;
   imageUrl?: string;
   isRead: boolean;
@@ -200,11 +356,30 @@ export function useCustomerDiscoveryHomeQuery(params: {
   });
 }
 
+export function useCustomerPaymentSettingsQuery() {
+  return useQuery({
+    queryKey: ["platform-content", "payment-settings"],
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const response = await apiGet<PlatformContentResponse>("/public/content");
+      const payments = response.data.operations?.payments ?? {};
+      return {
+        cashOnDeliveryEnabled: payments.cashOnDeliveryEnabled !== false,
+        bkashEnabled: payments.bkashEnabled === true,
+        bkashLabel: payments.bkashLabel || "bKash",
+        bkashSubtitle:
+          payments.bkashSubtitle || "Continue to the official hosted payment page.",
+      } satisfies CustomerPaymentSettings;
+    },
+  });
+}
+
 export function useCustomerRestaurantDetailsQuery(params: {
   restaurantId?: string;
   latitude?: number;
   longitude?: number;
 }) {
+  const queryClient = useQueryClient();
   const query = buildQueryString(
     compactQueryParams({
       latitude: typeof params.latitude === "number" ? params.latitude : undefined,
@@ -215,7 +390,17 @@ export function useCustomerRestaurantDetailsQuery(params: {
   return useQuery({
     queryKey: ["customer", "restaurant-details", params.restaurantId, query],
     enabled: Boolean(params.restaurantId),
-    placeholderData: keepPreviousData,
+    initialData: () =>
+      params.restaurantId
+        ? findCachedRestaurantDetailsSeed(queryClient, params.restaurantId)
+        : undefined,
+    initialDataUpdatedAt: 0,
+    placeholderData: (previousData) =>
+      previousData?.restaurant?._id === params.restaurantId
+        ? previousData
+        : undefined,
+    staleTime: 60_000,
+    gcTime: 10 * 60_000,
     queryFn: async () => {
       const response = await apiGet<CustomerRestaurantDetails>(
         `/customer/restaurants/${params.restaurantId}${query ? `?${query}` : ""}`
@@ -297,20 +482,39 @@ export function useCustomerNotificationsQuery(enabled = true) {
   });
 }
 
-export function useCustomerNotificationsInfiniteQuery(enabled = true, limit = 20) {
+export function useCustomerNotificationsInfiniteQuery(
+  enabled = true,
+  limit = 20,
+  category: "all" | "orders" | "offers" = "all",
+) {
   const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
 
   return useInfiniteQuery({
-    queryKey: ["customer", "notifications", "infinite", limit],
+    queryKey: ["customer", "notifications", "infinite", limit, category],
     enabled: enabled && isAuthenticated,
     initialPageParam: 1,
     queryFn: async ({ pageParam }) => {
       const response = await apiProtectedGet<CustomerNotificationListResponse>(
-        `/customer/notifications?page=${pageParam}&limit=${limit}`
+        `/customer/notifications?page=${pageParam}&limit=${limit}&category=${category}`
       );
       return response.data;
     },
     getNextPageParam: (lastPage) => (lastPage.hasMore ? lastPage.nextPage : undefined),
+  });
+}
+
+export function useCustomerNotificationCampaignQuery(campaignId?: string, enabled = true) {
+  const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
+
+  return useQuery({
+    queryKey: ["customer", "notifications", "campaign", campaignId],
+    enabled: enabled && isAuthenticated && Boolean(campaignId),
+    queryFn: async () => {
+      const response = await apiProtectedGet<CustomerNotification | null>(
+        `/customer/notifications/campaigns/${encodeURIComponent(campaignId ?? "")}`
+      );
+      return response.data;
+    },
   });
 }
 
@@ -402,7 +606,7 @@ type OrderSnapshotSelection = {
   optionLabel?: string;
 };
 
-type CartQuoteResponse = {
+export type CartQuoteResponse = {
   restaurant: {
     id: string;
     name: string;
@@ -428,6 +632,7 @@ type CartQuoteResponse = {
     name: string;
     type: string;
     mode: string;
+    discountAmount?: number;
   }[];
 };
 
@@ -448,6 +653,7 @@ export function useCustomerCartQuoteQuery(params: {
   longitude?: number;
 }) {
   const itemsKey = JSON.stringify(params.items);
+  const accessToken = useCustomerAuthStore((state) => state.accessToken);
 
   return useQuery({
     queryKey: [
@@ -458,11 +664,15 @@ export function useCustomerCartQuoteQuery(params: {
       params.latitude ?? null,
       params.longitude ?? null,
       itemsKey,
+      Boolean(accessToken),
     ],
     enabled: Boolean(params.restaurantId) && params.items.length > 0,
     placeholderData: keepPreviousData,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
     queryFn: async () => {
-      const response = await apiPost<CartQuoteResponse>("/customer/cart/quote", {
+      const request = accessToken ? apiProtectedPost : apiPost;
+      const response = await request<CartQuoteResponse>("/customer/cart/quote", {
         restaurantId: params.restaurantId,
         items: params.items,
         voucherCode: params.voucherCode,
@@ -480,6 +690,8 @@ type CustomerAuthResponse = {
   customer: CustomerProfile;
 };
 
+const CUSTOMER_HISTORY_ORDERS_PAGE_SIZE = 10;
+
 type CustomerOrderResponse = {
   _id: string;
   restaurantId?: string;
@@ -495,6 +707,7 @@ type CustomerOrderResponse = {
     deliveryAddress?: {
       label?: string;
       addressLine?: string;
+      addressDetails?: string;
       latitude?: number | null;
       longitude?: number | null;
     };
@@ -621,6 +834,7 @@ type CustomerPhoneStartResponse = {
   phone: string;
   verificationSessionId?: string;
   expiresInSeconds?: number;
+  resendAvailableInSeconds?: number;
   customer?: {
     fullName?: string;
     email?: string;
@@ -629,7 +843,7 @@ type CustomerPhoneStartResponse = {
 
 export function useCustomerPhoneStartMutation() {
   return useMutation({
-    mutationFn: async (params: { phone: string }) => {
+    mutationFn: async (params: { phone: string; useOtp?: boolean }) => {
       const response = await apiPost<CustomerPhoneStartResponse>(
         "/customer/auth/phone/start",
         params
@@ -643,7 +857,7 @@ export function useCustomerPasswordSigninMutation() {
   const setSession = useCustomerAuthStore((state) => state.setSession);
 
   return useMutation({
-    mutationFn: async (params: { phone: string; password: string }) => {
+    mutationFn: async (params: { phone: string; password: string; installId?: string }) => {
       const response = await apiPost<CustomerAuthResponse>(
         "/customer/auth/phone/password",
         params
@@ -660,6 +874,78 @@ export function useCustomerPasswordSigninMutation() {
   });
 }
 
+type CustomerPasswordResetStartResponse = {
+  verificationSessionId: string;
+  phone: string;
+  expiresInSeconds?: number;
+  resendAvailableInSeconds?: number;
+};
+
+export function useCustomerPasswordResetStartMutation() {
+  return useMutation({
+    mutationFn: async (params: { phone: string }) => {
+      const response = await apiPost<CustomerPasswordResetStartResponse>(
+        "/customer/auth/password/forgot",
+        params
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useCustomerPasswordResetOtpVerifyMutation() {
+  return useMutation({
+    mutationFn: async (params: {
+      verificationSessionId: string;
+      otpCode: string;
+    }) => {
+      const response = await apiPost<{
+        verificationSessionId: string;
+        phone: string;
+        expiresInSeconds: number;
+        resendAvailableInSeconds?: number;
+      }>("/customer/auth/password/otp/verify", params);
+      return response.data;
+    },
+  });
+}
+
+export function useCustomerPasswordResetMutation() {
+  return useMutation({
+    mutationFn: async (params: {
+      verificationSessionId: string;
+      newPassword: string;
+    }) => {
+      const response = await apiPost<{ reset: boolean; phone: string }>(
+        "/customer/auth/password/reset",
+        params
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useCustomerPasswordUpdateMutation() {
+  const queryClient = useQueryClient();
+  const updateCustomerProfile = useCustomerAuthStore((state) => state.updateCustomerProfile);
+
+  return useMutation({
+    mutationFn: async (params: {
+      currentPassword?: string;
+      newPassword: string;
+    }) => {
+      const response = await apiPatch<{
+        customer: CustomerProfile;
+      }>("/customer/profile/password", params);
+      return response.data;
+    },
+    onSuccess: (data) => {
+      updateCustomerProfile(data.customer);
+      queryClient.setQueryData(["customer", "profile"], data.customer);
+    },
+  });
+}
+
 export function useCustomerPhoneOtpVerifyMutation() {
   return useMutation({
     mutationFn: async (params: {
@@ -670,6 +956,7 @@ export function useCustomerPhoneOtpVerifyMutation() {
         verificationSessionId: string;
         phone: string;
         expiresInSeconds: number;
+        resendAvailableInSeconds?: number;
       }>("/customer/auth/phone/otp/verify", params);
       return response.data;
     },
@@ -685,6 +972,8 @@ export function useCustomerPhoneVerifyMutation() {
       fullName?: string;
       email?: string;
       password?: string;
+      referralCode?: string;
+      installId?: string;
     }) => {
       const response = await apiPost<CustomerAuthResponse>(
         "/customer/auth/phone/verify",
@@ -708,6 +997,7 @@ export function useCustomerPhoneChangeStartMutation() {
       const response = await apiProtectedPost<{
         verificationSessionId: string;
         expiresInSeconds: number;
+        resendAvailableInSeconds?: number;
       }>("/customer/auth/phone-change/start", params);
       return response.data;
     },
@@ -844,6 +1134,84 @@ export function useCustomerOrdersQuery(enabled = true) {
   });
 }
 
+export function useCustomerLiveOrdersQuery(enabled = true) {
+  const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
+
+  return useQuery({
+    queryKey: ["customer", "orders", "live"],
+    enabled: enabled && isAuthenticated,
+    staleTime: 15_000,
+    queryFn: async () => {
+      const response = await apiProtectedGet<CustomerOrderResponse[]>(
+        "/customer/orders?page=1&pageSize=10&statusGroup=live"
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useCustomerHistoryOrdersInfiniteQuery(
+  enabled = true,
+  pageSize = CUSTOMER_HISTORY_ORDERS_PAGE_SIZE,
+) {
+  const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
+
+  return useInfiniteQuery({
+    queryKey: ["customer", "orders", "history", pageSize],
+    enabled: enabled && isAuthenticated,
+    initialPageParam: 1,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    queryFn: async ({ pageParam }) => {
+      const response = await apiProtectedGet<CustomerOrderResponse[]>(
+        `/customer/orders?page=${pageParam}&pageSize=${pageSize}&statusGroup=history`
+      );
+      return response.data;
+    },
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.length < pageSize ? undefined : allPages.length + 1,
+  });
+}
+
+export function useCustomerActiveOrderQuery(enabled = true) {
+  const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
+
+  return useQuery({
+    queryKey: ["customer", "orders", "active"],
+    enabled: enabled && isAuthenticated,
+    queryFn: async () => {
+      const response = await apiProtectedGet<CustomerOrderResponse[]>(
+        "/customer/orders?page=1&pageSize=1&statusGroup=live"
+      );
+      return response.data[0] ?? null;
+    },
+  });
+}
+
+export function useCustomerOrderPresenceQuery(enabled = true) {
+  const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
+
+  return useQuery({
+    queryKey: ["customer", "orders", "presence"],
+    enabled: enabled && isAuthenticated,
+    staleTime: 1000 * 60,
+    queryFn: async () => {
+      const [response, completedResponse] = await Promise.all([
+        apiProtectedGet<CustomerOrderResponse[]>(
+          "/customer/orders?page=1&pageSize=1"
+        ),
+        apiProtectedGet<CustomerOrderResponse[]>(
+          "/customer/orders?page=1&pageSize=1&status=Delivered"
+        ),
+      ]);
+      return {
+        hasOrders: response.data.length > 0,
+        hasCompletedOrders: completedResponse.data.length > 0,
+      };
+    },
+  });
+}
+
 export function useCustomerOrderDetailsQuery(orderId?: string) {
   const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
 
@@ -865,6 +1233,7 @@ export function useCustomerPlaceOrderMutation() {
   return useMutation({
     mutationFn: async (body: {
       restaurantId: string;
+      clientOrderId?: string;
       items: CartQuoteItemPayload[];
       paymentMethod: string;
       voucherCode?: string;
@@ -877,6 +1246,7 @@ export function useCustomerPlaceOrderMutation() {
       deliveryAddress: {
         label: string;
         addressLine: string;
+        addressDetails?: string;
         latitude?: number | null;
         longitude?: number | null;
       };
@@ -897,11 +1267,17 @@ export function useBkashInitiateMutation() {
   return useMutation({
     mutationFn: async (body: {
       restaurantId: string;
+      clientOrderId?: string;
       items: CartQuoteItemPayload[];
       voucherCode?: string;
       walletNumber: string;
-      latitude?: number;
-      longitude?: number;
+      deliveryAddress: {
+        label: string;
+        addressLine: string;
+        addressDetails?: string;
+        latitude: number;
+        longitude: number;
+      };
     }) => {
       const response = await apiProtectedPost<BkashInitiateResponse>(
         "/customer/payments/bkash/initiate",
@@ -919,6 +1295,7 @@ export function useCustomerSaveLocationMutation() {
     mutationFn: async (body: {
       label: string;
       address: string;
+      addressDetails?: string;
       latitude: number;
       longitude: number;
       source?: "gps" | "manual" | "saved";
@@ -1002,6 +1379,7 @@ export function useCustomerUpdateLocationMutation() {
       locationId: string;
       label?: string;
       address?: string;
+      addressDetails?: string;
       latitude?: number;
       longitude?: number;
       source?: "gps" | "manual" | "saved";
@@ -1012,6 +1390,7 @@ export function useCustomerUpdateLocationMutation() {
         {
           label: params.label,
           address: params.address,
+          addressDetails: params.addressDetails,
           latitude: params.latitude,
           longitude: params.longitude,
           source: params.source,
@@ -1114,6 +1493,8 @@ export function useCustomerReviewMutation(orderId?: string) {
         title: "Review submitted",
         description: "Thanks for sharing your feedback. The restaurant can now review it.",
         tone: "success",
+        path: orderId ? `/orders/${orderId}/tracking` : undefined,
+        actionLabel: orderId ? "View order" : undefined,
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["customer", "orders"] }),
@@ -1259,21 +1640,7 @@ export function useCustomerReorderMutation() {
         CartQuoteItemPayload & { name: string; imageUrl?: string | null }
       >();
 
-      const seedItems =
-        !params.forceReplace &&
-        currentCart.restaurant?.restaurantId === restaurantId &&
-        currentCart.items.length > 0
-          ? currentCart.items.map((item) => ({
-              itemId: item.itemId,
-              name: item.name,
-              imageUrl: item.imageUrl ?? null,
-              quantity: item.quantity,
-              selectedVariantOptions: item.selectedVariantOptions,
-              selectedAddOnOptions: item.selectedAddOnOptions,
-            }))
-          : [];
-
-      for (const candidate of [...seedItems, ...reorderCandidates]) {
+      for (const candidate of reorderCandidates) {
         const key = buildCartItemKey({
           itemId: candidate.itemId,
           name: candidate.name,
@@ -1304,21 +1671,6 @@ export function useCustomerReorderMutation() {
 
       const quotedItems = quoteResponse.data.items;
       const mergedImageMap = new Map<string, string | null>();
-
-      for (const item of currentCart.items) {
-        mergedImageMap.set(
-          buildCartItemKey({
-            itemId: item.itemId,
-            name: item.name,
-            imageUrl: item.imageUrl ?? null,
-            quantity: 1,
-            unitPrice: 0,
-            selectedVariantOptions: item.selectedVariantOptions,
-            selectedAddOnOptions: item.selectedAddOnOptions,
-          }),
-          item.imageUrl ?? null
-        );
-      }
 
       for (const item of reorderCandidates) {
         mergedImageMap.set(
@@ -1413,19 +1765,61 @@ export function useCustomerMarkAllNotificationsReadMutation() {
   }
 
 export function useCustomerLogoutMutation() {
+  const queryClient = useQueryClient();
   const clearSession = useCustomerAuthStore((state) => state.clearSession);
+  const accessToken = useCustomerAuthStore((state) => state.accessToken);
   const refreshToken = useCustomerAuthStore((state) => state.refreshToken);
+  const clearCart = useCartStore((state) => state.clearCart);
+  const clearLocations = useLocationStore((state) => state.clearLocations);
 
   return useMutation({
     mutationFn: async () => {
-      if (!refreshToken) return null;
-      const response = await apiPost<{ revoked: boolean }>("/customer/auth/logout", {
-        refreshToken,
-      });
-      return response.data;
+      const registeredPushToken = await getRegisteredCustomerPushToken();
+
+      if (!refreshToken) {
+        if (accessToken && registeredPushToken?.expoPushToken) {
+          await apiDelete<{ removed: boolean }>(
+            `/customer/push-tokens?expoPushToken=${encodeURIComponent(
+              registeredPushToken.expoPushToken,
+            )}`,
+          );
+        }
+        return null;
+      }
+
+      try {
+        const response = await apiPost<{ revoked: boolean }>("/customer/auth/logout", {
+          refreshToken,
+          expoPushToken: registeredPushToken?.expoPushToken,
+        });
+        return response.data;
+      } catch (error) {
+        if (accessToken && registeredPushToken?.expoPushToken) {
+          await apiDelete<{ removed: boolean }>(
+            `/customer/push-tokens?expoPushToken=${encodeURIComponent(
+              registeredPushToken.expoPushToken,
+            )}`,
+          );
+          return { revoked: false };
+        }
+
+        throw error;
+      }
     },
-    onSettled: () => {
+    onSuccess: async () => {
+      await clearRegisteredCustomerPushToken();
+      queryClient.removeQueries({ queryKey: ["customer"] });
+      clearCart();
+      clearLocations();
       clearSession();
+    },
+    onError: () => {
+      useAppBannerStore.getState().showBanner({
+        title: "Sign out failed",
+        description:
+          "Please try again so this device can be safely removed from your account notifications.",
+        tone: "warning",
+      });
     },
   });
 }

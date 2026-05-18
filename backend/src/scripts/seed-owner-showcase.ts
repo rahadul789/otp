@@ -107,7 +107,7 @@ type ShowcaseRestaurant = {
 };
 
 // const OWNER_PASSWORD = "Foodbela@123"
-const OWNER_PASSWORD = "Foodex@123";
+const OWNER_PASSWORD = "Foodbela@123";
 
 const SHARED_WEEKLY_SCHEDULE: ShowcaseRestaurant["openingHours"] = [
   {

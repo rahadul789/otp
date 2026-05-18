@@ -45,6 +45,7 @@ const reviewSchema = new Schema(
 )
 
 reviewSchema.index({ restaurantId: 1, createdAt: -1 })
+reviewSchema.index({ restaurantId: 1, moderationStatus: 1, isHidden: 1, createdAt: -1 })
 reviewSchema.index({ moderationStatus: 1, isHidden: 1, createdAt: -1 })
 reviewSchema.index({ customerId: 1, createdAt: -1 })
 reviewSchema.index({ orderId: 1 })

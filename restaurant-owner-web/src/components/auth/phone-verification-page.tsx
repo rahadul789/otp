@@ -11,9 +11,11 @@ import {
   InputOTPSlot,
 } from "@/components/ui/input-otp"
 import { getOtpSupportHint } from "@/lib/otp-copy"
+import { DEFAULT_OTP_RESEND_SECONDS } from "@/lib/otp-timing"
 import { useAppStore } from "@/store/app-store"
 
-const RESEND_SECONDS = 30
+const RESEND_SECONDS = DEFAULT_OTP_RESEND_SECONDS
+const OTP_LENGTH = 4
 
 function maskPhoneNumber(phone: string) {
   if (!phone) return "your phone number"
@@ -70,8 +72,8 @@ export function PhoneVerificationPage() {
   function handleVerify(event: React.FormEvent) {
     event.preventDefault()
 
-    if (!/^\d{6}$/.test(code.trim())) {
-      setError("Enter the 6-digit verification code.")
+    if (!new RegExp(`^\\d{${OTP_LENGTH}}$`).test(code.trim())) {
+      setError(`Enter the ${OTP_LENGTH}-digit verification code.`)
       return
     }
 
@@ -84,8 +86,7 @@ export function PhoneVerificationPage() {
           ...current,
           type: "bkash",
           accountName: current.pendingAccountName || current.accountName,
-          accountNumber:
-            current.pendingAccountNumber || current.accountNumber,
+          accountNumber: current.pendingAccountNumber || current.accountNumber,
           bankName: "",
           branchName: "",
           pendingAccountName: "",
@@ -125,12 +126,12 @@ export function PhoneVerificationPage() {
     toast.success("A fresh OTP has been sent.")
   }
 
-  const otpComplete = code.length === 6
+  const otpComplete = code.length === OTP_LENGTH
 
   return (
     <AuthShell
       title="Verify your phone"
-      description="We sent a secure 6-digit OTP. Enter it below to continue into restaurant onboarding."
+      description={`We sent a secure ${OTP_LENGTH}-digit OTP. Enter it below to continue into restaurant onboarding.`}
       footer={
         <>
           Need a different number?{" "}
@@ -152,7 +153,9 @@ export function PhoneVerificationPage() {
     >
       <form onSubmit={handleVerify} className="space-y-6">
         <div className="rounded-2xl border bg-muted/20 p-4">
-          <p className="text-sm text-muted-foreground">Verification code sent to</p>
+          <p className="text-sm text-muted-foreground">
+            Verification code sent to
+          </p>
           <p className="mt-1 text-base font-medium">
             {maskPhoneNumber(
               payoutMethod.pendingAccountNumber ||
@@ -175,20 +178,20 @@ export function PhoneVerificationPage() {
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium">Enter OTP</p>
             <p className="text-xs text-muted-foreground">
-              {otpComplete ? "Code complete" : `${code.length}/6 digits`}
+              {otpComplete ? "Code complete" : `${code.length}/${OTP_LENGTH} digits`}
             </p>
           </div>
 
           <InputOTP
-            maxLength={6}
+            maxLength={OTP_LENGTH}
             value={code}
             onChange={(value) => {
-              setCode(value.replace(/\D/g, "").slice(0, 6))
+              setCode(value.replace(/\D/g, "").slice(0, OTP_LENGTH))
             }}
             containerClassName="justify-center"
           >
             <InputOTPGroup className="gap-2 rounded-none border-0">
-              {Array.from({ length: 6 }).map((_, index) => (
+              {Array.from({ length: OTP_LENGTH }).map((_, index) => (
                 <InputOTPSlot
                   key={index}
                   index={index}

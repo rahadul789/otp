@@ -3,10 +3,13 @@ import {
   BarChart3,
   Bell,
   CreditCard,
+  Gift,
   HeartPulse,
   Headphones,
   Image,
+  KeyRound,
   LayoutDashboard,
+  LineChart,
   Map,
   Settings,
   ShoppingBag,
@@ -112,6 +115,16 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         to: "/reports",
         icon: BarChart3,
       },
+      {
+        title: "Customer Analytics",
+        to: "/customer-analytics",
+        icon: LineChart,
+      },
+      {
+        title: "Referrals",
+        to: "/referrals",
+        icon: Gift,
+      },
     ],
   },
   {
@@ -126,6 +139,11 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         title: "Notifications",
         to: "/notifications",
         icon: Bell,
+      },
+      {
+        title: "Sessions",
+        to: "/sessions",
+        icon: KeyRound,
       },
       {
         title: "Settings",

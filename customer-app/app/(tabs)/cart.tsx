@@ -1,21 +1,25 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Animated, Image, Pressable, ScrollView, Text, View } from "react-native";
 import { useEffect, useMemo, useRef } from "react";
 
+import { styles } from "@/src/components/cart/cart-screen.styles";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import { Screen } from "@/src/components/screen";
 import { useCustomerCartQuoteQuery, useCustomerRestaurantDetailsQuery } from "@/src/hooks/use-customer-api";
 import { useIsOnline } from "@/src/hooks/use-network-status";
+import { applyCurrentLocation } from "@/src/lib/current-location";
+import { formatCurrency } from "@/src/lib/currency";
+import { formatShortOrderIdLabel } from "@/src/lib/order-id";
+import {
+  getRestaurantOutOfDeliveryAreaCopy,
+  isRestaurantOutOfDeliveryAreaError,
+} from "@/src/lib/serviceability";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { buildCartItemKey, getCartItemCount, getCartSubtotal, useCartStore } from "@/src/store/cart-store";
 import { useLocationStore } from "@/src/store/location-store";
 import { palette } from "@/src/theme/palette";
-
-function formatCurrency(amount: number) {
-  return `Tk ${amount.toFixed(0)}`;
-}
 
 function formatSelectedOptions(
   options: { groupName: string; optionLabel: string }[]
@@ -104,6 +108,12 @@ export default function CartScreen() {
   const quoteErrorMessage = quoteQuery.error instanceof Error
     ? quoteQuery.error.message
     : "We could not verify your cart with the latest restaurant pricing.";
+  const isServiceabilityBlocked =
+    hasQuoteIssues && isRestaurantOutOfDeliveryAreaError(quoteErrorMessage);
+  const checkoutDisabled =
+    (hasQuoteIssues && !isServiceabilityBlocked) ||
+    quoteQuery.isLoading ||
+    !isOnline;
   const restaurantDetailsQuery = useCustomerRestaurantDetailsQuery({
     restaurantId: restaurant?.restaurantId,
     latitude: selectedLocation?.latitude,
@@ -172,7 +182,14 @@ export default function CartScreen() {
   }, [offerProgress?.unlocked, offerUnlockAnim]);
 
   async function handleCheckout() {
-    if (!restaurant || items.length === 0 || hasQuoteIssues || quoteQuery.isLoading || !isOnline) return;
+    if (!restaurant || items.length === 0 || quoteQuery.isLoading || !isOnline) return;
+
+    if (isServiceabilityBlocked) {
+      router.push("/location-picker");
+      return;
+    }
+
+    if (hasQuoteIssues) return;
 
     if (!selectedLocation) {
       router.push("/location-picker");
@@ -188,6 +205,14 @@ export default function CartScreen() {
     }
 
     router.push("/checkout");
+  }
+
+  async function handleUseCurrentLocation() {
+    try {
+      await applyCurrentLocation();
+    } catch {
+      router.push("/location-picker");
+    }
   }
 
   return (
@@ -254,12 +279,36 @@ export default function CartScreen() {
                     <Ionicons name="alert-circle" size={18} color={palette.warningText} />
                   </View>
                   <View style={styles.validationCopy}>
-                    <Text style={styles.validationTitle}>Cart needs attention</Text>
+                    <Text style={styles.validationTitle}>
+                      {isServiceabilityBlocked ? "Outside delivery area" : "Cart needs attention"}
+                    </Text>
                     <Text style={styles.validationSubtitle}>
-                      {quoteErrorMessage.includes("not available")
+                      {isServiceabilityBlocked
+                        ? getRestaurantOutOfDeliveryAreaCopy(restaurant?.restaurantName)
+                        : quoteErrorMessage.includes("not available")
                         ? "One or more items are no longer available. Remove them or refresh your cart before checkout."
                         : quoteErrorMessage}
                     </Text>
+                    {isServiceabilityBlocked ? (
+                      <View style={styles.validationActions}>
+                        <Pressable
+                          style={[styles.validationAction, styles.validationActionPrimary]}
+                          onPress={() => router.push("/location-picker")}
+                        >
+                          <Ionicons name="location-outline" size={14} color={palette.surface} />
+                          <Text style={styles.validationActionPrimaryText}>Change location</Text>
+                        </Pressable>
+                        <Pressable
+                          style={styles.validationAction}
+                          onPress={() => {
+                            void handleUseCurrentLocation();
+                          }}
+                        >
+                          <Ionicons name="navigate-circle-outline" size={14} color={palette.foreground} />
+                          <Text style={styles.validationActionText}>My location</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
               ) : null}
@@ -285,7 +334,7 @@ export default function CartScreen() {
                   </View>
                 <View style={styles.reorderBadgeCopy}>
                   <Text style={styles.reorderBadgeTitle}>
-                    Reordered from {reorderContext.orderNumber}
+                    Reordered from {formatShortOrderIdLabel(reorderContext.orderNumber)}
                   </Text>
                     <Text style={styles.reorderBadgeSubtitle}>
                       We refreshed these items using the restaurant&apos;s latest prices and currently available options.
@@ -484,7 +533,11 @@ export default function CartScreen() {
               <View style={styles.checkoutCard}>
                 <View style={styles.checkoutCopy}>
                   <Text style={styles.checkoutLabel}>
-                    {!customer ? "Sign in first" : "Ready for checkout"}
+                    {isServiceabilityBlocked
+                      ? "Location needs update"
+                      : !customer
+                        ? "Sign in first"
+                        : "Ready for checkout"}
                   </Text>
                   <Text style={styles.checkoutAmount}>
                     {formatCurrency(pricing?.total ?? localSubtotal)}
@@ -492,23 +545,35 @@ export default function CartScreen() {
                 </View>
                 <Pressable
                   style={[
-                    styles.checkoutButton,
-                    hasQuoteIssues || quoteQuery.isLoading || !isOnline ? styles.checkoutButtonDisabled : null,
+                    styles.checkoutButtonLift,
+                    checkoutDisabled ? styles.checkoutButtonLiftDisabled : null,
                   ]}
                   onPress={handleCheckout}
-                  disabled={hasQuoteIssues || quoteQuery.isLoading || !isOnline}
+                  disabled={checkoutDisabled}
                 >
-                  <Text style={styles.checkoutButtonText}>
-                    {!customer
-                      ? "Sign in to checkout"
-                      : !isOnline
-                        ? "Reconnect to continue"
-                      : hasQuoteIssues
-                        ? "Fix cart to continue"
-                        : quoteQuery.isLoading
-                          ? "Checking latest prices..."
-                          : "Continue to checkout"}
-                  </Text>
+                  <View
+                    style={[
+                      styles.checkoutButton,
+                      checkoutDisabled ? styles.checkoutButtonDisabled : null,
+                    ]}
+                  >
+                    <View style={styles.checkoutButtonSheen} />
+                    <Text style={styles.checkoutButtonText}>
+                      {!customer
+                        ? isServiceabilityBlocked
+                          ? "Change location"
+                          : "Sign in to checkout"
+                        : !isOnline
+                          ? "Reconnect to continue"
+                        : isServiceabilityBlocked
+                          ? "Change location"
+                        : hasQuoteIssues
+                          ? "Fix cart to continue"
+                          : quoteQuery.isLoading
+                            ? "Checking latest prices..."
+                            : "Continue to checkout"}
+                    </Text>
+                  </View>
                 </Pressable>
               </View>
             </View>
@@ -518,501 +583,3 @@ export default function CartScreen() {
     </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  emptyWrap: {
-    flex: 1,
-    justifyContent: "center",
-    paddingHorizontal: 20,
-  },
-  content: {
-    paddingBottom: 160,
-    gap: 20,
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 14,
-    gap: 6,
-  },
-  kicker: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    color: palette.secondary,
-  },
-  title: {
-    fontSize: 32,
-    lineHeight: 38,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  subtitle: {
-    fontSize: 15,
-    lineHeight: 23,
-    fontWeight: "500",
-    color: palette.mutedForeground,
-  },
-  headerStatRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 8,
-  },
-  infoPill: {
-    flex: 1,
-    minHeight: 72,
-    borderRadius: 18,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    justifyContent: "center",
-  },
-  infoPillTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 4,
-  },
-  infoPillLabel: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  infoPillValue: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  validationCard: {
-    marginHorizontal: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 24,
-    backgroundColor: palette.surface,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.6,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
-  },
-  validationIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.warningSurface,
-  },
-  validationIconWrapInfo: {
-    backgroundColor: "#FFEAF3",
-  },
-  validationCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  validationTitle: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  validationSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: palette.mutedForeground,
-  },
-  reorderBadgeCard: {
-    marginHorizontal: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 24,
-    backgroundColor: "#FFEAF3",
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
-  },
-  reorderBadgeIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFFCC",
-  },
-  reorderBadgeCopy: {
-    flex: 1,
-    gap: 3,
-  },
-  reorderBadgeTitle: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  reorderBadgeSubtitle: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  reorderBadgeClose: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFFFFFA8",
-  },
-  restaurantCard: {
-    marginHorizontal: 20,
-    padding: 20,
-    borderRadius: 38,
-    backgroundColor: palette.surface,
-    gap: 14,
-    shadowColor: palette.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 7,
-  },
-  restaurantCardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  restaurantCardCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  restaurantName: {
-    fontSize: 21,
-    lineHeight: 27,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  restaurantMeta: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  clearButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-  },
-  clearButtonText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  itemList: {
-    gap: 10,
-  },
-  addMoreButton: {
-    marginTop: 4,
-    alignSelf: "flex-start",
-    minHeight: 40,
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: palette.surfaceMuted,
-    borderWidth: 1,
-    borderColor: palette.border,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  addMoreButtonText: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  itemRow: {
-    flexDirection: "row",
-    gap: 14,
-    padding: 10,
-    borderRadius: 24,
-    backgroundColor: palette.surfaceMuted,
-  },
-  itemImage: {
-    width: 74,
-    height: 74,
-    borderRadius: 18,
-    backgroundColor: palette.surface,
-  },
-  itemFallback: {
-    width: 74,
-    height: 74,
-    borderRadius: 18,
-    backgroundColor: palette.surface,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  itemCopy: {
-    flex: 1,
-    gap: 6,
-  },
-  itemName: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  itemMeta: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  itemFooterRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    marginTop: 2,
-  },
-  itemPriceWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  itemPrice: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  itemPriceChanged: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "700",
-    color: palette.secondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  itemLineTotal: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  itemActions: {
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  quantityControl: {
-    minWidth: 96,
-    height: 36,
-    paddingHorizontal: 4,
-    borderRadius: 999,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#FFEAF3",
-  },
-  quantityButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surface,
-  },
-  quantityButtonPrimary: {
-    backgroundColor: palette.secondary,
-  },
-  quantityText: {
-    minWidth: 20,
-    textAlign: "center",
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  removeText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "700",
-    color: palette.primary,
-  },
-  summaryCard: {
-    marginHorizontal: 20,
-    padding: 20,
-    borderRadius: 38,
-    backgroundColor: palette.surface,
-    gap: 10,
-    shadowColor: palette.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  offerProgressCard: {
-    marginBottom: 14,
-    padding: 14,
-    borderRadius: 24,
-    backgroundColor: palette.surfaceMuted,
-    gap: 8,
-  },
-  offerProgressCardUnlocked: {
-    backgroundColor: palette.successSurface,
-  },
-  offerProgressHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  offerProgressBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  offerProgressBadgeText: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: "700",
-    color: palette.secondary,
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-  },
-  offerProgressBadgeTextUnlocked: {
-    color: palette.successText,
-  },
-  offerProgressValue: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  offerProgressSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
-    color: palette.mutedForeground,
-  },
-  offerTrack: {
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: "#F3DDCC",
-    overflow: "hidden",
-  },
-  offerFill: {
-    height: "100%",
-    borderRadius: 999,
-    backgroundColor: palette.secondary,
-  },
-  offerFillUnlocked: {
-    backgroundColor: palette.successText,
-  },
-  summaryTitle: {
-    fontSize: 21,
-    lineHeight: 27,
-    fontWeight: "800",
-    color: palette.foreground,
-    marginBottom: 2,
-  },
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  summaryLabel: {
-    fontSize: 15,
-    lineHeight: 23,
-    fontWeight: "500",
-    color: palette.mutedForeground,
-  },
-  summaryValue: {
-    fontSize: 15,
-    lineHeight: 23,
-    fontWeight: "500",
-    color: palette.foreground,
-  },
-  summaryHighlight: {
-    color: palette.successText,
-  },
-  summaryStrong: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: palette.border,
-    marginVertical: 2,
-  },
-  checkoutWrap: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    bottom: 0,
-  },
-  checkoutCard: {
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 38,
-    backgroundColor: palette.secondary,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 14,
-    shadowColor: palette.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 7,
-  },
-  checkoutCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  checkoutLabel: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.82)",
-  },
-  checkoutAmount: {
-    fontSize: 21,
-    lineHeight: 27,
-    fontWeight: "800",
-    color: "#fff",
-  },
-  checkoutButton: {
-    minWidth: 164,
-    height: 44,
-    paddingHorizontal: 16,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.surface,
-  },
-  checkoutButtonDisabled: {
-    opacity: 0.72,
-  },
-  checkoutButtonText: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.secondary,
-  },
-});

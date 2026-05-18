@@ -13,6 +13,7 @@ import {
   Gauge,
   HeartPulse,
   Loader2,
+  MapPinned,
   MonitorCog,
   Network,
   RadioTower,
@@ -25,6 +26,7 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
 import {
@@ -351,6 +353,366 @@ function MetricCard({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function formatAgeSeconds(value?: number | null) {
+  if (typeof value !== "number") return "No update yet"
+  if (value < 60) return `${value}s ago`
+  const minutes = Math.floor(value / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ${minutes % 60}m ago`
+}
+
+function formatCompactNumber(value: number, suffix = "") {
+  if (!Number.isFinite(value)) return `0${suffix}`
+  if (suffix === " km") return `${Math.round(value * 10) / 10}${suffix}`
+  return `${Math.round(value)}${suffix}`
+}
+
+function socketRoleTone(role: string) {
+  if (role === "admin") return "border-violet-200 bg-violet-50 text-violet-700"
+  if (role === "owner") return "border-sky-200 bg-sky-50 text-sky-700"
+  if (role === "rider") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (role === "customer") return "border-pink-200 bg-pink-50 text-pink-700"
+  return "border-slate-200 bg-slate-50 text-slate-600"
+}
+
+function trackingFreshnessTone(state: string) {
+  if (state === "live") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (state === "stale") return "border-amber-200 bg-amber-50 text-amber-700"
+  return "border-slate-200 bg-slate-50 text-slate-600"
+}
+
+function RealtimeOpsPanel({
+  realtime,
+}: {
+  realtime: AdminOperationalHealthSnapshot["realtime"]
+}) {
+  const navigate = useNavigate()
+  const socket = realtime.socket
+  const liveLocation = realtime.liveLocation
+  const roleEntries = Object.entries(socket.byRole).sort(([left], [right]) =>
+    left.localeCompare(right)
+  )
+  const activeRooms = Object.entries(socket.roomCounts)
+    .filter(([, count]) => count > 0)
+    .sort(([, leftCount], [, rightCount]) => rightCount - leftCount)
+    .slice(0, 12)
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-2">
+      <Sheet>
+        <SheetTrigger asChild>
+          <button
+            type="button"
+            className="group rounded-xl border bg-card p-4 text-left shadow-sm transition hover:border-primary/40 hover:bg-primary/5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <RadioTower className="size-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-semibold text-muted-foreground uppercase">
+                    Socket.IO online
+                  </div>
+                  <div className="mt-1 text-3xl font-semibold tracking-tight">
+                    {socket.totalConnections}
+                  </div>
+                </div>
+              </div>
+              <Badge variant="outline" className={statusTone(socket.initialized ? "healthy" : "warning")}>
+                {socket.initialized ? "Running" : "Not ready"}
+              </Badge>
+            </div>
+            <div className="mt-4 grid grid-cols-4 gap-2 text-xs">
+              <span className="rounded-lg bg-muted/60 px-2 py-1 text-center">
+                Admin {socket.adminConnections}
+              </span>
+              <span className="rounded-lg bg-muted/60 px-2 py-1 text-center">
+                Owner {socket.ownerConnections}
+              </span>
+              <span className="rounded-lg bg-muted/60 px-2 py-1 text-center">
+                Rider {socket.riderConnections}
+              </span>
+              <span className="rounded-lg bg-muted/60 px-2 py-1 text-center">
+                User {socket.customerConnections}
+              </span>
+            </div>
+            <div className="mt-3 text-xs text-muted-foreground">
+              Click to inspect connected rooms, users, transports, and IP
+              context.
+            </div>
+          </button>
+        </SheetTrigger>
+        <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
+          <SheetHeader className="border-b px-6 py-5">
+            <SheetTitle className="flex items-center gap-2">
+              <RadioTower className="size-5 text-primary" />
+              Socket connections
+            </SheetTitle>
+            <SheetDescription>
+              Current Socket.IO clients connected to this backend process.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex-1 space-y-4 overflow-y-auto p-6">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="rounded-xl border bg-muted/30 p-3">
+                <div className="text-xs text-muted-foreground">Total</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {socket.totalConnections}
+                </div>
+              </div>
+              <div className="rounded-xl border bg-muted/30 p-3">
+                <div className="text-xs text-muted-foreground">Signed in</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {socket.authenticatedConnections}
+                </div>
+              </div>
+              <div className="rounded-xl border bg-muted/30 p-3">
+                <div className="text-xs text-muted-foreground">Anonymous</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {socket.anonymousConnections}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border p-3">
+              <div className="text-sm font-medium">Role mix</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {roleEntries.length ? (
+                  roleEntries.map(([role, count]) => (
+                    <Badge key={role} variant="outline" className={socketRoleTone(role)}>
+                      {titleCase(role)} {count}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    No connected users yet.
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-xl border p-3">
+              <div className="text-sm font-medium">Active rooms</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {activeRooms.length ? (
+                  activeRooms.map(([room, count]) => (
+                    <Badge key={room} variant="secondary">
+                      {room} - {count}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    No joined rooms yet.
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm font-medium">Connections</div>
+              {socket.connections.map((connection) => (
+                <div key={connection.id} className="rounded-xl border p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge
+                          variant="outline"
+                          className={socketRoleTone(connection.role)}
+                        >
+                          {titleCase(connection.role)}
+                        </Badge>
+                        <Badge variant="secondary">{connection.transport}</Badge>
+                      </div>
+                      <div className="mt-2 break-all text-sm font-medium">
+                        {connection.userId || connection.id}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Connected {formatDateTime(connection.connectedAt)} - IP{" "}
+                        {connection.ipAddress || "Unknown"}
+                      </div>
+                    </div>
+                    <div className="max-w-full text-right text-xs text-muted-foreground">
+                      {connection.rooms.length
+                        ? connection.rooms.slice(0, 3).join(", ")
+                        : "No room"}
+                    </div>
+                  </div>
+                  {connection.userAgent ? (
+                    <div className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                      {connection.userAgent}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+              {!socket.connections.length ? (
+                <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  No active Socket.IO connections in this backend process.
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet>
+        <SheetTrigger asChild>
+          <button
+            type="button"
+            className="group rounded-xl border bg-card p-4 text-left shadow-sm transition hover:border-primary/40 hover:bg-primary/5 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                  <MapPinned className="size-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-semibold text-muted-foreground uppercase">
+                    Live location shares
+                  </div>
+                  <div className="mt-1 text-3xl font-semibold tracking-tight">
+                    {liveLocation.activeShares}
+                  </div>
+                </div>
+              </div>
+              <Badge
+                variant="outline"
+                className={
+                  liveLocation.staleShares > 0
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                }
+              >
+                {liveLocation.staleShares > 0 ? "Needs watch" : "Healthy"}
+              </Badge>
+            </div>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+              <span className="rounded-lg bg-emerald-50 px-2 py-1 text-center text-emerald-700">
+                Live {liveLocation.liveShares}
+              </span>
+              <span className="rounded-lg bg-amber-50 px-2 py-1 text-center text-amber-700">
+                Stale {liveLocation.staleShares}
+              </span>
+              <span className="rounded-lg bg-sky-50 px-2 py-1 text-center text-sky-700">
+                Focused {liveLocation.focusedShares}
+              </span>
+            </div>
+            <div className="mt-3 text-xs text-muted-foreground">
+              Click to inspect active rider tracking orders and freshness.
+            </div>
+          </button>
+        </SheetTrigger>
+        <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
+          <SheetHeader className="border-b px-6 py-5">
+            <SheetTitle className="flex items-center gap-2">
+              <MapPinned className="size-5 text-emerald-600" />
+              Live location sharing
+            </SheetTitle>
+            <SheetDescription>
+              Picked-up orders where rider tracking is currently active.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex-1 space-y-4 overflow-y-auto p-6">
+            <div className="grid gap-2 sm:grid-cols-4">
+              <div className="rounded-xl border bg-muted/30 p-3">
+                <div className="text-xs text-muted-foreground">Active</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {liveLocation.activeShares}
+                </div>
+              </div>
+              <div className="rounded-xl border bg-emerald-50/60 p-3 text-emerald-700">
+                <div className="text-xs">Fresh</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {liveLocation.liveShares}
+                </div>
+              </div>
+              <div className="rounded-xl border bg-amber-50/60 p-3 text-amber-700">
+                <div className="text-xs">Stale</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {liveLocation.staleShares}
+                </div>
+              </div>
+              <div className="rounded-xl border bg-sky-50/60 p-3 text-sky-700">
+                <div className="text-xs">Focused</div>
+                <div className="mt-1 text-2xl font-semibold">
+                  {liveLocation.focusedShares}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {liveLocation.orders.map((order) => (
+                <div key={order.id} className="rounded-xl border p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="secondary">{order.orderNumber}</Badge>
+                        <Badge
+                          variant="outline"
+                          className={trackingFreshnessTone(order.freshness.state)}
+                        >
+                          {titleCase(order.freshness.state)}
+                        </Badge>
+                        {order.isFocused ? (
+                          <Badge variant="outline">Focused trip</Badge>
+                        ) : null}
+                      </div>
+                      <div className="mt-2 font-medium">
+                        {order.riderName || "Rider"} to{" "}
+                        {order.customerName || "Customer"}
+                      </div>
+                      <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                        {order.deliveryAddress || "Delivery address unavailable"}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => navigate(`/orders?orderId=${order.id}`)}
+                    >
+                      Open order
+                    </Button>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+                    <span>Updated {formatAgeSeconds(order.freshness.ageSeconds)}</span>
+                    <span>
+                      ETA{" "}
+                      {formatCompactNumber(order.remainingDurationMinutes, " min")}
+                    </span>
+                    <span>
+                      Left {formatCompactNumber(order.remainingDistanceKm, " km")}
+                    </span>
+                    <span>Speed {formatCompactNumber(order.speedKmph, " km/h")}</span>
+                  </div>
+                  {order.currentLocation ? (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {order.currentLocation.latitude.toFixed(5)},{" "}
+                      {order.currentLocation.longitude.toFixed(5)} - Last{" "}
+                      {formatDateTime(order.lastUpdatedAt)}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+              {!liveLocation.orders.length ? (
+                <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  No rider is sharing live location right now.
+                </div>
+              ) : null}
+              {liveLocation.activeShares > liveLocation.sampleSize ? (
+                <div className="rounded-xl border bg-muted/30 p-3 text-sm text-muted-foreground">
+                  Showing latest {liveLocation.sampleSize} of{" "}
+                  {liveLocation.activeShares} active shares.
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+    </div>
   )
 }
 
@@ -1246,8 +1608,8 @@ function RefreshPolicySheet() {
           Refresh policy
         </Button>
       </SheetTrigger>
-      <SheetContent className="w-full overflow-y-auto p-4 sm:!max-w-6xl">
-        <SheetHeader>
+      <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-3xl! md:max-w-6xl!">
+        <SheetHeader className="border-b px-6 py-5">
           <SheetTitle>Refresh policy</SheetTitle>
           <SheetDescription>
             Control how often admin panels refresh in this browser. Reset
@@ -1257,7 +1619,7 @@ function RefreshPolicySheet() {
           </SheetDescription>
         </SheetHeader>
 
-        <Tabs defaultValue="settings" className="mt-6 space-y-4">
+        <Tabs defaultValue="settings" className="flex-1 space-y-4 overflow-y-auto p-6">
           <TabsList className="flex h-auto w-full flex-wrap justify-start">
             <TabsTrigger value="settings">Refresh settings</TabsTrigger>
             <TabsTrigger value="auto-hits">Auto hits</TabsTrigger>
@@ -1432,6 +1794,7 @@ function RefreshPolicySheet() {
 }
 
 export function OperationsHealthPage() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [timelineSeverity, setTimelineSeverity] =
     React.useState<TimelineSeverityFilter>("all")
@@ -1592,6 +1955,8 @@ export function OperationsHealthPage() {
             />
           </div>
 
+          <RealtimeOpsPanel realtime={data.realtime} />
+
           <div className="grid gap-3 md:grid-cols-4">
             <MetricCard
               title="Backend ready"
@@ -1700,9 +2065,7 @@ export function OperationsHealthPage() {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => {
-                                  window.location.assign(alert.path)
-                                }}
+                                onClick={() => navigate(alert.path)}
                               >
                                 Open
                               </Button>
@@ -1902,9 +2265,7 @@ export function OperationsHealthPage() {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => {
-                                    window.location.assign(alert.path)
-                                  }}
+                                  onClick={() => navigate(alert.path)}
                                 >
                                   Open related
                                 </Button>

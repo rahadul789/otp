@@ -82,7 +82,6 @@ export function OwnerSignInPage() {
 
       setOwnerAuthSession({
         accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
       })
       setOwnerAccount((current) => ({
         ...current,

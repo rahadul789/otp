@@ -14,16 +14,16 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Screen } from "@/src/components/screen";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
+import { Screen } from "@/src/components/screen";
 import {
   useCustomerAccountRequestMutation,
   useCustomerCancelAccountRequestMutation,
   useCustomerProfileQuery,
 } from "@/src/hooks/use-customer-api";
+import { useIsOnline } from "@/src/hooks/use-network-status";
 import { getCustomerAuthErrorMessage } from "@/src/lib/auth-error-message";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
-import { useIsOnline } from "@/src/hooks/use-network-status";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 
@@ -35,6 +35,49 @@ type AccountRequestHistoryEntry = {
   createdAt?: string | null;
 };
 
+type RequestType = "deactivate" | "delete";
+
+const requestCopy: Record<
+  RequestType,
+  {
+    title: string;
+    description: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    tint: string;
+  }
+> = {
+  deactivate: {
+    title: "Pause account access",
+    description:
+      "Temporarily disable your customer account. Your request can be reviewed and reversed.",
+    icon: "pause-circle-outline",
+    tint: "#FFF1E8",
+  },
+  delete: {
+    title: "Request deletion",
+    description:
+      "Ask Foodbela to review permanent account deletion. Choose this only when you are sure.",
+    icon: "trash-outline",
+    tint: "#FFE7F1",
+  },
+};
+
+function formatRequestType(type?: string | null) {
+  return type === "delete" ? "Delete" : "Deactivate";
+}
+
+function formatStatus(status?: string | null) {
+  if (!status) return "Pending";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function formatHistoryAction(action?: string) {
+  return (action ?? "updated")
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 export default function AccountRequestScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -43,11 +86,13 @@ export default function AccountRequestScreen() {
   useCustomerProfileQuery();
   const requestMutation = useCustomerAccountRequestMutation();
   const cancelRequestMutation = useCustomerCancelAccountRequestMutation();
-  const [requestType, setRequestType] = useState<"deactivate" | "delete">("deactivate");
+  const [requestType, setRequestType] = useState<RequestType>("deactivate");
   const [reason, setReason] = useState("");
   const [errorText, setErrorText] = useState("");
+  const selectedCopy = requestCopy[requestType];
   const hasPendingRequest =
-    Boolean(customer?.accountRequest?.type) && customer?.accountRequest?.status === "pending";
+    Boolean(customer?.accountRequest?.type) &&
+    customer?.accountRequest?.status === "pending";
 
   async function handleSubmit() {
     if (!isOnline) {
@@ -62,7 +107,9 @@ export default function AccountRequestScreen() {
       setErrorText("");
       router.replace("/(tabs)/profile");
     } catch (error) {
-      setErrorText(getCustomerAuthErrorMessage(error, "Could not submit your request."));
+      setErrorText(
+        getCustomerAuthErrorMessage(error, "Could not submit your request."),
+      );
     }
   }
 
@@ -76,7 +123,9 @@ export default function AccountRequestScreen() {
       setErrorText("");
       router.replace("/(tabs)/profile");
     } catch (error) {
-      setErrorText(getCustomerAuthErrorMessage(error, "Could not cancel your request."));
+      setErrorText(
+        getCustomerAuthErrorMessage(error, "Could not cancel your request."),
+      );
     }
   }
 
@@ -96,144 +145,203 @@ export default function AccountRequestScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.topBar}>
-            <Pressable onPress={() => router.back()} style={styles.backButton}>
-              <Ionicons name="chevron-back" size={20} color={palette.foreground} />
+            <Pressable onPress={() => router.back()} style={styles.iconButton}>
+              <Ionicons
+                name="chevron-back"
+                size={20}
+                color={palette.foreground}
+              />
             </Pressable>
+            <Text style={styles.topTitle}>Account requests</Text>
+            <View style={styles.iconButtonGhost} />
           </View>
 
           {!isOnline ? (
-            <OfflineNoticeCard description="You can review your request details here. Reconnect to submit or cancel account requests." />
+            <OfflineNoticeCard description="You can review request details here. Reconnect to submit or cancel requests." />
           ) : null}
 
-          <View style={styles.heroCard}>
-            <View style={styles.heroGlowPrimary} />
-            <View style={styles.heroGlowSecondary} />
-
-            <View style={styles.heroIconWrap}>
-              <Ionicons name="shield-half-outline" size={22} color={palette.secondary} />
+          <View style={styles.headerPanel}>
+            <View style={styles.headerIcon}>
+              <Ionicons
+                name="shield-half-outline"
+                size={24}
+                color={palette.secondary}
+              />
             </View>
-
-            <Text style={styles.heroTitle}>Account request</Text>
-            <Text style={styles.heroSubtitle}>
-              Choose whether you want to temporarily deactivate your account or request permanent deletion.
+            <Text style={styles.headerTitle}>Manage account status</Text>
+            <Text style={styles.headerText}>
+              Send a request to deactivate your account or ask for permanent
+              deletion review.
             </Text>
-
             {hasPendingRequest ? (
-              <View style={styles.pendingNotice}>
-                <Text style={styles.pendingNoticeTitle}>A request is already pending</Text>
-                <Text style={styles.pendingNoticeText}>
-                  You can cancel it if your plans changed, or submit a fresh one to replace it.
-                </Text>
+              <View style={styles.pendingPill}>
+                <Ionicons name="time-outline" size={14} color={palette.primary} />
+                <Text style={styles.pendingPillText}>Request pending</Text>
               </View>
             ) : null}
           </View>
 
-          <View style={styles.formCard}>
-            <View style={styles.optionRow}>
+          <View style={styles.requestPanel}>
+            <Text style={styles.sectionTitle}>Request type</Text>
+            <View style={styles.segmentedControl}>
               <Pressable
                 style={[
-                  styles.optionCard,
-                  requestType === "deactivate" ? styles.optionCardActive : null,
+                  styles.segmentButton,
+                  requestType === "deactivate"
+                    ? styles.segmentButtonActive
+                    : null,
                 ]}
                 onPress={() => setRequestType("deactivate")}
               >
-                <View style={styles.optionHeader}>
-                  <View style={[styles.optionIconWrap, { backgroundColor: "#FFF0C8" }]}>
-                    <Ionicons name="pause-circle-outline" size={18} color={palette.primary} />
-                  </View>
-                  <Text
-                    style={[
-                      styles.optionTitle,
-                      requestType === "deactivate" ? styles.optionTitleActive : null,
-                    ]}
-                  >
-                    Deactivate
-                  </Text>
-                </View>
-                <Text style={styles.optionText}>
-                  Temporarily disable the account without requesting permanent removal.
+                <Ionicons
+                  name="pause-circle-outline"
+                  size={17}
+                  color={
+                    requestType === "deactivate"
+                      ? palette.foreground
+                      : palette.mutedForeground
+                  }
+                />
+                <Text
+                  style={[
+                    styles.segmentText,
+                    requestType === "deactivate"
+                      ? styles.segmentTextActive
+                      : null,
+                  ]}
+                >
+                  Deactivate
                 </Text>
               </Pressable>
-
               <Pressable
                 style={[
-                  styles.optionCard,
-                  requestType === "delete" ? styles.optionCardActive : null,
+                  styles.segmentButton,
+                  requestType === "delete" ? styles.segmentButtonActive : null,
                 ]}
                 onPress={() => setRequestType("delete")}
               >
-                <View style={styles.optionHeader}>
-                  <View style={[styles.optionIconWrap, { backgroundColor: "#FFE7F1" }]}>
-                    <Ionicons name="trash-outline" size={18} color={palette.secondary} />
-                  </View>
-                  <Text
-                    style={[
-                      styles.optionTitle,
-                      requestType === "delete" ? styles.optionTitleActive : null,
-                    ]}
-                  >
-                    Delete
-                  </Text>
-                </View>
-                <Text style={styles.optionText}>
-                  Request permanent account deletion only if you are sure you no longer need it.
+                <Ionicons
+                  name="trash-outline"
+                  size={17}
+                  color={
+                    requestType === "delete"
+                      ? palette.foreground
+                      : palette.mutedForeground
+                  }
+                />
+                <Text
+                  style={[
+                    styles.segmentText,
+                    requestType === "delete" ? styles.segmentTextActive : null,
+                  ]}
+                >
+                  Delete
                 </Text>
               </Pressable>
             </View>
 
-            {customer?.accountRequest?.type ? (
-              <View style={styles.currentRequestCard}>
-                <Text style={styles.currentRequestTitle}>Current request</Text>
-                <Text style={styles.currentRequestText}>
-                  {customer.accountRequest.type === "delete" ? "Delete" : "Deactivate"} •{" "}
-                  {customer.accountRequest.status ?? "pending"}
+            <View style={styles.selectedRequestCard}>
+              <View
+                style={[
+                  styles.selectedRequestIcon,
+                  { backgroundColor: selectedCopy.tint },
+                ]}
+              >
+                <Ionicons
+                  name={selectedCopy.icon}
+                  size={19}
+                  color={palette.foreground}
+                />
+              </View>
+              <View style={styles.selectedRequestCopy}>
+                <Text style={styles.selectedRequestTitle}>
+                  {selectedCopy.title}
+                </Text>
+                <Text style={styles.selectedRequestText}>
+                  {selectedCopy.description}
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {customer?.accountRequest?.type ? (
+            <View style={styles.currentPanel}>
+              <View style={styles.currentHeader}>
+                <Text style={styles.sectionTitle}>Current request</Text>
+                <View style={styles.statusBadge}>
+                  <Text style={styles.statusBadgeText}>
+                    {formatStatus(customer.accountRequest.status)}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.currentSummary}>
+                <Text style={styles.currentType}>
+                  {formatRequestType(customer.accountRequest.type)}
                 </Text>
                 {customer.accountRequest.requestedAt ? (
-                  <Text style={styles.currentRequestMeta}>
-                    Submitted {formatDateTimeAmPm(customer.accountRequest.requestedAt)}
+                  <Text style={styles.currentMeta}>
+                    Submitted{" "}
+                    {formatDateTimeAmPm(customer.accountRequest.requestedAt)}
                   </Text>
                 ) : null}
                 {customer.accountRequest.reason ? (
-                  <Text style={styles.currentRequestReason}>{customer.accountRequest.reason}</Text>
+                  <Text style={styles.currentNote}>
+                    {customer.accountRequest.reason}
+                  </Text>
                 ) : null}
                 {customer.accountRequest.reviewNote ? (
-                  <Text style={styles.currentRequestReviewNote}>
+                  <Text style={styles.currentReviewNote}>
                     Admin note: {customer.accountRequest.reviewNote}
                   </Text>
                 ) : null}
                 {customer.accountRequest.reviewedAt ? (
-                  <Text style={styles.currentRequestMeta}>
-                    Reviewed {formatDateTimeAmPm(customer.accountRequest.reviewedAt)}
+                  <Text style={styles.currentMeta}>
+                    Reviewed{" "}
+                    {formatDateTimeAmPm(customer.accountRequest.reviewedAt)}
                   </Text>
                 ) : null}
-                {(customer.accountRequest.history?.length ?? 0) > 0 ? (
-                  <View style={styles.historyWrap}>
-                    {customer.accountRequest.history
-                      ?.slice()
-                      .reverse()
-                      .map((entry: AccountRequestHistoryEntry, index: number) => (
-                        <View key={`${entry.action}-${entry.createdAt}-${index}`} style={styles.historyItem}>
+              </View>
+
+              {(customer.accountRequest.history?.length ?? 0) > 0 ? (
+                <View style={styles.historyList}>
+                  {customer.accountRequest.history
+                    ?.slice()
+                    .reverse()
+                    .map((entry: AccountRequestHistoryEntry, index: number) => (
+                      <View
+                        key={`${entry.action}-${entry.createdAt}-${index}`}
+                        style={styles.historyItem}
+                      >
+                        <View style={styles.historyDot} />
+                        <View style={styles.historyCopy}>
                           <Text style={styles.historyTitle}>
-                            {(entry.action ?? "updated").replace(/\b\w/g, (value: string) => value.toUpperCase())}
+                            {formatHistoryAction(entry.action)}
                           </Text>
                           <Text style={styles.historyMeta}>
                             {entry.actorName || "System"}
-                            {entry.createdAt ? ` • ${formatDateTimeAmPm(entry.createdAt)}` : ""}
+                            {entry.createdAt
+                              ? ` - ${formatDateTimeAmPm(entry.createdAt)}`
+                              : ""}
                           </Text>
-                          {entry.note ? <Text style={styles.historyNote}>{entry.note}</Text> : null}
+                          {entry.note ? (
+                            <Text style={styles.historyNote}>{entry.note}</Text>
+                          ) : null}
                         </View>
-                      ))}
-                  </View>
-                ) : null}
-              </View>
-            ) : null}
+                      </View>
+                    ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
 
+          <View style={styles.formPanel}>
             <View style={styles.fieldGroup}>
-              <Text style={styles.label}>Reason (Optional)</Text>
+              <Text style={styles.label}>Reason</Text>
               <TextInput
                 value={reason}
                 onChangeText={setReason}
-                placeholder="Tell us anything helpful for this request"
+                placeholder="Optional note for the review team"
                 placeholderTextColor={palette.placeholder}
                 multiline
                 numberOfLines={4}
@@ -252,9 +360,12 @@ export default function AccountRequestScreen() {
                   disabled={cancelRequestMutation.isPending || !isOnline}
                 >
                   {cancelRequestMutation.isPending ? (
-                    <ActivityIndicator size="small" color={palette.foreground} />
+                    <ActivityIndicator
+                      size="small"
+                      color={palette.foreground}
+                    />
                   ) : (
-                    <Text style={styles.secondaryButtonText}>Cancel pending request</Text>
+                    <Text style={styles.secondaryButtonText}>Cancel request</Text>
                   )}
                 </Pressable>
               ) : null}
@@ -262,7 +373,9 @@ export default function AccountRequestScreen() {
               <Pressable
                 style={[
                   styles.primaryButton,
-                  requestMutation.isPending || !isOnline ? styles.primaryButtonDisabled : null,
+                  requestMutation.isPending || !isOnline
+                    ? styles.primaryButtonDisabled
+                    : null,
                 ]}
                 onPress={handleSubmit}
                 disabled={requestMutation.isPending || !isOnline}
@@ -292,8 +405,15 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
   },
-  backButton: {
+  topTitle: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  iconButton: {
     width: 42,
     height: 42,
     borderRadius: 21,
@@ -303,213 +423,271 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  heroCard: {
-    overflow: "hidden",
-    borderRadius: 30,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.surface,
-    padding: 22,
-    gap: 14,
+  iconButtonGhost: {
+    width: 42,
+    height: 42,
   },
-  heroGlowPrimary: {
-    position: "absolute",
-    top: -26,
-    right: -14,
-    width: 122,
-    height: 122,
-    borderRadius: 61,
-    backgroundColor: "#FFE7F1",
-  },
-  heroGlowSecondary: {
-    position: "absolute",
-    bottom: -28,
-    left: -16,
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: "#FFF0C8",
-  },
-  heroIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFE7F1",
-  },
-  heroTitle: {
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  heroSubtitle: {
-    fontSize: 14,
-    lineHeight: 22,
-    color: palette.mutedForeground,
-  },
-  pendingNotice: {
-    borderRadius: 18,
-    padding: 14,
-    gap: 4,
-    backgroundColor: palette.background,
-    borderWidth: 1,
-    borderColor: palette.border,
-  },
-  pendingNoticeTitle: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: "800",
-    color: palette.foreground,
-  },
-  pendingNoticeText: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: palette.mutedForeground,
-  },
-  formCard: {
+  headerPanel: {
     borderRadius: 28,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.surface,
     padding: 20,
-    gap: 16,
+    gap: 12,
+    shadowColor: palette.shadow,
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
   },
-  optionRow: {
-    gap: 10,
+  headerIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFE7F1",
   },
-  optionCard: {
+  headerTitle: {
+    fontSize: 26,
+    lineHeight: 32,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  headerText: {
+    fontSize: 14,
+    lineHeight: 22,
+    fontWeight: "500",
+    color: palette.mutedForeground,
+  },
+  pendingPill: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    backgroundColor: "#FFF1E8",
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  pendingPillText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  requestPanel: {
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    padding: 16,
+    gap: 13,
+  },
+  sectionTitle: {
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  segmentedControl: {
+    flexDirection: "row",
+    gap: 8,
+    borderRadius: 22,
+    backgroundColor: palette.background,
+    padding: 5,
+  },
+  segmentButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+  },
+  segmentButtonActive: {
+    backgroundColor: palette.surface,
+    shadowColor: palette.shadow,
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
+  },
+  segmentText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: palette.mutedForeground,
+  },
+  segmentTextActive: {
+    color: palette.foreground,
+  },
+  selectedRequestCard: {
+    flexDirection: "row",
+    gap: 12,
     borderRadius: 22,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.background,
     padding: 14,
-    gap: 8,
   },
-  optionCardActive: {
-    borderColor: "#F2C2D5",
-    backgroundColor: "#FFF8FB",
-  },
-  optionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  optionIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  selectedRequestIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
   },
-  optionTitle: {
+  selectedRequestCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  selectedRequestTitle: {
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  selectedRequestText: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "500",
+    color: palette.mutedForeground,
+  },
+  currentPanel: {
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    padding: 16,
+    gap: 13,
+  },
+  currentHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  statusBadge: {
+    borderRadius: 999,
+    backgroundColor: "#EEF8F2",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  currentSummary: {
+    borderRadius: 20,
+    backgroundColor: palette.background,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: 13,
+    gap: 5,
+  },
+  currentType: {
     fontSize: 15,
     lineHeight: 20,
-    fontWeight: "800",
+    fontWeight: "900",
     color: palette.foreground,
   },
-  optionTitleActive: {
-    color: palette.secondary,
-  },
-  optionText: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: palette.mutedForeground,
-  },
-  currentRequestCard: {
-    borderRadius: 22,
-    padding: 14,
-    gap: 5,
-    backgroundColor: "#FFF9FC",
-    borderWidth: 1,
-    borderColor: "#F4D3E1",
-  },
-  currentRequestTitle: {
-    fontSize: 13,
+  currentMeta: {
+    fontSize: 12,
     lineHeight: 17,
-    fontWeight: "800",
-    color: palette.secondary,
-  },
-  currentRequestText: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  currentRequestMeta: {
-    fontSize: 12,
-    lineHeight: 16,
+    fontWeight: "600",
     color: palette.mutedForeground,
   },
-  currentRequestReason: {
-    fontSize: 12,
-    lineHeight: 18,
+  currentNote: {
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "500",
     color: palette.foreground,
   },
-  currentRequestReviewNote: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: palette.foreground,
+  currentReviewNote: {
+    fontSize: 13,
+    lineHeight: 20,
     fontWeight: "700",
+    color: palette.foreground,
   },
-  historyWrap: {
-    marginTop: 6,
-    gap: 8,
+  historyList: {
+    gap: 10,
   },
   historyItem: {
-    borderRadius: 16,
-    padding: 10,
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "flex-start",
+  },
+  historyDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: palette.secondary,
+    marginTop: 6,
+  },
+  historyCopy: {
+    flex: 1,
     gap: 2,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#F2E5EC",
   },
   historyTitle: {
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: "800",
     color: palette.foreground,
   },
   historyMeta: {
     fontSize: 11,
-    lineHeight: 15,
+    lineHeight: 16,
+    fontWeight: "600",
     color: palette.mutedForeground,
   },
   historyNote: {
     fontSize: 12,
     lineHeight: 18,
+    fontWeight: "500",
     color: palette.foreground,
+  },
+  formPanel: {
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+    padding: 16,
+    gap: 14,
   },
   fieldGroup: { gap: 8 },
   label: {
     fontSize: 14,
     lineHeight: 18,
-    fontWeight: "700",
+    fontWeight: "800",
     color: palette.foreground,
   },
   input: {
-    minHeight: 110,
-    borderRadius: 18,
+    minHeight: 112,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: palette.border,
     backgroundColor: palette.background,
     paddingHorizontal: 14,
     paddingVertical: 14,
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 22,
     color: palette.foreground,
   },
   errorText: {
     fontSize: 13,
     lineHeight: 18,
+    fontWeight: "600",
     color: "#C62828",
   },
   actionRow: {
     gap: 10,
   },
   secondaryButton: {
-    minHeight: 48,
+    minHeight: 50,
     borderRadius: 18,
     borderWidth: 1,
     borderColor: palette.border,
@@ -520,12 +698,12 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     fontSize: 14,
     lineHeight: 18,
-    fontWeight: "700",
+    fontWeight: "800",
     color: palette.foreground,
   },
   primaryButton: {
     minHeight: 52,
-    borderRadius: 20,
+    borderRadius: 19,
     backgroundColor: palette.secondary,
     alignItems: "center",
     justifyContent: "center",
@@ -536,7 +714,7 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     fontSize: 15,
     lineHeight: 20,
-    fontWeight: "800",
+    fontWeight: "900",
     color: "#fff",
   },
 });

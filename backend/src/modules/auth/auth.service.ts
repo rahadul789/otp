@@ -6,8 +6,11 @@ import mongoose from "mongoose"
 import type { OtpPurpose, RestaurantLifecycleStatus } from "../../common/constants/lifecycle"
 import { AppError } from "../../common/utils/app-error"
 import { env } from "../../config/env"
+import { logger } from "../../config/logger"
 import {
+  OtpAbuseBlockModel,
   OnboardingDraftModel,
+  OtpSecurityEventModel,
   OtpSessionModel,
   OwnerModel,
   PayoutMethodModel,
@@ -24,9 +27,47 @@ import {
   verifyRefreshToken
 } from "./auth.utils"
 import { getMockOtpCode } from "./mock-otp"
+import {
+  getFallbackOtpDeliveryConfig,
+  getOtpDeliveryConfig,
+  sendOtpSms,
+  type OtpDeliveryConfig
+} from "./otp-sms.service"
+import { createAdminOperationalAlert } from "../admin/admin-alert.service"
 
-const OTP_EXPIRY_SECONDS = 300
-const REFRESH_SESSION_EXPIRY_DAYS = 30
+export const OWNER_REFRESH_SESSION_EXPIRY_DAYS = 3650
+const OTP_PHONE_HOURLY_SEND_LIMIT = 5
+const OTP_PHONE_DAILY_SEND_LIMIT = 15
+const OTP_IP_DAILY_SEND_LIMIT = 60
+const OTP_FAILED_VERIFY_LIMIT = 5
+const OTP_VERIFY_LOCK_MINUTES = 15
+const OTP_SUSPICIOUS_DEVICE_PHONE_THRESHOLD = 5
+const OTP_SUSPICIOUS_DEVICE_LOOKBACK_MINUTES = 60
+
+type OtpSecurityContext = {
+  ipAddress?: string
+  userAgent?: string
+}
+
+type OtpSecurityEvent =
+  | "send_sent"
+  | "send_reused"
+  | "send_blocked"
+  | "send_failed"
+  | "verify_success"
+  | "verify_failed"
+  | "verify_blocked"
+
+type OtpSessionTimingSource = {
+  expiresAt?: Date | string | null
+  lastSentAt?: Date | string | null
+  createdAt?: Date | string | null
+  updatedAt?: Date | string | null
+  expiresInSeconds?: number
+  resendAvailableInSeconds?: number
+  failedVerifyCount?: number
+  lockedUntilAt?: Date | string | null
+}
 
 function buildInitialDraft(ownerId: mongoose.Types.ObjectId, fullName: string, phone: string) {
   return {
@@ -47,12 +88,14 @@ function buildAuthResponse(params: {
   phone: string
   isPhoneVerified: boolean
   refreshToken: string
+  tokenId: string
 }) {
   return {
     accessToken: signAccessToken({
       subject: params.ownerId,
       role: params.role,
-      restaurantId: params.restaurantId
+      restaurantId: params.restaurantId,
+      tokenId: params.tokenId
     }),
     refreshToken: params.refreshToken,
     owner: {
@@ -88,13 +131,563 @@ async function createRefreshTokenSession(params: {
     tokenHash,
     userAgent: params.userAgent ?? "",
     ipAddress: params.ipAddress ?? "",
-    expiresAt: new Date(Date.now() + REFRESH_SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
+    expiresAt: new Date(Date.now() + OWNER_REFRESH_SESSION_EXPIRY_DAYS * 24 * 60 * 60 * 1000)
   })
 
-  return refreshToken
+  return { refreshToken, tokenId }
+}
+
+function getDateValue(value: unknown) {
+  if (value instanceof Date) return value
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+  return null
+}
+
+function getOtpCodeLength(purpose?: OtpPurpose) {
+  return purpose === "customer_phone_signin" ||
+    purpose === "customer_password_reset" ||
+    purpose === "owner_signup_verify" ||
+    purpose === "owner_phone_change" ||
+    purpose === "owner_payout_verify" ||
+    purpose === "owner_phone_signin" ||
+    purpose === "owner_password_reset" ||
+    purpose === "password_reset" ||
+    purpose === "rider_phone_signin" ||
+    purpose === "rider_password_reset"
+    ? 4
+    : 6
+}
+
+function generateOtpCode(purpose?: OtpPurpose) {
+  const length = getOtpCodeLength(purpose)
+  if (env.MOCK_OTP_ENABLED) {
+    const mockCode = env.MOCK_OTP_CODE.replace(/\D/g, "")
+    return mockCode.length >= length
+      ? mockCode.slice(0, length)
+      : mockCode.padStart(length, "0")
+  }
+
+  const min = 10 ** (length - 1)
+  const max = 10 ** length
+  return crypto.randomInt(min, max).toString()
+}
+
+function normalizeAuditText(value: unknown, maxLength = 300) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : ""
+}
+
+function hashOtpSecurityValue(value: string) {
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 24)
+}
+
+function normalizeOtpBlockTargetValue(value: unknown, maxLength = 300) {
+  return normalizeAuditText(value, maxLength).toLowerCase()
+}
+
+function buildOtpDeviceValue(context?: OtpSecurityContext) {
+  const ipAddress = normalizeOtpBlockTargetValue(context?.ipAddress, 80)
+  const userAgent = normalizeOtpBlockTargetValue(context?.userAgent, 220)
+
+  if (!ipAddress || !userAgent) return ""
+
+  return `${ipAddress}|${userAgent}`
+}
+
+function maskOtpPhone(phone: string) {
+  return phone.length <= 6 ? phone : `${phone.slice(0, 5)}***${phone.slice(-3)}`
+}
+
+function buildOtpBlockTargets(phone: string, context?: OtpSecurityContext) {
+  const targets: Array<{
+    targetType: "phone" | "ip" | "device"
+    targetValue: string
+    displayValue: string
+  }> = []
+  const normalizedPhone = normalizeOtpBlockTargetValue(phone, 32)
+  const ipAddress = normalizeOtpBlockTargetValue(context?.ipAddress, 80)
+  const deviceValue = buildOtpDeviceValue(context)
+
+  if (normalizedPhone) {
+    targets.push({
+      targetType: "phone",
+      targetValue: normalizedPhone,
+      displayValue: maskOtpPhone(normalizedPhone)
+    })
+  }
+
+  if (ipAddress) {
+    targets.push({
+      targetType: "ip",
+      targetValue: ipAddress,
+      displayValue: ipAddress
+    })
+  }
+
+  if (deviceValue) {
+    targets.push({
+      targetType: "device",
+      targetValue: deviceValue,
+      displayValue: `${ipAddress} / ${hashOtpSecurityValue(deviceValue)}`
+    })
+  }
+
+  return targets
+}
+
+async function recordOtpSecurityEvent(params: {
+  phone: string
+  purpose: OtpPurpose
+  referenceId?: string
+  verificationSessionId?: string
+  event: OtpSecurityEvent
+  blockReason?: string
+  context?: OtpSecurityContext
+  metadata?: Record<string, unknown>
+}) {
+  try {
+    await OtpSecurityEventModel.create({
+      phone: params.phone,
+      purpose: params.purpose,
+      referenceId: normalizeAuditText(params.referenceId, 120),
+      verificationSessionId: normalizeAuditText(params.verificationSessionId, 80),
+      event: params.event,
+      blockReason: normalizeAuditText(params.blockReason, 120),
+      ipAddress: normalizeAuditText(params.context?.ipAddress, 80),
+      userAgent: normalizeAuditText(params.context?.userAgent, 300),
+      metadata: params.metadata ?? {}
+    })
+  } catch (error) {
+    logger.warn(
+      { err: error, event: "otp.security_event.write_failed" },
+      "Failed to record OTP security event"
+    )
+  }
+}
+
+async function findActiveOtpBlock(phone: string, context?: OtpSecurityContext) {
+  const targets = buildOtpBlockTargets(phone, context)
+  if (!targets.length) return null
+  const now = new Date()
+
+  return OtpAbuseBlockModel.findOne({
+    isActive: true,
+    $or: targets.map((target) => ({
+      targetType: target.targetType,
+      targetValue: target.targetValue
+    })),
+    $and: [
+      {
+        $or: [
+          { isPermanent: true },
+          { lockedUntilAt: { $gt: now } }
+        ]
+      }
+    ]
+  }).lean()
+}
+
+async function assertOtpAbuseBlockAllowed(params: {
+  phone: string
+  purpose: OtpPurpose
+  referenceId?: string
+  verificationSessionId?: string
+  event: "send_blocked" | "verify_blocked"
+  context?: OtpSecurityContext
+}) {
+  const block = await findActiveOtpBlock(params.phone, params.context)
+  if (!block) return
+
+  const blockReason = block.isPermanent ? "admin_permanent_block" : "admin_temporary_block"
+  await recordOtpSecurityEvent({
+    phone: params.phone,
+    purpose: params.purpose,
+    referenceId: params.referenceId,
+    verificationSessionId: params.verificationSessionId,
+    event: params.event,
+    blockReason,
+    context: params.context,
+    metadata: {
+      blockId: String(block._id),
+      targetType: String(block.targetType ?? ""),
+      displayValue: String(block.displayValue ?? ""),
+      lockedUntilAt: block.lockedUntilAt
+        ? new Date(block.lockedUntilAt).toISOString()
+        : null,
+      isPermanent: block.isPermanent === true,
+      reason: String(block.reason ?? "")
+    }
+  })
+
+  throw new AppError(
+    StatusCodes.TOO_MANY_REQUESTS,
+    "OTP_ADMIN_BLOCKED",
+    block.isPermanent
+      ? "OTP access is blocked for this device or phone number."
+      : "OTP access is temporarily blocked for this device or phone number."
+  )
+}
+
+async function maybeCreateSuspiciousOtpAlert(params: {
+  otpSession: InstanceType<typeof OtpSessionModel>
+  context?: OtpSecurityContext
+  failedVerifyCount: number
+}) {
+  const ipAddress = normalizeAuditText(params.context?.ipAddress, 80)
+  const userAgent = normalizeAuditText(params.context?.userAgent, 300)
+  if (!ipAddress || !userAgent) return
+
+  const since = new Date(Date.now() - OTP_SUSPICIOUS_DEVICE_LOOKBACK_MINUTES * 60 * 1000)
+  const phones = await OtpSecurityEventModel.distinct("phone", {
+    ipAddress,
+    userAgent,
+    event: { $in: ["send_sent", "send_reused"] },
+    createdAt: { $gte: since }
+  })
+  const uniquePhones = phones.filter(Boolean).map(String)
+
+  if (uniquePhones.length < OTP_SUSPICIOUS_DEVICE_PHONE_THRESHOLD) {
+    return
+  }
+
+  const deviceValue = buildOtpDeviceValue(params.context)
+  const deviceHash = hashOtpSecurityValue(deviceValue)
+  const severity =
+    params.failedVerifyCount >= OTP_FAILED_VERIFY_LIMIT ? "critical" : "warning"
+
+  await createAdminOperationalAlert({
+    alertType: "otp_abuse",
+    severity,
+    title: "Suspicious OTP activity detected",
+    description: `${uniquePhones.length} phone numbers requested OTP from the same device, followed by a wrong OTP attempt.`,
+    source: "security",
+    entityType: "otp_device",
+    entityId: deviceHash,
+    path: "/settings?tab=security",
+    iconKey: "shield-alert",
+    dedupeKey: `otp-abuse:${deviceHash}`,
+    metadata: {
+      ipAddress,
+      userAgent,
+      deviceHash,
+      attemptedPhone: maskOtpPhone(params.otpSession.phone),
+      uniquePhoneCount: uniquePhones.length,
+      samplePhones: uniquePhones.slice(0, 8).map(maskOtpPhone),
+      failedVerifyCount: params.failedVerifyCount,
+      failedVerifyLimit: OTP_FAILED_VERIFY_LIMIT,
+      lookbackMinutes: OTP_SUSPICIOUS_DEVICE_LOOKBACK_MINUTES,
+      suggestedTargets: {
+        device: deviceValue,
+        ip: ipAddress,
+        phone: params.otpSession.phone
+      }
+    }
+  })
+}
+
+async function assertOtpSendAllowed(params: SendOtpParams) {
+  const now = Date.now()
+  const hourAgo = new Date(now - 60 * 60 * 1000)
+  const dayAgo = new Date(now - 24 * 60 * 60 * 1000)
+  const phone = params.phone.trim()
+  const ipAddress = normalizeAuditText(params.ipAddress, 80)
+
+  const [phoneHourlyCount, phoneDailyCount, ipDailyCount] = await Promise.all([
+    OtpSecurityEventModel.countDocuments({
+      phone,
+      event: "send_sent",
+      createdAt: { $gte: hourAgo }
+    }),
+    OtpSecurityEventModel.countDocuments({
+      phone,
+      event: "send_sent",
+      createdAt: { $gte: dayAgo }
+    }),
+    ipAddress
+      ? OtpSecurityEventModel.countDocuments({
+          ipAddress,
+          event: "send_sent",
+          createdAt: { $gte: dayAgo }
+        })
+      : Promise.resolve(0)
+  ])
+
+  let blockReason = ""
+  if (phoneHourlyCount >= OTP_PHONE_HOURLY_SEND_LIMIT) {
+    blockReason = "phone_hourly_limit"
+  } else if (phoneDailyCount >= OTP_PHONE_DAILY_SEND_LIMIT) {
+    blockReason = "phone_daily_limit"
+  } else if (ipDailyCount >= OTP_IP_DAILY_SEND_LIMIT) {
+    blockReason = "ip_daily_limit"
+  }
+
+  if (!blockReason) return
+
+  await recordOtpSecurityEvent({
+    phone,
+    purpose: params.purpose,
+    referenceId: params.referenceId,
+    event: "send_blocked",
+    blockReason,
+    context: params,
+    metadata: {
+      phoneHourlyCount,
+      phoneDailyCount,
+      ipDailyCount,
+      limits: {
+        phoneHourly: OTP_PHONE_HOURLY_SEND_LIMIT,
+        phoneDaily: OTP_PHONE_DAILY_SEND_LIMIT,
+        ipDaily: OTP_IP_DAILY_SEND_LIMIT
+      }
+    }
+  })
+
+  throw new AppError(
+    StatusCodes.TOO_MANY_REQUESTS,
+    "OTP_SEND_RATE_LIMITED",
+    "Too many OTP requests. Please wait before requesting another code."
+  )
+}
+
+function getRemainingOtpSeconds(otpSession: OtpSessionTimingSource) {
+  const expiresAt = getDateValue(otpSession.expiresAt)
+  return Math.max(0, Math.floor(((expiresAt?.getTime() ?? Date.now()) - Date.now()) / 1000))
+}
+
+function getResendAvailableSeconds(
+  otpSession: OtpSessionTimingSource,
+  resendCooldownSeconds = getFallbackOtpDeliveryConfig().resendCooldownSeconds
+) {
+  const lastSentAt =
+    getDateValue(otpSession.lastSentAt) ??
+    getDateValue(otpSession.updatedAt) ??
+    getDateValue(otpSession.createdAt)
+
+  if (!lastSentAt || resendCooldownSeconds <= 0) {
+    return 0
+  }
+
+  const elapsedSeconds = Math.floor((Date.now() - lastSentAt.getTime()) / 1000)
+  return Math.max(0, resendCooldownSeconds - elapsedSeconds)
+}
+
+function attachOtpDeliveryMeta<T extends OtpSessionTimingSource>(
+  otpSession: T,
+  otpSent: boolean,
+  config: OtpDeliveryConfig
+) {
+  const sessionWithMeta = otpSession as T & {
+    otpSent?: boolean
+    expiresInSeconds?: number
+    resendAvailableInSeconds?: number
+  }
+  sessionWithMeta.otpSent = otpSent
+  sessionWithMeta.expiresInSeconds = getRemainingOtpSeconds(otpSession)
+  sessionWithMeta.resendAvailableInSeconds = getResendAvailableSeconds(
+    otpSession,
+    config.resendCooldownSeconds
+  )
+  return sessionWithMeta
+}
+
+export function getOtpSessionTiming(otpSession: OtpSessionTimingSource) {
+  return {
+    expiresInSeconds:
+      typeof otpSession.expiresInSeconds === "number"
+        ? otpSession.expiresInSeconds
+        : getRemainingOtpSeconds(otpSession),
+    resendAvailableInSeconds:
+      typeof otpSession.resendAvailableInSeconds === "number"
+        ? otpSession.resendAvailableInSeconds
+        : getResendAvailableSeconds(otpSession)
+  }
+}
+
+export async function assertOtpVerificationAllowed(
+  otpSession: InstanceType<typeof OtpSessionModel>,
+  context?: OtpSecurityContext
+) {
+  await assertOtpAbuseBlockAllowed({
+    phone: otpSession.phone,
+    purpose: otpSession.purpose,
+    referenceId: otpSession.referenceId,
+    verificationSessionId: otpSession.id,
+    event: "verify_blocked",
+    context
+  })
+
+  const lockedUntilAt = getDateValue(otpSession.lockedUntilAt)
+  if (!lockedUntilAt || lockedUntilAt.getTime() <= Date.now()) {
+    return
+  }
+
+  await recordOtpSecurityEvent({
+    phone: otpSession.phone,
+    purpose: otpSession.purpose,
+    referenceId: otpSession.referenceId,
+    verificationSessionId: otpSession.id,
+    event: "verify_blocked",
+    blockReason: "session_locked",
+    context,
+    metadata: {
+      lockedUntilAt: lockedUntilAt.toISOString(),
+      failedVerifyCount: otpSession.failedVerifyCount ?? 0
+    }
+  })
+
+  throw new AppError(
+    StatusCodes.TOO_MANY_REQUESTS,
+    "OTP_VERIFICATION_LOCKED",
+    "Too many incorrect OTP attempts. Please request a new code later."
+  )
+}
+
+export async function rejectInvalidOtpAttempt(
+  otpSession: InstanceType<typeof OtpSessionModel>,
+  context?: OtpSecurityContext
+) {
+  const nextFailedCount = (otpSession.failedVerifyCount ?? 0) + 1
+  otpSession.failedVerifyCount = nextFailedCount
+
+  if (nextFailedCount >= OTP_FAILED_VERIFY_LIMIT) {
+    otpSession.lockedUntilAt = new Date(Date.now() + OTP_VERIFY_LOCK_MINUTES * 60 * 1000)
+  }
+
+  await otpSession.save()
+  await recordOtpSecurityEvent({
+    phone: otpSession.phone,
+    purpose: otpSession.purpose,
+    referenceId: otpSession.referenceId,
+    verificationSessionId: otpSession.id,
+    event: "verify_failed",
+    blockReason: nextFailedCount >= OTP_FAILED_VERIFY_LIMIT ? "session_locked" : "",
+    context,
+    metadata: {
+      failedVerifyCount: nextFailedCount,
+      failedVerifyLimit: OTP_FAILED_VERIFY_LIMIT,
+      lockedUntilAt: getDateValue(otpSession.lockedUntilAt)?.toISOString() ?? null
+    }
+  })
+  await maybeCreateSuspiciousOtpAlert({
+    otpSession,
+    context,
+    failedVerifyCount: nextFailedCount
+  })
+
+  if (nextFailedCount >= OTP_FAILED_VERIFY_LIMIT) {
+    throw new AppError(
+      StatusCodes.TOO_MANY_REQUESTS,
+      "OTP_VERIFICATION_LOCKED",
+      "Too many incorrect OTP attempts. Please request a new code later."
+    )
+  }
+
+  throw new AppError(StatusCodes.BAD_REQUEST, "INVALID_OTP", "Invalid OTP code")
+}
+
+function clearOtpVerificationFailures(otpSession: InstanceType<typeof OtpSessionModel>) {
+  otpSession.failedVerifyCount = 0
+  otpSession.lockedUntilAt = null
+}
+
+export async function recordOtpVerificationSuccess(
+  otpSession: InstanceType<typeof OtpSessionModel>,
+  context?: OtpSecurityContext
+) {
+  clearOtpVerificationFailures(otpSession)
+  await recordOtpSecurityEvent({
+    phone: otpSession.phone,
+    purpose: otpSession.purpose,
+    referenceId: otpSession.referenceId,
+    verificationSessionId: otpSession.id,
+    event: "verify_success",
+    context
+  })
+}
+
+async function saveOtpSessionWithCode(
+  otpSession: InstanceType<typeof OtpSessionModel>,
+  params: {
+    otpCode: string
+    isNewSession: boolean
+    config: OtpDeliveryConfig
+    context?: OtpSecurityContext
+  }
+) {
+  const originalOtpCodeHash = otpSession.otpCodeHash
+  const originalExpiresAt = otpSession.expiresAt
+  const originalLastSentAt = otpSession.lastSentAt
+  const now = new Date()
+
+  otpSession.otpCodeHash = await hashOtpCode(params.otpCode)
+  otpSession.expiresAt = new Date(now.getTime() + params.config.expiresInSeconds * 1000)
+  otpSession.lastSentAt = now
+  otpSession.failedVerifyCount = 0
+  otpSession.lockedUntilAt = null
+  await otpSession.save()
+
+  try {
+    await sendOtpSms({
+      phone: otpSession.phone,
+      otpCode: params.otpCode,
+      config: params.config
+    })
+  } catch (error) {
+    await recordOtpSecurityEvent({
+      phone: otpSession.phone,
+      purpose: otpSession.purpose,
+      referenceId: otpSession.referenceId,
+      verificationSessionId: otpSession.id,
+      event: "send_failed",
+      context: params.context,
+      metadata: {
+        message: error instanceof Error ? error.message.slice(0, 160) : "OTP SMS failed"
+      }
+    })
+
+    if (params.isNewSession) {
+      await otpSession.deleteOne().catch(() => undefined)
+    } else {
+      otpSession.otpCodeHash = originalOtpCodeHash
+      otpSession.expiresAt = originalExpiresAt
+      otpSession.lastSentAt = originalLastSentAt
+      await otpSession.save().catch(() => undefined)
+    }
+
+    throw error
+  }
+
+  await recordOtpSecurityEvent({
+    phone: otpSession.phone,
+    purpose: otpSession.purpose,
+    referenceId: otpSession.referenceId,
+    verificationSessionId: otpSession.id,
+    event: "send_sent",
+    context: params.context,
+    metadata: {
+      expiresInSeconds: params.config.expiresInSeconds,
+      resendCooldownSeconds: params.config.resendCooldownSeconds
+    }
+  })
+
+  return attachOtpDeliveryMeta(otpSession, true, params.config)
 }
 
 export async function createOtpSession(params: SendOtpParams) {
+  const otpConfig = await getOtpDeliveryConfig()
+  const context = {
+    ipAddress: params.ipAddress,
+    userAgent: params.userAgent
+  }
+  await assertOtpAbuseBlockAllowed({
+    phone: params.phone,
+    purpose: params.purpose,
+    referenceId: params.referenceId,
+    event: "send_blocked",
+    context
+  })
   const duplicatePending = await OtpSessionModel.findOne({
     phone: params.phone,
     purpose: params.purpose,
@@ -103,20 +696,73 @@ export async function createOtpSession(params: SendOtpParams) {
   })
 
   if (duplicatePending) {
-    duplicatePending.otpCodeHash = await hashOtpCode(env.MOCK_OTP_CODE)
-    duplicatePending.expiresAt = new Date(Date.now() + OTP_EXPIRY_SECONDS * 1000)
-    await duplicatePending.save()
+    const lockedUntilAt = getDateValue(duplicatePending.lockedUntilAt)
+    if (lockedUntilAt && lockedUntilAt.getTime() > Date.now()) {
+      await recordOtpSecurityEvent({
+        phone: duplicatePending.phone,
+        purpose: duplicatePending.purpose,
+        referenceId: duplicatePending.referenceId,
+        verificationSessionId: duplicatePending.id,
+        event: "send_blocked",
+        blockReason: "verification_locked",
+        context,
+        metadata: {
+          lockedUntilAt: lockedUntilAt.toISOString(),
+          failedVerifyCount: duplicatePending.failedVerifyCount ?? 0
+        }
+      })
 
-    return duplicatePending
+      throw new AppError(
+        StatusCodes.TOO_MANY_REQUESTS,
+        "OTP_VERIFICATION_LOCKED",
+        "Too many incorrect OTP attempts. Please wait before requesting another code."
+      )
+    }
+
+    const resendAvailableInSeconds = getResendAvailableSeconds(
+      duplicatePending,
+      otpConfig.resendCooldownSeconds
+    )
+
+    if (resendAvailableInSeconds > 0) {
+      await recordOtpSecurityEvent({
+        phone: duplicatePending.phone,
+        purpose: duplicatePending.purpose,
+        referenceId: duplicatePending.referenceId,
+        verificationSessionId: duplicatePending.id,
+        event: "send_reused",
+        context,
+        metadata: {
+          resendAvailableInSeconds
+        }
+      })
+      return attachOtpDeliveryMeta(duplicatePending, false, otpConfig)
+    }
+
+    await assertOtpSendAllowed(params)
+    return saveOtpSessionWithCode(duplicatePending, {
+      otpCode: generateOtpCode(params.purpose),
+      isNewSession: false,
+      config: otpConfig,
+      context
+    })
   }
 
-  return OtpSessionModel.create({
+  await assertOtpSendAllowed(params)
+  const otpSession = new OtpSessionModel({
     ownerId: params.ownerId ?? null,
     referenceId: params.referenceId,
     phone: params.phone,
     purpose: params.purpose,
-    otpCodeHash: await hashOtpCode(env.MOCK_OTP_CODE),
-    expiresAt: new Date(Date.now() + OTP_EXPIRY_SECONDS * 1000)
+    otpCodeHash: "pending",
+    expiresAt: new Date(Date.now() + otpConfig.expiresInSeconds * 1000)
+  })
+
+  return saveOtpSessionWithCode(otpSession, {
+    otpCode: generateOtpCode(params.purpose),
+    isNewSession: true,
+    config: otpConfig,
+    context
   })
 }
 
@@ -124,6 +770,8 @@ export async function signupOwner(params: {
   fullName: string
   phone: string
   password: string
+  userAgent?: string
+  ipAddress?: string
 }) {
   const existingOwner = await OwnerModel.findOne({
     $or: [{ phone: params.phone }, { pendingPhone: params.phone }]
@@ -151,14 +799,16 @@ export async function signupOwner(params: {
     ownerId: owner.id,
     phone: params.phone,
     purpose: "owner_signup_verify",
-    referenceId: owner.id
+    referenceId: owner.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
   })
 
   return {
     ownerId: owner.id,
     verificationSessionId: verificationSession.id,
     nextStatus: owner.restaurantLifecycleStatus,
-    expiresInSeconds: OTP_EXPIRY_SECONDS,
+    ...getOtpSessionTiming(verificationSession),
     mockCode: getMockOtpCode()
   }
 }
@@ -208,7 +858,7 @@ export async function signinOwner(params: {
   owner.lastLoginAt = new Date()
   await owner.save()
 
-  const refreshToken = await createRefreshTokenSession({
+  const refreshSession = await createRefreshTokenSession({
     ownerId: owner.id,
     role: "owner",
     restaurantId: owner.activeRestaurantId?.toString(),
@@ -225,7 +875,105 @@ export async function signinOwner(params: {
     phone: owner.phone,
     isPhoneVerified: owner.isPhoneVerified
     ,
-    refreshToken
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
+  })
+}
+
+async function getOwnerForOtpSignin(phone: string) {
+  const owner = await OwnerModel.findOne({ phone })
+
+  if (!owner) {
+    throw new AppError(
+      StatusCodes.UNAUTHORIZED,
+      "OWNER_NOT_FOUND",
+      "No owner account was found for this phone number"
+    )
+  }
+
+  if (owner.status !== "active") {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "ACCOUNT_UNAVAILABLE",
+      "This account is not available for sign in"
+    )
+  }
+
+  if (!owner.isPhoneVerified) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "PHONE_NOT_VERIFIED",
+      "Please verify your phone number before signing in"
+    )
+  }
+
+  return owner
+}
+
+export async function requestOwnerOtpSignin(params: {
+  phone: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  const owner = await getOwnerForOtpSignin(params.phone)
+
+  return sendOtpForPurpose({
+    ownerId: owner.id,
+    phone: params.phone,
+    purpose: "owner_phone_signin",
+    referenceId: owner.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
+  })
+}
+
+export async function verifyOwnerOtpSignin(params: {
+  verificationSessionId: string
+  otpCode: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  let otpSession = await OtpSessionModel.findById(params.verificationSessionId)
+  if (!otpSession || otpSession.purpose !== "owner_phone_signin") {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "OTP_SIGNIN_SESSION_NOT_FOUND",
+      "OTP sign in session not found"
+    )
+  }
+
+  await verifyOtpSession(params)
+  otpSession = await OtpSessionModel.findById(params.verificationSessionId)
+  if (!otpSession) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "OTP_SIGNIN_SESSION_NOT_FOUND",
+      "OTP sign in session not found"
+    )
+  }
+
+  const owner = await getOwnerForOtpSignin(otpSession.phone)
+  owner.lastLoginAt = new Date()
+  await owner.save()
+
+  const refreshSession = await createRefreshTokenSession({
+    ownerId: owner.id,
+    role: "owner",
+    restaurantId: owner.activeRestaurantId?.toString(),
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
+  })
+
+  return buildAuthResponse({
+    ownerId: owner.id,
+    role: "owner",
+    restaurantId: owner.activeRestaurantId?.toString(),
+    lifecycleStatus: owner.restaurantLifecycleStatus,
+    fullName: owner.fullName,
+    phone: owner.phone,
+    isPhoneVerified: owner.isPhoneVerified,
+    refreshToken: refreshSession.refreshToken,
+    tokenId: refreshSession.tokenId
   })
 }
 
@@ -266,7 +1014,7 @@ export async function sendOtpForPurpose(params: SendOtpParams) {
 
   return {
     verificationSessionId: otpSession.id,
-    expiresInSeconds: OTP_EXPIRY_SECONDS,
+    ...getOtpSessionTiming(otpSession),
     mockCode: getMockOtpCode()
   }
 }
@@ -285,6 +1033,8 @@ function resolveNextStatus(
 export async function verifyOtpSession(params: {
   verificationSessionId: string
   otpCode: string
+  userAgent?: string
+  ipAddress?: string
 }) {
   const otpSession = await OtpSessionModel.findById(params.verificationSessionId)
 
@@ -310,10 +1060,11 @@ export async function verifyOtpSession(params: {
     throw new AppError(StatusCodes.BAD_REQUEST, "OTP_EXPIRED", "OTP has expired")
   }
 
+  await assertOtpVerificationAllowed(otpSession, params)
   const isValidOtp = await compareOtpCode(params.otpCode, otpSession.otpCodeHash)
 
   if (!isValidOtp) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "INVALID_OTP", "Invalid OTP code")
+    await rejectInvalidOtpAttempt(otpSession, params)
   }
 
   let nextStatus: RestaurantLifecycleStatus | undefined
@@ -371,8 +1122,12 @@ export async function verifyOtpSession(params: {
     await payoutMethod.save()
   }
 
-  otpSession.status = otpSession.purpose === "password_reset" ? "verified" : "consumed"
+  otpSession.status =
+    otpSession.purpose === "password_reset" || otpSession.purpose === "owner_password_reset"
+      ? "verified"
+      : "consumed"
   otpSession.verifiedAt = new Date()
+  await recordOtpVerificationSuccess(otpSession, params)
   await otpSession.save()
 
   return {
@@ -385,7 +1140,10 @@ export async function verifyOtpSession(params: {
 async function getVerifiedPasswordResetSession(verificationSessionId: string) {
   const otpSession = await OtpSessionModel.findById(verificationSessionId)
 
-  if (!otpSession || otpSession.purpose !== "password_reset") {
+  if (
+    !otpSession ||
+    (otpSession.purpose !== "password_reset" && otpSession.purpose !== "owner_password_reset")
+  ) {
     throw new AppError(
       StatusCodes.NOT_FOUND,
       "RESET_SESSION_NOT_FOUND",
@@ -404,8 +1162,12 @@ async function getVerifiedPasswordResetSession(verificationSessionId: string) {
   return otpSession
 }
 
-export async function requestPasswordReset(phone: string) {
-  const owner = await OwnerModel.findOne({ phone })
+export async function requestPasswordReset(params: {
+  phone: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  const owner = await OwnerModel.findOne({ phone: params.phone })
 
   if (!owner) {
     throw new AppError(StatusCodes.NOT_FOUND, "OWNER_NOT_FOUND", "Owner not found")
@@ -413,9 +1175,48 @@ export async function requestPasswordReset(phone: string) {
 
   return sendOtpForPurpose({
     ownerId: owner.id,
-    phone,
+    phone: params.phone,
     purpose: "password_reset",
-    referenceId: owner.id
+    referenceId: owner.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
+  })
+}
+
+export async function requestOwnerMobilePasswordReset(params: {
+  phone: string
+  userAgent?: string
+  ipAddress?: string
+}) {
+  const owner = await OwnerModel.findOne({ phone: params.phone })
+
+  if (!owner) {
+    throw new AppError(StatusCodes.NOT_FOUND, "OWNER_NOT_FOUND", "Owner not found")
+  }
+
+  if (owner.status !== "active") {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "ACCOUNT_UNAVAILABLE",
+      "This account is not available for password reset"
+    )
+  }
+
+  if (!owner.isPhoneVerified) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "PHONE_NOT_VERIFIED",
+      "Please verify your phone number before resetting the password"
+    )
+  }
+
+  return sendOtpForPurpose({
+    ownerId: owner.id,
+    phone: params.phone,
+    purpose: "owner_password_reset",
+    referenceId: owner.id,
+    userAgent: params.userAgent,
+    ipAddress: params.ipAddress
   })
 }
 
@@ -478,7 +1279,7 @@ export async function refreshOwnerSession(params: {
   refreshSession.revokedAt = new Date()
   await refreshSession.save()
 
-  const nextRefreshToken = await createRefreshTokenSession({
+  const nextRefreshSession = await createRefreshTokenSession({
     ownerId: owner.id,
     role: "owner",
     restaurantId: owner.activeRestaurantId?.toString(),
@@ -494,7 +1295,8 @@ export async function refreshOwnerSession(params: {
     fullName: owner.fullName,
     phone: owner.phone,
     isPhoneVerified: owner.isPhoneVerified,
-    refreshToken: nextRefreshToken
+    refreshToken: nextRefreshSession.refreshToken,
+    tokenId: nextRefreshSession.tokenId
   })
 }
 

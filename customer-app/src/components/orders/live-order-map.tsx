@@ -39,11 +39,6 @@ export const LiveOrderMap = memo(function LiveOrderMap({
       <View style={styles.glowWarm} />
       <View style={styles.glowCool} />
 
-      <View style={styles.badge}>
-        <Ionicons name="radio-outline" size={14} color={palette.primary} />
-        <Text style={styles.badgeText}>Live location</Text>
-      </View>
-
       <View style={styles.routeWrap}>
         <View style={styles.endpoint}>
           <Text style={styles.endpointLabel}>You</Text>
@@ -109,22 +104,6 @@ const styles = StyleSheet.create({
     height: 96,
     borderRadius: 48,
     backgroundColor: "rgba(93, 139, 255, 0.12)",
-  },
-  badge: {
-    alignSelf: "flex-start",
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    backgroundColor: palette.surfaceMuted,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  badgeText: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: "600",
-    color: palette.foreground,
   },
   routeWrap: {
     flexDirection: "row",

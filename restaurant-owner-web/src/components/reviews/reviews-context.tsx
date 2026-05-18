@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useLocation } from "react-router-dom"
 
 import { useOwnerReviewsQuery } from "@/hooks/use-owner-api"
 import {
@@ -15,7 +16,12 @@ export function ReviewsProvider({
 }) {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const setReviews = useAppStore((state) => state.setReviews)
-  const reviewsQuery = useOwnerReviewsQuery(ownerAccount.isAuthenticated)
+  const location = useLocation()
+  const shouldLoadReviews =
+    location.pathname === "/" || location.pathname === "/analytics"
+  const reviewsQuery = useOwnerReviewsQuery(
+    ownerAccount.isAuthenticated && shouldLoadReviews
+  )
 
   React.useEffect(() => {
     if (!reviewsQuery.data) return

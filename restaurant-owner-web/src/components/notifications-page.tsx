@@ -192,7 +192,7 @@ export function NotificationsPage() {
           } satisfies OwnerListResponse<OwnerNotificationResponse>
         }
       )
-    } catch (error) {
+    } catch {
       setNotifications(previous)
     }
   }

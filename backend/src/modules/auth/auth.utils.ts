@@ -27,11 +27,13 @@ function buildJwtPayload(params: {
   subject: string
   role: AuthRole
   restaurantId?: string
+  tokenId?: string
 }): JwtPayload {
   return {
     sub: params.subject,
     role: params.role,
-    restaurantId: params.restaurantId
+    restaurantId: params.restaurantId,
+    tokenId: params.tokenId
   }
 }
 
@@ -39,6 +41,7 @@ export function signAccessToken(params: {
   subject: string
   role: AuthRole
   restaurantId?: string
+  tokenId?: string
 }) {
   return jwt.sign(buildJwtPayload(params), env.JWT_ACCESS_SECRET, {
     expiresIn: env.JWT_ACCESS_EXPIRES_IN as SignOptions["expiresIn"]

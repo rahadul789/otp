@@ -1,20 +1,12 @@
 import * as React from "react"
+import { useLocation } from "react-router-dom"
 
 import {
-  mapOwnerPayout,
   mapOwnerPayoutMethod,
-  mapOwnerPayoutTransaction,
-  type OwnerListResponse,
-  type OwnerPayoutHistoryResponse,
-  type OwnerPayoutTransactionResponse,
   type OwnerPayoutSummaryResponse,
 } from "@/lib/backend-mappers"
 import type { PayoutMethod } from "@/components/payouts/types"
-import {
-  useOwnerPayoutHistoryQuery,
-  useOwnerPayoutSummaryQuery,
-  useOwnerPayoutTransactionsQuery,
-} from "@/hooks/use-owner-api"
+import { useOwnerPayoutSummaryQuery } from "@/hooks/use-owner-api"
 import { useAppStore } from "@/store/app-store"
 
 export function PayoutsProvider({
@@ -23,14 +15,14 @@ export function PayoutsProvider({
   children: React.ReactNode
 }) {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
-  const setPayouts = useAppStore((state) => state.setPayouts)
-  const setPayoutTransactions = useAppStore((state) => state.setPayoutTransactions)
-  const payoutMethod = useAppStore((state) => state.payoutMethod)
   const setPayoutMethod = useAppStore((state) => state.setPayoutMethod)
+  const location = useLocation()
+  const shouldLoadPayoutSummary =
+    location.pathname === "/" || location.pathname === "/analytics"
 
-  const payoutSummaryQuery = useOwnerPayoutSummaryQuery(ownerAccount.isAuthenticated)
-  const payoutHistoryQuery = useOwnerPayoutHistoryQuery(ownerAccount.isAuthenticated)
-  const payoutTransactionsQuery = useOwnerPayoutTransactionsQuery(ownerAccount.isAuthenticated)
+  const payoutSummaryQuery = useOwnerPayoutSummaryQuery(
+    ownerAccount.isAuthenticated && shouldLoadPayoutSummary
+  )
 
   const isSamePayoutMethod = React.useCallback(
     (left: PayoutMethod, right: PayoutMethod) => {
@@ -63,27 +55,6 @@ export function PayoutsProvider({
       })
     }
   }, [isSamePayoutMethod, payoutSummaryQuery.data, setPayoutMethod])
-
-  React.useEffect(() => {
-    if (!payoutHistoryQuery.data) return
-
-    const payoutHistory = (
-      payoutHistoryQuery.data as OwnerListResponse<OwnerPayoutHistoryResponse>
-    ).items
-    const mapped = payoutHistory.map((entry) =>
-      mapOwnerPayout(entry, payoutMethod.type)
-    )
-    setPayouts(mapped)
-  }, [payoutHistoryQuery.data, payoutMethod.type, setPayouts])
-
-  React.useEffect(() => {
-    if (!payoutTransactionsQuery.data) return
-
-    const entries = (
-      payoutTransactionsQuery.data as OwnerListResponse<OwnerPayoutTransactionResponse>
-    ).items
-    setPayoutTransactions(entries.map(mapOwnerPayoutTransaction))
-  }, [payoutTransactionsQuery.data, setPayoutTransactions])
 
   return <>{children}</>
 }

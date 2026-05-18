@@ -1,5 +1,5 @@
 import { format } from "date-fns"
-import { AlertTriangle, CreditCard, ReceiptText, WalletCards, X } from "lucide-react"
+import { AlertTriangle, CreditCard, Printer, ReceiptText, WalletCards, X } from "lucide-react"
 
 import {
   formatPayoutMoney,
@@ -34,10 +34,12 @@ export function PayoutDetailsDrawer({
   payout,
   open,
   onOpenChange,
+  onPrintStatement,
 }: {
   payout: Payout | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onPrintStatement?: (payout: Payout) => void
 }) {
   if (!payout) return null
 
@@ -59,14 +61,38 @@ export function PayoutDetailsDrawer({
                 {payout.id} • {format(new Date(payout.createdAt), "dd MMM yyyy, hh:mm a")}
               </SheetDescription>
             </div>
-            <Button variant="ghost" size="icon" onClick={() => onOpenChange(false)}>
-              <X className="size-4" />
-              <span className="sr-only">Close</span>
-            </Button>
+            <div className="flex items-center gap-2">
+              {onPrintStatement ? (
+                <Button variant="outline" size="sm" onClick={() => onPrintStatement(payout)}>
+                  <Printer className="size-4" />
+                  Save PDF
+                </Button>
+              ) : null}
+              <Button variant="ghost" size="icon" onClick={() => onOpenChange(false)}>
+                <X className="size-4" />
+                <span className="sr-only">Close</span>
+              </Button>
+            </div>
           </div>
         </SheetHeader>
 
         <div className="space-y-6 px-6 py-6">
+          <div className="rounded-2xl border bg-muted/20 p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Payout statement
+                </p>
+                <p className="mt-2 text-3xl font-semibold">
+                  {formatPayoutMoney(payout.amount)}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Requested {format(new Date(payout.createdAt), "dd MMM yyyy, hh:mm a")}
+                </p>
+              </div>
+              <div>{getStatusBadge(payout.status)}</div>
+            </div>
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <Card className="rounded-2xl shadow-none">
               <CardHeader>
@@ -90,6 +116,26 @@ export function PayoutDetailsDrawer({
                 <p className="font-mono text-sm text-muted-foreground">{payout.transactionId}</p>
               </CardContent>
             </Card>
+            {payout.providerReference ? (
+              <Card className="rounded-2xl shadow-none">
+                <CardHeader>
+                  <CardTitle className="text-base">Provider Reference</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="font-mono text-sm text-muted-foreground">{payout.providerReference}</p>
+                </CardContent>
+              </Card>
+            ) : null}
+            {payout.providerPayoutId ? (
+              <Card className="rounded-2xl shadow-none">
+                <CardHeader>
+                  <CardTitle className="text-base">Provider Payout ID</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="font-mono text-sm text-muted-foreground">{payout.providerPayoutId}</p>
+                </CardContent>
+              </Card>
+            ) : null}
             <Card className="rounded-2xl shadow-none">
               <CardHeader>
                 <CardTitle className="text-base">Method</CardTitle>
@@ -121,6 +167,23 @@ export function PayoutDetailsDrawer({
                 </p>
               </CardContent>
             </Card>
+            {payout.paymentProofUrl ? (
+              <Card className="rounded-2xl shadow-none md:col-span-2">
+                <CardHeader>
+                  <CardTitle className="text-base">Payment Proof</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <a
+                    href={payout.paymentProofUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
+                  >
+                    {payout.paymentProofUrl}
+                  </a>
+                </CardContent>
+              </Card>
+            ) : null}
             {payout.failureReason ? (
               <Card className="rounded-2xl shadow-none md:col-span-2">
                 <CardHeader>
