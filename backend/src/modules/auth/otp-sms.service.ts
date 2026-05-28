@@ -1,6 +1,7 @@
 import { StatusCodes } from "http-status-codes";
 
 import { AppError } from "../../common/utils/app-error";
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout";
 import { env } from "../../config/env";
 import { logger } from "../../config/logger";
 import { getPlatformContent } from "../public/content.service";
@@ -10,6 +11,7 @@ type SmsBdResponse = {
   msg?: string;
   data?: {
     request_id?: number | string;
+    balance?: number | string;
   };
 };
 
@@ -122,6 +124,187 @@ export function buildOtpSmsMessage(
     .replaceAll("{{expiryMinutes}}", String(expiryMinutes))
     .replaceAll("{{expirySeconds}}", String(config.expiresInSeconds))
     .replaceAll("{{platformName}}", config.platformName);
+}
+
+export async function sendTransactionalSms(params: {
+  phone: string;
+  message: string;
+}) {
+  const message = params.message.trim();
+
+  if (!message) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "SMS_MESSAGE_EMPTY",
+      "SMS message cannot be empty",
+    );
+  }
+
+  if (env.MOCK_OTP_ENABLED) {
+    logger.debug(
+      { phone: maskSmsPhone(params.phone) },
+      "Mock OTP enabled; transactional SMS delivery skipped",
+    );
+    return { skipped: true, provider: "mock" as const };
+  }
+
+  const apiKey = env.SMS_API_KEY?.trim();
+
+  if (!apiKey) {
+    throw new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      "SMS_API_KEY_MISSING",
+      "SMS API key is not configured on the server",
+    );
+  }
+
+  const to = normalizeSmsPhone(params.phone);
+  const payload = {
+    api_key: apiKey,
+    msg: message.slice(0, 480),
+    to,
+    ...(env.SMS_SENDER_ID?.trim()
+      ? { sender_id: env.SMS_SENDER_ID.trim() }
+      : {}),
+  };
+
+  let response: Response;
+  let rawText = "";
+
+  try {
+    response = await fetchWithTimeout(env.SMS_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: 5_000,
+    });
+    rawText = await response.text();
+  } catch (error) {
+    logger.error(
+      { error, phone: maskSmsPhone(to) },
+      "Transactional SMS provider request failed",
+    );
+    throw new AppError(
+      StatusCodes.BAD_GATEWAY,
+      "SMS_PROVIDER_UNAVAILABLE",
+      "Could not send SMS right now",
+    );
+  }
+
+  const body = parseSmsBdResponse(rawText);
+  const providerError = Number(body.error);
+
+  if (!response.ok || providerError !== 0) {
+    logger.warn(
+      {
+        status: response.status,
+        providerError: body.error,
+        providerMessage: body.msg,
+        phone: maskSmsPhone(to),
+      },
+      "SMS provider rejected transactional message",
+    );
+    throw new AppError(
+      StatusCodes.BAD_GATEWAY,
+      "SMS_PROVIDER_REJECTED",
+      typeof body.msg === "string" && body.msg.trim()
+        ? body.msg
+        : "Could not send SMS right now",
+    );
+  }
+
+  logger.info(
+    { requestId: body.data?.request_id, phone: maskSmsPhone(to) },
+    "Transactional SMS sent",
+  );
+
+  return {
+    skipped: false,
+    provider: "sms.bd" as const,
+    requestId: body.data?.request_id,
+  };
+}
+
+export async function getSmsProviderBalance() {
+  const checkedAt = new Date().toISOString();
+  const apiKey = env.SMS_API_KEY?.trim();
+
+  if (!apiKey) {
+    return {
+      configured: false,
+      status: "not_configured" as const,
+      provider: "sms.bd" as const,
+      balance: null,
+      rawBalance: "",
+      message: "SMS_API_KEY is not configured",
+      senderIdConfigured: Boolean(env.SMS_SENDER_ID?.trim()),
+      checkedAt,
+    };
+  }
+
+  const balanceUrl = new URL("/user/balance/", env.SMS_API_URL);
+  balanceUrl.searchParams.set("api_key", apiKey);
+
+  try {
+    const response = await fetchWithTimeout(balanceUrl.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      timeoutMs: 5_000,
+    });
+    const rawText = await response.text();
+    const body = parseSmsBdResponse(rawText);
+    const providerError = Number(body.error);
+
+    if (!response.ok || providerError !== 0) {
+      return {
+        configured: true,
+        status: "failed" as const,
+        provider: "sms.bd" as const,
+        balance: null,
+        rawBalance: "",
+        message:
+          typeof body.msg === "string" && body.msg.trim()
+            ? body.msg
+            : "SMS balance check failed",
+        senderIdConfigured: Boolean(env.SMS_SENDER_ID?.trim()),
+        checkedAt,
+      };
+    }
+
+    const rawBalance =
+      typeof body.data?.balance === "string" || typeof body.data?.balance === "number"
+        ? String(body.data.balance)
+        : "";
+    const balance = Number(rawBalance);
+
+    return {
+      configured: true,
+      status: "ok" as const,
+      provider: "sms.bd" as const,
+      balance: Number.isFinite(balance) ? balance : null,
+      rawBalance,
+      message: body.msg || "Success",
+      senderIdConfigured: Boolean(env.SMS_SENDER_ID?.trim()),
+      checkedAt,
+    };
+  } catch (error) {
+    logger.warn({ error }, "SMS balance check failed");
+    return {
+      configured: true,
+      status: "failed" as const,
+      provider: "sms.bd" as const,
+      balance: null,
+      rawBalance: "",
+      message: error instanceof Error ? error.message : "SMS balance check failed",
+      senderIdConfigured: Boolean(env.SMS_SENDER_ID?.trim()),
+      checkedAt,
+    };
+  }
 }
 
 export async function sendOtpSms(params: {

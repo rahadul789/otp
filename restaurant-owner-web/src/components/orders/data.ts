@@ -1,6 +1,49 @@
 import type { Order } from "@/components/orders/types"
 
-export const initialOrders: Order[] = [
+type OrderSeed = Omit<
+  Order,
+  | "restaurantSubtotal"
+  | "ownerDiscountCost"
+  | "platformDiscountCost"
+  | "restaurantNetSales"
+  | "customerPaidTotal"
+  | "appliedVouchers"
+> &
+  Partial<
+    Pick<
+      Order,
+      | "restaurantSubtotal"
+      | "ownerDiscountCost"
+      | "platformDiscountCost"
+      | "restaurantNetSales"
+      | "customerPaidTotal"
+      | "appliedVouchers"
+    >
+  >
+
+function withFinancialDefaults(order: OrderSeed): Order {
+  const restaurantSubtotal = order.restaurantSubtotal ?? order.subtotal
+  const ownerDiscountCost = order.ownerDiscountCost ?? order.discount
+  const platformDiscountCost = order.platformDiscountCost ?? 0
+  const restaurantNetSales =
+    order.restaurantNetSales ??
+    Math.max(0, restaurantSubtotal - ownerDiscountCost)
+  const customerPaidTotal =
+    order.customerPaidTotal ??
+    Math.max(0, order.subtotal + order.deliveryFee - order.discount)
+
+  return {
+    ...order,
+    restaurantSubtotal,
+    ownerDiscountCost,
+    platformDiscountCost,
+    restaurantNetSales,
+    customerPaidTotal,
+    appliedVouchers: order.appliedVouchers ?? [],
+  }
+}
+
+const initialOrderSeeds: OrderSeed[] = [
   {
     id: "order-01",
     orderNumber: "FB-2401",
@@ -319,3 +362,5 @@ export const initialOrders: Order[] = [
     ],
   },
 ]
+
+export const initialOrders: Order[] = initialOrderSeeds.map(withFinancialDefaults)

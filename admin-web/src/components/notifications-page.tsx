@@ -916,27 +916,44 @@ export function NotificationsPage() {
     setRecipientReportStatus("all")
   }, [selectedCampaignId])
 
+  const isCustomerPromotionDraft =
+    form.recipientType === "customers" && isCustomerPromotionType(form.type)
+  const needsCustomerTargets = form.recipientType === "customers"
+  const needsCustomerGroups = form.recipientType === "customers"
+  const needsRestaurantTargets =
+    form.recipientType === "owners" ||
+    (form.recipientType === "customers" &&
+      (form.restaurantScope === "selected_restaurants" ||
+        isCustomerPromotionDraft))
+  const needsRiderTargets = form.recipientType === "riders"
+  const needsNotificationImages =
+    form.contentType !== "text" || Boolean(form.imageUrl)
+
   const customersQuery = useQuery({
     queryKey: ["admin-customers", "notification-targets"],
     queryFn: () =>
       listAdminCustomers({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
+    enabled: needsCustomerTargets,
   })
 
   const customerGroupsQuery = useQuery({
     queryKey: ["admin-customer-groups", "notification-targets"],
     queryFn: listAdminCustomerGroups,
+    enabled: needsCustomerGroups,
   })
 
   const restaurantsQuery = useQuery({
     queryKey: ["admin-restaurants", "notification-targets"],
     queryFn: () =>
       listAdminRestaurants({ page: 1, pageSize: 50, sortBy: "newestUpdated" }),
+    enabled: needsRestaurantTargets,
   })
 
   const ridersQuery = useQuery({
     queryKey: ["admin-riders", "notification-targets"],
     queryFn: () =>
       listAdminRiders({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
+    enabled: needsRiderTargets,
   })
 
   const notificationImagesQuery = useQuery({
@@ -947,6 +964,7 @@ export function NotificationsPage() {
         page: 1,
         pageSize: 24,
       }),
+    enabled: needsNotificationImages,
   })
 
   const sendMutation = useMutation({
@@ -1280,8 +1298,7 @@ export function NotificationsPage() {
     }))
   }
 
-  const isCustomerPromotionForm =
-    form.recipientType === "customers" && isCustomerPromotionType(form.type)
+  const isCustomerPromotionForm = isCustomerPromotionDraft
   const openDestination = destinationFromPath(form.path)
   const ctaDestination = destinationFromPath(form.ctaPath)
   const promoDestination = isCustomerPromotionForm

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { secureStateStorage } from "@/src/lib/secure-storage";
+import { appStateStorage } from "@/src/lib/app-storage";
 
 export type RecentVisitedRestaurant = {
   id: string;
@@ -24,6 +24,8 @@ type BrowseHistoryStore = {
   addRecentSearch: (query: string) => void;
   removeRecentSearch: (query: string) => void;
   addRecentVisitedRestaurant: (restaurant: RecentVisitedRestaurant) => void;
+  pruneRecentVisitedRestaurants: (validRestaurantIds: Set<string>) => void;
+  clearRecentVisitedRestaurants: () => void;
 };
 
 const MAX_RECENT_SEARCHES = 3;
@@ -69,10 +71,17 @@ export const useBrowseHistoryStore = create<BrowseHistoryStore>()(
             ),
           ].slice(0, MAX_RECENT_VISITED_RESTAURANTS),
         })),
+      pruneRecentVisitedRestaurants: (validRestaurantIds) =>
+        set((state) => ({
+          recentVisitedRestaurants: state.recentVisitedRestaurants.filter((entry) =>
+            validRestaurantIds.has(entry.id)
+          ),
+        })),
+      clearRecentVisitedRestaurants: () => set({ recentVisitedRestaurants: [] }),
     }),
     {
-      name: "customer-browse-history-state",
-      storage: createJSONStorage(() => secureStateStorage),
+      name: "customer-browse-history-state-v2",
+      storage: createJSONStorage(() => appStateStorage),
       partialize: (state) => ({
         recentSearches: state.recentSearches,
         recentVisitedRestaurants: state.recentVisitedRestaurants,

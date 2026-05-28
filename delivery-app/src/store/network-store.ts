@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 type NetworkStore = {
-  status: "online" | "slow" | "offline";
+  status: "online" | "slow" | "offline" | "server";
   isOnline: boolean;
   isConnected: boolean | null;
   isInternetReachable: boolean | null;
@@ -9,6 +9,7 @@ type NetworkStore = {
   setOnline: (isOnline: boolean) => void;
   markSlow: (message?: string) => void;
   markOffline: (message?: string) => void;
+  markServerIssue: (message?: string) => void;
   markOnline: () => void;
   setNetworkState: (state: {
     isConnected: boolean | null;
@@ -33,15 +34,27 @@ export const useNetworkStore = create<NetworkStore>((set) => ({
           },
     ),
   markSlow: (message = "Connection is taking longer than usual. We are still trying.") =>
-    set({
-      status: "slow",
-      isOnline: true,
-      message,
-    }),
+    set((state) =>
+      state.status === "offline" || state.status === "server"
+        ? state
+        : {
+            status: "slow",
+            isOnline: true,
+            message,
+          },
+    ),
   markOffline: (message = "You appear to be offline. Reconnect and try again.") =>
     set({
       status: "offline",
       isOnline: false,
+      message,
+    }),
+  markServerIssue: (
+    message = "Unable to reach Foodbela server. Please check the backend URL or try again.",
+  ) =>
+    set({
+      status: "server",
+      isOnline: true,
       message,
     }),
   markOnline: () =>
@@ -52,20 +65,55 @@ export const useNetworkStore = create<NetworkStore>((set) => ({
     }),
   setNetworkState: ({ isConnected, isInternetReachable }) => {
     const isOnline = Boolean(isConnected) && isInternetReachable !== false;
-    set((state) =>
-      state.isOnline === isOnline &&
-      state.isConnected === isConnected &&
-      state.isInternetReachable === isInternetReachable &&
-      (isOnline || state.status === "offline")
-        ? state
-        : {
-            status: isOnline ? "online" : "offline",
-            isOnline,
-            isConnected,
-            isInternetReachable,
-            message: isOnline ? "" : "You appear to be offline. Reconnect and try again.",
-          },
-    );
+    set((state) => {
+      if (!isOnline) {
+        if (
+          state.status === "offline" &&
+          state.isOnline === false &&
+          state.isConnected === isConnected &&
+          state.isInternetReachable === isInternetReachable
+        ) {
+          return state;
+        }
+
+        return {
+          status: "offline",
+          isOnline: false,
+          isConnected,
+          isInternetReachable,
+          message: "You appear to be offline. Reconnect and try again.",
+        };
+      }
+
+      if (
+        state.status === "server" ||
+        state.status === "slow"
+      ) {
+        return {
+          ...state,
+          isOnline: true,
+          isConnected,
+          isInternetReachable,
+        };
+      }
+
+      if (
+        state.status === "online" &&
+        state.isOnline === true &&
+        state.isConnected === isConnected &&
+        state.isInternetReachable === isInternetReachable
+      ) {
+        return state;
+      }
+
+      return {
+        status: "online",
+        isOnline: true,
+        isConnected,
+        isInternetReachable,
+        message: "",
+      };
+    });
   },
 }));
 

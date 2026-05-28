@@ -54,7 +54,14 @@ function getHistoryTimestamp(order: OwnerOrderResponse) {
 }
 
 function getTotal(order: OwnerOrderResponse) {
-  return order.pricing?.total ?? 0
+  return (
+    order.pricing?.restaurantNetSales ??
+    Math.max(
+      0,
+      (order.pricing?.restaurantSubtotal ?? order.pricing?.subtotal ?? 0) -
+        (order.pricing?.ownerDiscountCost ?? order.pricing?.ownerVisibleDiscount ?? 0)
+    )
+  )
 }
 
 function getDhakaDateParts(date: Date): DateParts {

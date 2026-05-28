@@ -4,11 +4,18 @@ import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 
 import { AppError } from "../../common/utils/app-error";
+import { enqueueBackgroundTask } from "../../common/utils/background-task";
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout";
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
 import { decorateTrackingSnapshot } from "../../common/utils/tracking-freshness";
 import { logger } from "../../config/logger";
 import { env } from "../../config/env";
 import { emitSocketEvent } from "../../config/socket";
 import { createAdminOperationalAlert } from "../admin/admin-alert.service";
+import {
+  enqueueAdminBkashPaidWithoutOrderAlert,
+  enqueueAdminOrderTerminalExceptionAlert,
+} from "../admin/order-exception-alerts";
 import {
   assertOtpVerificationAllowed,
   createOtpSession,
@@ -25,9 +32,10 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from "../auth/auth.utils";
-import { OtpSessionModel, RestaurantModel } from "../auth/auth.model";
+import { OtpSessionModel, RestaurantModel, RiderModel } from "../auth/auth.model";
 import { LedgerEntryModel } from "../owner/finance.model";
 import { syncOrderLedgerForFinalStatus } from "../owner/finance.service";
+import { decorateOwnerFinancials } from "../owner/order-financials";
 import { createOwnerNotification } from "../owner/operational.service";
 import { buildOrderPreparationTiming } from "../owner/preparation-timing";
 import { sendPushToOwner } from "../owner/push.service";
@@ -38,6 +46,7 @@ import {
   OrderModel,
 } from "../owner/operational.model";
 import {
+  BkashPaymentAttemptModel,
   BkashSandboxPaymentSessionModel,
   CustomerModel,
   CustomerRefreshTokenSessionModel,
@@ -60,8 +69,138 @@ const MAX_SUPPORT_CASE_REPLIES = 300;
 const MAX_ORDER_HISTORY_ENTRIES = 100;
 const DEFAULT_CUSTOMER_FULL_NAME = "Foodbela User";
 const CUSTOMER_PASSWORD_MIN_LENGTH = 6;
+const CUSTOMER_READ_CACHE_TTL_MS = 15_000;
+const CUSTOMER_DISCOVERY_STALE_REVALIDATE_MS = 5 * 60_000;
+const CUSTOMER_READ_CACHE_MAX_ENTRIES = 500;
+const QUEUED_DELIVERY_DROPOFF_BUFFER_MINUTES = 3;
+const QUEUED_DELIVERY_ROUTE_FACTOR = 1.35;
+const QUEUED_DELIVERY_SPEED_KMPH = 16;
+type CustomerCacheRecord = Record<string, any>;
+type DiscoverableRestaurantsResult = CustomerCacheRecord[];
+type CustomerDiscoveryHomeResult = CustomerCacheRecord;
+type CustomerRestaurantDetailsResult = CustomerCacheRecord;
+type CustomerCartQuoteResult = CustomerCacheRecord;
+const CUSTOMER_ORDER_LIST_SELECT = [
+  "_id",
+  "restaurantId",
+  "orderNumber",
+  "status",
+  "paymentMethod",
+  "terminalReason",
+  "cancelledBy",
+  "pricing",
+  "customerSnapshot.deliveryAddress.addressLine",
+  "riderSnapshot.name",
+  "riderSnapshot.phone",
+  "itemsSnapshot.itemId",
+  "itemsSnapshot.name",
+  "itemsSnapshot.quantity",
+  "itemsSnapshot.unitPrice",
+  "itemsSnapshot.selectedVariantOptions",
+  "itemsSnapshot.selectedAddOnOptions",
+  "timestamps",
+  "createdAt",
+  "updatedAt",
+].join(" ");
 let restaurantDataBackfillPromise: Promise<void> | null = null;
 let customerIdentityBackfillPromise: Promise<void> | null = null;
+
+function roundCacheCoordinate(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return Number(value.toFixed(4));
+}
+
+function normalizeCacheString(value?: string) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeCacheStringArray(values?: string[]) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.map((value) => normalizeCacheString(value)).filter(Boolean))].sort();
+}
+
+function buildCacheKey(prefix: string, payload: unknown) {
+  return `${prefix}:${JSON.stringify(payload)}`
+}
+
+function buildDiscoverableRestaurantsCacheKey(params?: {
+  search?: string;
+  collectionKey?: string;
+  restaurantIds?: string[];
+  featuredOnly?: boolean;
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
+}) {
+  return buildCacheKey("discoverable-restaurants", {
+    search: normalizeCacheString(params?.search),
+    collectionKey: normalizeCacheString(params?.collectionKey),
+    restaurantIds: normalizeCacheStringArray(params?.restaurantIds),
+    featuredOnly: Boolean(params?.featuredOnly),
+    latitude: roundCacheCoordinate(params?.latitude),
+    longitude: roundCacheCoordinate(params?.longitude),
+    radiusKm: roundCacheCoordinate(params?.radiusKm),
+  });
+}
+
+function buildCustomerDiscoveryHomeCacheKey(params?: {
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
+  customerId?: string;
+}) {
+  return buildCacheKey("customer-discovery-home", {
+    customerId: normalizeCacheString(params?.customerId),
+    latitude: roundCacheCoordinate(params?.latitude),
+    longitude: roundCacheCoordinate(params?.longitude),
+    radiusKm: roundCacheCoordinate(params?.radiusKm),
+  });
+}
+
+function buildCustomerRestaurantDetailsCacheKey(
+  restaurantId: string,
+  params?: {
+    latitude?: number;
+    longitude?: number;
+  },
+) {
+  return buildCacheKey("customer-restaurant-details", {
+    restaurantId: normalizeCacheString(restaurantId),
+    latitude: roundCacheCoordinate(params?.latitude),
+    longitude: roundCacheCoordinate(params?.longitude),
+  });
+}
+
+function buildCustomerCartQuoteCacheKey(params: {
+  restaurantId: string;
+  items: Array<{
+    itemId: string;
+    quantity: number;
+    selectedVariantOptions?: Array<{ groupName: string; optionLabel: string }>;
+    selectedAddOnOptions?: Array<{ groupName: string; optionLabel: string }>;
+  }>;
+  voucherCode?: string;
+  customerId?: string;
+  latitude?: number;
+  longitude?: number;
+}) {
+  return buildCacheKey("customer-cart-quote", {
+    restaurantId: normalizeCacheString(params.restaurantId),
+    customerId: normalizeCacheString(params.customerId),
+    voucherCode: normalizeCacheString(params.voucherCode),
+    latitude: roundCacheCoordinate(params.latitude),
+    longitude: roundCacheCoordinate(params.longitude),
+    items: params.items.map((item) => ({
+      itemId: normalizeCacheString(item.itemId),
+      quantity: item.quantity,
+      selectedVariantOptions: item.selectedVariantOptions ?? [],
+      selectedAddOnOptions: item.selectedAddOnOptions ?? [],
+    })),
+  });
+}
 
 function normalizePageBounds(params?: { page?: number; pageSize?: number }) {
   const page = Math.max(1, Math.floor(Number(params?.page ?? 1)) || 1);
@@ -172,23 +311,6 @@ function buildCustomerAuthPayload(params: {
     restaurantStatus?: boolean;
     reviewReplies?: boolean;
   };
-  accountRequest?: {
-    type?: "deactivate" | "delete" | null;
-    reason?: string;
-    reviewNote?: string;
-    reviewedByAdminId?: string | null;
-    reviewedByAdminName?: string;
-    status?: string | null;
-    requestedAt?: Date | string | null;
-    reviewedAt?: Date | string | null;
-    history?: Array<{
-      action?: string;
-      note?: string;
-      actorId?: string;
-      actorName?: string;
-      createdAt?: Date | string | null;
-    }>;
-  };
   refreshToken: string;
   tokenId: string;
 }) {
@@ -217,29 +339,6 @@ function buildCustomerAuthPayload(params: {
         orderUpdates: params.notificationSettings?.orderUpdates ?? true,
         restaurantStatus: params.notificationSettings?.restaurantStatus ?? true,
         reviewReplies: params.notificationSettings?.reviewReplies ?? true,
-      },
-      accountRequest: {
-        type: params.accountRequest?.type ?? null,
-        reason: params.accountRequest?.reason ?? "",
-        reviewNote: params.accountRequest?.reviewNote ?? "",
-        reviewedByAdminId: params.accountRequest?.reviewedByAdminId ?? null,
-        reviewedByAdminName: params.accountRequest?.reviewedByAdminName ?? "",
-        status: params.accountRequest?.status ?? null,
-        requestedAt: params.accountRequest?.requestedAt
-          ? new Date(params.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: params.accountRequest?.reviewedAt
-          ? new Date(params.accountRequest.reviewedAt).toISOString()
-          : null,
-        history: (params.accountRequest?.history ?? []).map((entry) => ({
-          action: entry.action ?? "",
-          note: entry.note ?? "",
-          actorId: entry.actorId ?? "",
-          actorName: entry.actorName ?? "",
-          createdAt: entry.createdAt
-            ? new Date(entry.createdAt).toISOString()
-            : null,
-        })),
       },
     },
   };
@@ -358,6 +457,39 @@ async function getPaymentMethodSettings() {
   return {
     cashOnDeliveryEnabled: true,
     bkashEnabled: payments.bkashEnabled === true,
+    bkashRefundEtaMinutes:
+      typeof payments.bkashRefundEtaMinutes === "number"
+        ? Math.max(1, Math.min(24 * 60, Math.round(payments.bkashRefundEtaMinutes)))
+        : 60,
+  };
+}
+
+function hasBkashGatewayConfig() {
+  return Boolean(
+    env.BKASH_BASE_URL &&
+      env.BKASH_USERNAME &&
+      env.BKASH_PASSWORD &&
+      env.BKASH_APP_KEY &&
+      env.BKASH_APP_SECRET,
+  );
+}
+
+function buildOwnerFacingOrderPayload(
+  order: Record<string, any>,
+  platformContent: Awaited<ReturnType<typeof getPlatformContent>>,
+) {
+  const ownerOrder = decorateOwnerFinancials(order);
+
+  if (platformContent.operations?.ownerApp?.showCustomerPhoneNumbers !== false) {
+    return ownerOrder;
+  }
+
+  return {
+    ...ownerOrder,
+    customerSnapshot: {
+      ...(ownerOrder.customerSnapshot ?? {}),
+      phone: "",
+    },
   };
 }
 
@@ -366,7 +498,7 @@ async function postBkashJson<T>(params: {
   headers?: Record<string, string>;
   body: Record<string, unknown>;
 }) {
-  const response = await fetch(params.url, {
+  const response = await fetchWithTimeout(params.url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -374,6 +506,7 @@ async function postBkashJson<T>(params: {
       ...(params.headers ?? {}),
     },
     body: JSON.stringify(params.body),
+    timeoutMs: 8_000,
   });
 
   const rawText = await response.text();
@@ -468,6 +601,8 @@ async function executeBkashPayment(paymentID: string) {
     paymentID: string;
     trxID?: string;
     transactionStatus?: string;
+    payerReference?: string;
+    customerMsisdn?: string;
   }>({
     url: `${config.baseUrl}/tokenized/checkout/execute`,
     headers: {
@@ -478,6 +613,178 @@ async function executeBkashPayment(paymentID: string) {
       paymentID,
     },
   });
+}
+
+async function queryBkashPaymentStatus(paymentID: string) {
+  const config = getBkashConfig();
+  const token = await grantBkashToken();
+
+  return postBkashJson<{
+    paymentID?: string;
+    trxID?: string;
+    transactionStatus?: string;
+    amount?: string;
+    currency?: string;
+    statusCode?: string;
+    statusMessage?: string;
+    payerReference?: string;
+    customerMsisdn?: string;
+  }>({
+    url: `${config.baseUrl}/tokenized/checkout/payment/status`,
+    headers: {
+      Authorization: token.id_token,
+      "X-APP-Key": config.appKey,
+    },
+    body: {
+      paymentID,
+    },
+  });
+}
+
+function maskBkashWalletNumber(value: string) {
+  const normalized = value.trim();
+  if (normalized.length < 7) return normalized ? "***" : "";
+  return `${normalized.slice(0, 4)}****${normalized.slice(-3)}`;
+}
+
+function safeBkashProviderResponse(value: unknown) {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  const allowedKeys = [
+    "paymentID",
+    "bkashURL",
+    "callbackURL",
+    "trxID",
+    "transactionStatus",
+    "statusCode",
+    "statusMessage",
+    "errorCode",
+    "errorMessage",
+    "amount",
+    "currency",
+    "intent",
+    "merchantInvoiceNumber",
+    "paymentExecuteTime",
+    "payerReference",
+    "customerMsisdn",
+  ];
+  return allowedKeys.reduce<Record<string, unknown>>((next, key) => {
+    if (source[key] !== undefined) {
+      next[key] = source[key];
+    }
+    return next;
+  }, {});
+}
+
+function safeStringValue(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function getBkashProviderCode(value: unknown) {
+  if (!value || typeof value !== "object") return "";
+  const source = value as Record<string, unknown>;
+  return safeStringValue(source.statusCode ?? source.errorCode);
+}
+
+function getBkashProviderMessage(value: unknown) {
+  if (!value || typeof value !== "object") return "";
+  const source = value as Record<string, unknown>;
+  return safeStringValue(source.statusMessage ?? source.errorMessage);
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+function isBkashCompletedTransaction(status: string, response: Record<string, unknown>) {
+  const normalized = status.trim().toLowerCase();
+  return (
+    ["completed", "success", "successful"].includes(normalized) ||
+    (typeof response.trxID === "string" && response.trxID.trim().length > 0)
+  );
+}
+
+function isBkashTerminalFailedTransaction(status: string) {
+  const normalized = status.trim().toLowerCase();
+  return [
+    "cancelled",
+    "canceled",
+    "failed",
+    "failure",
+    "expired",
+    "void",
+  ].includes(normalized);
+}
+
+async function updateBkashPaymentAttempt(
+  attemptId: unknown,
+  params: {
+    event: string;
+    status?: string;
+    paymentStatus?: string;
+    orderFinalizationStatus?: string;
+    note?: string;
+    reason?: string;
+    paymentID?: string;
+    transactionId?: string;
+    walletNumber?: string;
+    payerReference?: string;
+    customerMsisdn?: string;
+    orderId?: unknown;
+    failureStage?: string;
+    failureReason?: string;
+    providerResponse?: unknown;
+    metadata?: Record<string, unknown>;
+    timestamps?: Record<string, Date | null>;
+  },
+) {
+  if (!attemptId) return null;
+  const providerResponse = safeBkashProviderResponse(params.providerResponse);
+  const providerCode = getBkashProviderCode(providerResponse);
+  const providerMessage = getBkashProviderMessage(providerResponse);
+  const update: Record<string, unknown> = {
+    updatedAt: new Date(),
+  };
+
+  if (params.status) update.status = params.status;
+  if (params.paymentStatus) update.paymentStatus = params.paymentStatus;
+  if (params.orderFinalizationStatus) {
+    update.orderFinalizationStatus = params.orderFinalizationStatus;
+  }
+  if (params.paymentID !== undefined) update.paymentID = params.paymentID;
+  if (params.transactionId !== undefined) update.transactionId = params.transactionId;
+  if (params.walletNumber !== undefined) update.walletNumber = params.walletNumber;
+  if (params.payerReference !== undefined) update.payerReference = params.payerReference;
+  if (params.customerMsisdn !== undefined) update.customerMsisdn = params.customerMsisdn;
+  if (params.orderId) update.orderId = params.orderId;
+  if (params.failureStage !== undefined) update.failureStage = params.failureStage;
+  if (params.failureReason !== undefined) update.failureReason = params.failureReason;
+  if (Object.keys(providerResponse).length) update.providerResponse = providerResponse;
+  Object.entries(params.timestamps ?? {}).forEach(([key, value]) => {
+    update[key] = value;
+  });
+
+  return BkashPaymentAttemptModel.findByIdAndUpdate(
+    attemptId,
+    {
+      $set: update,
+      $push: {
+        events: {
+          event: params.event,
+          status: params.status ?? "",
+          paymentStatus: params.paymentStatus ?? "",
+          note: params.note ?? "",
+          reason: params.reason ?? "",
+          providerStatus: safeStringValue((providerResponse as any).transactionStatus),
+          providerCode,
+          providerMessage,
+          metadata: params.metadata ?? {},
+          occurredAt: new Date(),
+        },
+      },
+    },
+    { new: true },
+  );
 }
 
 export async function startCustomerPhoneSignin(
@@ -581,7 +888,6 @@ export async function signinCustomerWithPassword(params: {
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
-    accountRequest: customer.accountRequest,
     refreshToken: refreshSession.refreshToken,
     tokenId: refreshSession.tokenId,
   });
@@ -922,7 +1228,6 @@ export async function verifyCustomerPhoneSignin(params: {
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
-    accountRequest: customer.accountRequest,
     refreshToken: refreshSession.refreshToken,
     tokenId: refreshSession.tokenId,
   });
@@ -986,7 +1291,6 @@ export async function signinCustomerWithGoogle(params: {
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
-    accountRequest: customer.accountRequest,
     refreshToken: refreshSession.refreshToken,
     tokenId: refreshSession.tokenId,
   });
@@ -1069,7 +1373,6 @@ export async function refreshCustomerSession(params: {
     profileImage: customer.profileImage,
     previousPhones: customer.previousPhones,
     notificationSettings: customer.notificationSettings,
-    accountRequest: customer.accountRequest,
     refreshToken: refreshSession.refreshToken,
     tokenId: refreshSession.tokenId,
   });
@@ -1253,17 +1556,6 @@ export async function verifyCustomerPhoneChange(params: {
           customer.notificationSettings?.restaurantStatus ?? true,
         reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
       },
-      accountRequest: {
-        type: customer.accountRequest?.type ?? null,
-        reason: customer.accountRequest?.reason ?? "",
-        status: customer.accountRequest?.status ?? null,
-        requestedAt: customer.accountRequest?.requestedAt
-          ? new Date(customer.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: customer.accountRequest?.reviewedAt
-          ? new Date(customer.accountRequest.reviewedAt).toISOString()
-          : null,
-      },
     },
   };
 }
@@ -1335,17 +1627,6 @@ export async function updateCustomerProfile(params: {
           customer.notificationSettings?.restaurantStatus ?? true,
         reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
       },
-      accountRequest: {
-        type: customer.accountRequest?.type ?? null,
-        reason: customer.accountRequest?.reason ?? "",
-        status: customer.accountRequest?.status ?? null,
-        requestedAt: customer.accountRequest?.requestedAt
-          ? new Date(customer.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: customer.accountRequest?.reviewedAt
-          ? new Date(customer.accountRequest.reviewedAt).toISOString()
-          : null,
-      },
     },
   };
 }
@@ -1408,17 +1689,6 @@ export async function updateCustomerPassword(params: {
           customer.notificationSettings?.restaurantStatus ?? true,
         reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
       },
-      accountRequest: {
-        type: customer.accountRequest?.type ?? null,
-        reason: customer.accountRequest?.reason ?? "",
-        status: customer.accountRequest?.status ?? null,
-        requestedAt: customer.accountRequest?.requestedAt
-          ? new Date(customer.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: customer.accountRequest?.reviewedAt
-          ? new Date(customer.accountRequest.reviewedAt).toISOString()
-          : null,
-      },
     },
   };
 }
@@ -1447,179 +1717,6 @@ export async function getCustomerProfile(customerId: string) {
         restaurantStatus:
           customer.notificationSettings?.restaurantStatus ?? true,
         reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
-      },
-      accountRequest: {
-        type: customer.accountRequest?.type ?? null,
-        reason: customer.accountRequest?.reason ?? "",
-        reviewNote: customer.accountRequest?.reviewNote ?? "",
-        reviewedByAdminId: customer.accountRequest?.reviewedByAdminId ?? null,
-        reviewedByAdminName: customer.accountRequest?.reviewedByAdminName ?? "",
-        status: customer.accountRequest?.status ?? null,
-        requestedAt: customer.accountRequest?.requestedAt
-          ? new Date(customer.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: customer.accountRequest?.reviewedAt
-          ? new Date(customer.accountRequest.reviewedAt).toISOString()
-          : null,
-        history: (customer.accountRequest?.history ?? []).map((entry) => ({
-          action: entry.action ?? "",
-          note: entry.note ?? "",
-          actorId: entry.actorId ?? "",
-          actorName: entry.actorName ?? "",
-          createdAt: entry.createdAt
-            ? new Date(entry.createdAt).toISOString()
-            : null,
-        })),
-      },
-    },
-  };
-}
-
-export async function requestCustomerAccountChange(params: {
-  customerId: string;
-  type: "deactivate" | "delete";
-  reason?: string;
-}) {
-  const customerId = ensureCustomerIdentity(params.customerId);
-  const customer = await getCustomerById(customerId);
-
-  customer.set("accountRequest", {
-    type: params.type,
-    reason: params.reason?.trim() ?? "",
-    reviewNote: "",
-    reviewedByAdminId: null,
-    reviewedByAdminName: "",
-    status: "pending",
-    requestedAt: new Date(),
-    reviewedAt: null,
-    history: [
-      {
-        action: "submitted",
-        note: params.reason?.trim() ?? "",
-        actorId: customer.id,
-        actorName: customer.fullName,
-        createdAt: new Date(),
-      },
-    ],
-  });
-  customer.set("accountRequest.history", [
-    {
-      action: "submitted",
-      note: params.reason?.trim() ?? "",
-      actorId: customer.id,
-      actorName: customer.fullName,
-      createdAt: new Date(),
-    },
-  ]);
-
-  await customer.save();
-
-  return {
-    customer: {
-      id: customer.id,
-      fullName: customer.fullName,
-      phone: customer.phone ?? "",
-      email: customer.email ?? "",
-      referralCode: customer.referralCode ?? "",
-      hasPassword: customerHasPassword(customer),
-      profileImage: customer.profileImage ?? { url: "", publicId: "" },
-      previousPhones: (customer.previousPhones ?? []).map((entry) => ({
-        phone: entry.phone ?? "",
-        changedAt: entry.changedAt
-          ? new Date(entry.changedAt).toISOString()
-          : null,
-      })),
-      notificationSettings: {
-        orderUpdates: customer.notificationSettings?.orderUpdates ?? true,
-        restaurantStatus:
-          customer.notificationSettings?.restaurantStatus ?? true,
-        reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
-      },
-      accountRequest: {
-        type: customer.accountRequest?.type ?? null,
-        reason: customer.accountRequest?.reason ?? "",
-        status: customer.accountRequest?.status ?? null,
-        requestedAt: customer.accountRequest?.requestedAt
-          ? new Date(customer.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: customer.accountRequest?.reviewedAt
-          ? new Date(customer.accountRequest.reviewedAt).toISOString()
-          : null,
-      },
-    },
-  };
-}
-
-export async function cancelCustomerAccountChangeRequest(params: {
-  customerId: string;
-}) {
-  const customerId = ensureCustomerIdentity(params.customerId);
-  const customer = await getCustomerById(customerId);
-
-  customer.set("accountRequest", {
-    type: null,
-    reason: "",
-    reviewNote: "",
-    reviewedByAdminId: null,
-    reviewedByAdminName: "",
-    status: "cancelled",
-    requestedAt: null,
-    reviewedAt: new Date(),
-    history: [],
-  });
-  customer.set(
-    "accountRequest.history",
-    [
-      ...((customer.accountRequest?.history ?? []).map((entry) => ({
-        action: entry.action,
-        note: entry.note,
-        actorId: entry.actorId,
-        actorName: entry.actorName,
-        createdAt: entry.createdAt,
-      })) as Array<Record<string, unknown>>),
-      {
-        action: "cancelled",
-        note: "Cancelled by customer",
-        actorId: customer.id,
-        actorName: customer.fullName,
-        createdAt: new Date(),
-      },
-    ].slice(-10),
-  );
-
-  await customer.save();
-
-  return {
-    customer: {
-      id: customer.id,
-      fullName: customer.fullName,
-      phone: customer.phone ?? "",
-      email: customer.email ?? "",
-      referralCode: customer.referralCode ?? "",
-      hasPassword: customerHasPassword(customer),
-      profileImage: customer.profileImage ?? { url: "", publicId: "" },
-      previousPhones: (customer.previousPhones ?? []).map((entry) => ({
-        phone: entry.phone ?? "",
-        changedAt: entry.changedAt
-          ? new Date(entry.changedAt).toISOString()
-          : null,
-      })),
-      notificationSettings: {
-        orderUpdates: customer.notificationSettings?.orderUpdates ?? true,
-        restaurantStatus:
-          customer.notificationSettings?.restaurantStatus ?? true,
-        reviewReplies: customer.notificationSettings?.reviewReplies ?? true,
-      },
-      accountRequest: {
-        type: customer.accountRequest?.type ?? null,
-        reason: customer.accountRequest?.reason ?? "",
-        status: customer.accountRequest?.status ?? null,
-        requestedAt: customer.accountRequest?.requestedAt
-          ? new Date(customer.accountRequest.requestedAt).toISOString()
-          : null,
-        reviewedAt: customer.accountRequest?.reviewedAt
-          ? new Date(customer.accountRequest.reviewedAt).toISOString()
-          : null,
       },
     },
   };
@@ -1794,6 +1891,130 @@ function calculateDistanceKm(
   return normalizeDistanceKm(earthRadius * c);
 }
 
+function getOrderDeliveryCoordinate(order: Record<string, any>) {
+  const deliveryAddress = order.customerSnapshot?.deliveryAddress;
+  if (
+    typeof deliveryAddress?.latitude !== "number" ||
+    typeof deliveryAddress?.longitude !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    latitude: deliveryAddress.latitude,
+    longitude: deliveryAddress.longitude,
+  };
+}
+
+function estimateQueueTravelMinutes(
+  fromOrder: Record<string, any>,
+  toOrder: Record<string, any>,
+) {
+  const fromCoordinate = getOrderDeliveryCoordinate(fromOrder);
+  const toCoordinate = getOrderDeliveryCoordinate(toOrder);
+
+  if (!fromCoordinate || !toCoordinate) {
+    return null;
+  }
+
+  const directDistanceKm = calculateDistanceKm(
+    fromCoordinate.latitude,
+    fromCoordinate.longitude,
+    toCoordinate.latitude,
+    toCoordinate.longitude,
+  );
+  const routeDistanceKm = directDistanceKm * QUEUED_DELIVERY_ROUTE_FACTOR;
+  return Math.max(
+    1,
+    Math.round((routeDistanceKm / QUEUED_DELIVERY_SPEED_KMPH) * 60),
+  );
+}
+
+async function buildQueuedDeliveryTrackingMeta(orderObject: Record<string, any>) {
+  const riderTracking = orderObject.riderTracking ?? {};
+  const riderId = orderObject.riderId;
+  const orderId = String(orderObject._id ?? "");
+
+  if (
+    orderObject.status !== "PickedUp" ||
+    riderTracking.isFocused !== false ||
+    !riderId ||
+    !orderId
+  ) {
+    return {};
+  }
+
+  const rider = await RiderModel.findById(riderId)
+    .select("activeTrackingOrderId")
+    .lean();
+  const activeTrackingOrderId = String(rider?.activeTrackingOrderId ?? "");
+
+  if (!activeTrackingOrderId || activeTrackingOrderId === orderId) {
+    return {};
+  }
+
+  const pickedUpOrders = await OrderModel.find({
+    riderId,
+    status: "PickedUp",
+  })
+    .sort({ "timestamps.PickedUp": 1, createdAt: 1 })
+    .select(
+      "_id customerSnapshot.deliveryAddress riderTracking.remainingDurationMinutes timestamps.PickedUp createdAt",
+    )
+    .lean();
+
+  const activeOrder = pickedUpOrders.find(
+    (queuedOrder) => String(queuedOrder._id ?? "") === activeTrackingOrderId,
+  );
+
+  if (!activeOrder) {
+    return {};
+  }
+
+  const queuedSequence = [
+    activeOrder,
+    ...pickedUpOrders.filter(
+      (queuedOrder) => String(queuedOrder._id ?? "") !== activeTrackingOrderId,
+    ),
+  ];
+  const targetIndex = queuedSequence.findIndex(
+    (queuedOrder) => String(queuedOrder._id ?? "") === orderId,
+  );
+
+  if (targetIndex <= 0) {
+    return {};
+  }
+
+  const activeRemainingMinutes = Number(
+    (activeOrder.riderTracking as Record<string, any> | undefined)
+      ?.remainingDurationMinutes,
+  );
+
+  if (!Number.isFinite(activeRemainingMinutes)) {
+    return { queuePosition: targetIndex };
+  }
+
+  let queueEtaMinutes = Math.max(0, activeRemainingMinutes);
+  for (let index = 1; index <= targetIndex; index += 1) {
+    const travelMinutes = estimateQueueTravelMinutes(
+      queuedSequence[index - 1] as Record<string, any>,
+      queuedSequence[index] as Record<string, any>,
+    );
+
+    if (travelMinutes === null) {
+      return { queuePosition: targetIndex };
+    }
+
+    queueEtaMinutes +=
+      QUEUED_DELIVERY_DROPOFF_BUFFER_MINUTES + travelMinutes;
+  }
+
+  return {
+    queueEtaMinutes: Math.max(1, Math.round(queueEtaMinutes)),
+    queuePosition: targetIndex,
+  };
+}
+
 function calculateConfiguredDeliveryFee(params: {
   baseFeeTaka: number;
   distanceSurchargeEnabled: boolean;
@@ -1912,124 +2133,129 @@ export async function listDiscoverableRestaurants(params?: {
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
-}) {
+}): Promise<DiscoverableRestaurantsResult> {
   await ensureRestaurantDiscoveryBackfill();
-  const query: Record<string, unknown> = getDiscoverableRestaurantQuery();
+  return discoverableRestaurantsCache.getOrSet(
+    buildDiscoverableRestaurantsCacheKey(params),
+    async () => {
+      const query: Record<string, unknown> = getDiscoverableRestaurantQuery();
 
-  if (params?.search) {
-    query.name = { $regex: params.search, $options: "i" };
-  }
+      if (params?.search) {
+        query.name = { $regex: params.search, $options: "i" };
+      }
 
-  if (params?.collectionKey) {
-    const collection = await RestaurantCollectionModel.findOne({
-      key: params.collectionKey,
-      isActive: true,
-    });
+      if (params?.collectionKey) {
+        const collection = await RestaurantCollectionModel.findOne({
+          key: params.collectionKey,
+          isActive: true,
+        });
 
-    if (!collection) {
-      return [];
-    }
+        if (!collection) {
+          return [];
+        }
 
-    query._id = { $in: collection.restaurantIds };
-  }
+        query._id = { $in: collection.restaurantIds };
+      }
 
-  if (params?.restaurantIds?.length) {
-    query._id = {
-      $in: params.restaurantIds
-        .filter((id) => mongoose.Types.ObjectId.isValid(id))
-        .map((id) => new mongoose.Types.ObjectId(id)),
-    };
-  }
+      if (params?.restaurantIds?.length) {
+        query._id = {
+          $in: params.restaurantIds
+            .filter((id) => mongoose.Types.ObjectId.isValid(id))
+            .map((id) => new mongoose.Types.ObjectId(id)),
+        };
+      }
 
-  if (params?.featuredOnly) {
-    query["discovery.isFeatured"] = true;
-  }
+      if (params?.featuredOnly) {
+        query["discovery.isFeatured"] = true;
+      }
 
-  if (
-    params?.latitude === undefined ||
-    params?.longitude === undefined ||
-    params?.radiusKm === undefined
-  ) {
-    const restaurants = await RestaurantModel.aggregate([
-      {
-        $match: query,
-      },
-      {
-        $addFields: {
-          distanceKm: null,
-          isOpen: {
-            $ifNull: ["$runtime.isOnline", false],
+      if (
+        params?.latitude === undefined ||
+        params?.longitude === undefined ||
+        params?.radiusKm === undefined
+      ) {
+        const restaurants = await RestaurantModel.aggregate([
+          {
+            $match: query,
+          },
+          {
+            $addFields: {
+              distanceKm: null,
+              isOpen: {
+                $ifNull: ["$runtime.isOnline", false],
+              },
+            },
+          },
+          {
+            $sort: {
+              isOpen: -1,
+              "discovery.featuredSortOrder": 1,
+              createdAt: -1,
+            },
+          },
+        ]);
+
+        return enrichRestaurantDiscoveryRows(restaurants);
+      }
+
+      const geoNearQuery = {
+        ...query,
+        locationPoint: { $ne: null },
+      };
+      const platformContent = await getPlatformContent();
+      const maxDistanceKm = Math.max(
+        0,
+        Math.min(
+          params.radiusKm,
+          platformContent.operations.serviceArea.radiusKm,
+        ),
+      );
+
+      const restaurants = await RestaurantModel.aggregate([
+        {
+          $geoNear: {
+            near: {
+              type: "Point",
+              coordinates: [params.longitude, params.latitude],
+            },
+            distanceField: "distanceMeters",
+            maxDistance: maxDistanceKm * 1000,
+            spherical: true,
+            query: geoNearQuery,
           },
         },
-      },
-      {
-        $sort: {
-          isOpen: -1,
-          "discovery.featuredSortOrder": 1,
-          createdAt: -1,
+        {
+          $addFields: {
+            distanceKm: {
+              $cond: [
+                { $lt: ["$distanceMeters", 100] },
+                0,
+                { $round: [{ $divide: ["$distanceMeters", 1000] }, 2] },
+              ],
+            },
+            isOpen: {
+              $ifNull: ["$runtime.isOnline", false],
+            },
+          },
         },
-      },
-    ]);
+        {
+          $sort: {
+            isOpen: -1,
+            "discovery.featuredSortOrder": 1,
+            distanceMeters: 1,
+            createdAt: -1,
+          },
+        },
+        {
+          $project: {
+            distanceMeters: 0,
+          },
+        },
+      ]);
 
-    return enrichRestaurantDiscoveryRows(restaurants);
-  }
-
-  const geoNearQuery = {
-    ...query,
-    locationPoint: { $ne: null },
-  };
-  const platformContent = await getPlatformContent();
-  const maxDistanceKm = Math.max(
-    0,
-    Math.min(
-      params.radiusKm,
-      platformContent.operations.serviceArea.radiusKm,
-    ),
+      return enrichRestaurantDiscoveryRows(restaurants);
+    },
   );
-
-  const restaurants = await RestaurantModel.aggregate([
-    {
-      $geoNear: {
-        near: {
-          type: "Point",
-          coordinates: [params.longitude, params.latitude],
-        },
-        distanceField: "distanceMeters",
-        maxDistance: maxDistanceKm * 1000,
-        spherical: true,
-        query: geoNearQuery,
-      },
-    },
-    {
-      $addFields: {
-        distanceKm: {
-          $cond: [
-            { $lt: ["$distanceMeters", 100] },
-            0,
-            { $round: [{ $divide: ["$distanceMeters", 1000] }, 2] },
-          ],
-        },
-        isOpen: {
-          $ifNull: ["$runtime.isOnline", false],
-        },
-      },
-    },
-    {
-      $sort: {
-        isOpen: -1,
-        "discovery.featuredSortOrder": 1,
-        distanceMeters: 1,
-        createdAt: -1,
-      },
-    },
-    {
-      $project: {
-        distanceMeters: 0,
-      },
-    },
-  ]);
-
-  return enrichRestaurantDiscoveryRows(restaurants);
 }
 
 export async function getCustomerDiscoveryHome(params?: {
@@ -2037,136 +2263,147 @@ export async function getCustomerDiscoveryHome(params?: {
   longitude?: number;
   radiusKm?: number;
   customerId?: string;
-}) {
-  const [
-    platformContent,
-    featuredCollection,
-    flaggedFeaturedRows,
-    activeOffers,
-  ] = await Promise.all([
-    getPlatformContent(),
-    RestaurantCollectionModel.findOne({
-      key: "featured_restaurants",
-      isActive: true,
-    }).lean(),
-    RestaurantModel.find({
-      ...getDiscoverableRestaurantQuery(),
-      "discovery.isFeatured": true,
-    })
-      .select({ _id: 1 })
-      .lean(),
-    VoucherModel.find({
-      archivedAt: null,
-      status: "Active",
-      startsAt: { $lte: new Date() },
-      endsAt: { $gte: new Date() },
-    })
-      .limit(20)
-      .lean(),
-  ]);
-
-  const collectionFeaturedRestaurantIds =
-    featuredCollection?.restaurantIds.map((id) => id.toString()) ?? [];
-  const flaggedFeaturedRestaurantIds = flaggedFeaturedRows.map((restaurant) =>
-    restaurant._id.toString(),
-  );
-  const restaurantIdsWithOffers = [
-    ...new Set(
-      activeOffers
-        .flatMap((offer) => {
-          const scopedOffer = offer as any;
-          return scopedOffer.scopeType === "selected_restaurants"
-            ? scopedOffer.selectedRestaurantIds.map(
-                (id: unknown) => id?.toString?.() ?? "",
-              )
-            : [scopedOffer.restaurantId?.toString?.() ?? ""];
+}): Promise<CustomerDiscoveryHomeResult> {
+  return customerDiscoveryHomeCache.getOrSet(
+    buildCustomerDiscoveryHomeCacheKey(params),
+    async () => {
+      const [
+        platformContent,
+        featuredCollection,
+        flaggedFeaturedRows,
+        activeOffers,
+      ] = await Promise.all([
+        getPlatformContent(),
+        RestaurantCollectionModel.findOne({
+          key: "featured_restaurants",
+          isActive: true,
+        }).lean(),
+        RestaurantModel.find({
+          ...getDiscoverableRestaurantQuery(),
+          "discovery.isFeatured": true,
         })
-        .filter(Boolean),
-    ),
-  ];
+          .select({ _id: 1 })
+          .lean(),
+        VoucherModel.find({
+          archivedAt: null,
+          status: "Active",
+          startsAt: { $lte: new Date() },
+          endsAt: { $gte: new Date() },
+        })
+          .limit(20)
+          .lean(),
+      ]);
 
-  const restaurantIdsToLoad = [
-    ...new Set([
-      ...collectionFeaturedRestaurantIds,
-      ...flaggedFeaturedRestaurantIds,
-      ...restaurantIdsWithOffers,
-    ]),
-  ];
-  const discoverableRestaurants = restaurantIdsToLoad.length
-    ? await listDiscoverableRestaurants({
-        restaurantIds: restaurantIdsToLoad,
-        latitude: params?.latitude,
-        longitude: params?.longitude,
-        radiusKm: params?.radiusKm,
-      })
-    : [];
-  const restaurantById = new Map(
-    discoverableRestaurants.map((restaurant) => [
-      restaurant._id.toString(),
-      restaurant,
-    ]),
+      const collectionFeaturedRestaurantIds =
+        featuredCollection?.restaurantIds.map((id) => id.toString()) ?? [];
+      const flaggedFeaturedRestaurantIds = flaggedFeaturedRows.map((restaurant) =>
+        restaurant._id.toString(),
+      );
+      const restaurantIdsWithOffers = [
+        ...new Set(
+          activeOffers
+            .flatMap((offer) => {
+              const scopedOffer = offer as any;
+              return scopedOffer.scopeType === "selected_restaurants"
+                ? scopedOffer.selectedRestaurantIds.map(
+                    (id: unknown) => id?.toString?.() ?? "",
+                  )
+                : [scopedOffer.restaurantId?.toString?.() ?? ""];
+            })
+            .filter(Boolean),
+        ),
+      ];
+
+      const restaurantIdsToLoad = [
+        ...new Set([
+          ...collectionFeaturedRestaurantIds,
+          ...flaggedFeaturedRestaurantIds,
+          ...restaurantIdsWithOffers,
+        ]),
+      ];
+      const discoverableRestaurants = restaurantIdsToLoad.length
+        ? await listDiscoverableRestaurants({
+            restaurantIds: restaurantIdsToLoad,
+            latitude: params?.latitude,
+            longitude: params?.longitude,
+            radiusKm: params?.radiusKm,
+          })
+        : [];
+      const restaurantById = new Map(
+        discoverableRestaurants.map((restaurant) => [
+          restaurant._id.toString(),
+          restaurant,
+        ]),
+      );
+      const featuredRestaurants = [
+        ...new Set([
+          ...collectionFeaturedRestaurantIds,
+          ...flaggedFeaturedRestaurantIds,
+        ]),
+      ]
+        .map((restaurantId) => restaurantById.get(restaurantId))
+        .filter(Boolean);
+      const offerRestaurants = restaurantIdsWithOffers
+        .map((restaurantId) => restaurantById.get(restaurantId))
+        .filter(Boolean);
+
+      const hasCustomerOrders = params?.customerId
+        ? Boolean(await OrderModel.exists({ customerId: params.customerId }))
+        : false;
+      const homeCms = JSON.parse(
+        JSON.stringify(platformContent.customerApp.homeCms),
+      );
+      if (
+        homeCms.howToOrderGuide?.audience === "new_users" &&
+        (!params?.customerId || hasCustomerOrders)
+      ) {
+        homeCms.howToOrderGuide.isActive = false;
+      }
+
+      return {
+        homeBanner: platformContent.customerApp.homeBanner.isActive
+          ? platformContent.customerApp.homeBanner
+          : null,
+        homeCms,
+        featuredRestaurants,
+        restaurantsWithOffers: offerRestaurants,
+        campaignPlacements: activeOffers
+          .filter((offer) => (offer as any).display?.showOnHome)
+          .map((offer) => ({
+            _id: offer._id.toString(),
+            voucherId: offer._id.toString(),
+            name: offer.name,
+            code: offer.code,
+            scopeType: (offer as any).scopeType,
+            audienceType: (offer as any).audienceType,
+            display: (offer as any).display ?? {},
+          }))
+          .sort(
+            (left, right) =>
+              (left.display?.position ?? 0) - (right.display?.position ?? 0),
+          ),
+        activeOffers: activeOffers.map((offer) => ({
+          _id: offer._id.toString(),
+          restaurantId: offer.restaurantId?.toString?.() ?? "",
+          restaurantIds:
+            (offer as any).scopeType === "selected_restaurants"
+              ? ((offer as any).selectedRestaurantIds ?? [])
+                  .map((restaurantId: unknown) => restaurantId?.toString?.() ?? "")
+                  .filter(Boolean)
+              : [offer.restaurantId?.toString?.() ?? ""].filter(Boolean),
+          scopeType: (offer as any).scopeType,
+          audienceType: (offer as any).audienceType,
+          name: offer.name,
+          code: offer.code,
+          type: offer.type,
+          mode: offer.mode,
+          discountValue: offer.discountValue,
+          minimumOrderAmount: offer.minimumOrderAmount,
+          display: (offer as any).display ?? {},
+        })),
+      };
+    },
   );
-  const featuredRestaurants = [
-    ...new Set([
-      ...collectionFeaturedRestaurantIds,
-      ...flaggedFeaturedRestaurantIds,
-    ]),
-  ]
-    .map((restaurantId) => restaurantById.get(restaurantId))
-    .filter(Boolean);
-  const offerRestaurants = restaurantIdsWithOffers
-    .map((restaurantId) => restaurantById.get(restaurantId))
-    .filter(Boolean);
-
-  const hasCustomerOrders = params?.customerId
-    ? Boolean(await OrderModel.exists({ customerId: params.customerId }))
-    : false;
-  const homeCms = JSON.parse(
-    JSON.stringify(platformContent.customerApp.homeCms),
-  );
-  if (
-    homeCms.howToOrderGuide?.audience === "new_users" &&
-    (!params?.customerId || hasCustomerOrders)
-  ) {
-    homeCms.howToOrderGuide.isActive = false;
-  }
-
-  return {
-    homeBanner: platformContent.customerApp.homeBanner.isActive
-      ? platformContent.customerApp.homeBanner
-      : null,
-    homeCms,
-    featuredRestaurants,
-    restaurantsWithOffers: offerRestaurants,
-    campaignPlacements: activeOffers
-      .filter((offer) => (offer as any).display?.showOnHome)
-      .map((offer) => ({
-        _id: offer._id.toString(),
-        voucherId: offer._id.toString(),
-        name: offer.name,
-        code: offer.code,
-        scopeType: (offer as any).scopeType,
-        audienceType: (offer as any).audienceType,
-        display: (offer as any).display ?? {},
-      }))
-      .sort(
-        (left, right) =>
-          (left.display?.position ?? 0) - (right.display?.position ?? 0),
-      ),
-    activeOffers: activeOffers.map((offer) => ({
-      _id: offer._id.toString(),
-      restaurantId: offer.restaurantId?.toString?.() ?? "",
-      scopeType: (offer as any).scopeType,
-      audienceType: (offer as any).audienceType,
-      name: offer.name,
-      code: offer.code,
-      type: offer.type,
-      mode: offer.mode,
-      discountValue: offer.discountValue,
-      minimumOrderAmount: offer.minimumOrderAmount,
-      display: (offer as any).display ?? {},
-    })),
-  };
 }
 
 export async function getCustomerRestaurantDetails(
@@ -2175,230 +2412,235 @@ export async function getCustomerRestaurantDetails(
     latitude?: number;
     longitude?: number;
   },
-) {
+): Promise<CustomerRestaurantDetailsResult> {
   await ensureRestaurantDiscoveryBackfill();
-  const restaurant = await RestaurantModel.findOne({
-    _id: new mongoose.Types.ObjectId(restaurantId),
-    ...getDiscoverableRestaurantQuery(),
-  })
-    .select({
-      name: 1,
-      slug: 1,
-      description: 1,
-      cuisineTypes: 1,
-      tags: 1,
-      logo: 1,
-      coverImage: 1,
-      address: 1,
-      location: 1,
-      runtime: 1,
-      discovery: 1,
-      preparationTimeMinutes: 1,
-      createdAt: 1,
-    })
-    .lean<Record<string, any>>();
-
-  if (!restaurant) {
-    throw new AppError(
-      StatusCodes.NOT_FOUND,
-      "RESTAURANT_NOT_FOUND",
-      "Restaurant not found",
-    );
-  }
-
-  restaurant.isOpen = restaurant.runtime?.isOnline ?? false;
-  const platformContent = await getPlatformContent();
-  const deliveryRadiusKm = Math.max(
-    0,
-    platformContent.operations.serviceArea.radiusKm,
-  );
-  restaurant.deliveryRadiusKm = deliveryRadiusKm;
-
-  if (
-    typeof params?.latitude === "number" &&
-    typeof params?.longitude === "number" &&
-    typeof restaurant.location?.latitude === "number" &&
-    typeof restaurant.location?.longitude === "number"
-  ) {
-    restaurant.distanceKm = calculateDistanceKm(
-      params.latitude,
-      params.longitude,
-      restaurant.location.latitude,
-      restaurant.location.longitude,
-    );
-    restaurant.isServiceableForSelectedLocation =
-      restaurant.distanceKm <= deliveryRadiusKm;
-  } else {
-    restaurant.distanceKm = null;
-    restaurant.isServiceableForSelectedLocation = null;
-  }
-
-  const [categories, menuItems, activeOffers, reviewFacetRows] =
-    await Promise.all([
-      CategoryModel.find({
-        restaurantId: restaurant._id,
-        status: "active",
+  return customerRestaurantDetailsCache.getOrSet(
+    buildCustomerRestaurantDetailsCacheKey(restaurantId, params),
+    async () => {
+      const restaurant = await RestaurantModel.findOne({
+        _id: new mongoose.Types.ObjectId(restaurantId),
+        ...getDiscoverableRestaurantQuery(),
       })
         .select({
           name: 1,
           slug: 1,
           description: 1,
-          displayOrder: 1,
-        })
-        .sort({ displayOrder: 1 })
-        .lean(),
-      MenuItemModel.find({
-        restaurantId: restaurant._id,
-        status: "active",
-        availability: "available",
-      })
-        .select({
-          categoryId: 1,
-          name: 1,
-          slug: 1,
-          description: 1,
-          images: 1,
-          basePrice: 1,
-          kind: 1,
-          availability: 1,
-          isPopular: 1,
-          variants: 1,
-          addOnGroups: 1,
+          cuisineTypes: 1,
+          tags: 1,
+          logo: 1,
+          coverImage: 1,
+          address: 1,
+          location: 1,
+          runtime: 1,
+          discovery: 1,
+          preparationTimeMinutes: 1,
           createdAt: 1,
         })
-        .sort({ isPopular: -1, createdAt: -1 })
-        .lean(),
-      VoucherModel.find({
-        archivedAt: null,
-        $or: [
-          { restaurantId: restaurant._id },
-          { scopeType: "all_restaurants" },
-          {
-            scopeType: "selected_restaurants",
-            selectedRestaurantIds: restaurant._id,
-          },
-        ],
-        status: "Active",
-        startsAt: { $lte: new Date() },
-        endsAt: { $gte: new Date() },
-      })
-        .select({
-          restaurantId: 1,
-          name: 1,
-          code: 1,
-          type: 1,
-          mode: 1,
-          discountValue: 1,
-          minimumOrderAmount: 1,
-          display: 1,
-        })
-        .sort({ priority: -1 })
-        .lean(),
-      ReviewModel.aggregate<{
-        recent: Array<Record<string, any>>;
-        metrics: Array<{
-          _id: null;
-          avgRating: number | null;
-          reviewCount: number;
-        }>;
-      }>([
-        {
-          $match: {
+        .lean<Record<string, any>>();
+
+      if (!restaurant) {
+        throw new AppError(
+          StatusCodes.NOT_FOUND,
+          "RESTAURANT_NOT_FOUND",
+          "Restaurant not found",
+        );
+      }
+
+      restaurant.isOpen = restaurant.runtime?.isOnline ?? false;
+      const platformContent = await getPlatformContent();
+      const deliveryRadiusKm = Math.max(
+        0,
+        platformContent.operations.serviceArea.radiusKm,
+      );
+      restaurant.deliveryRadiusKm = deliveryRadiusKm;
+
+      if (
+        typeof params?.latitude === "number" &&
+        typeof params?.longitude === "number" &&
+        typeof restaurant.location?.latitude === "number" &&
+        typeof restaurant.location?.longitude === "number"
+      ) {
+        restaurant.distanceKm = calculateDistanceKm(
+          params.latitude,
+          params.longitude,
+          restaurant.location.latitude,
+          restaurant.location.longitude,
+        );
+        restaurant.isServiceableForSelectedLocation =
+          restaurant.distanceKm <= deliveryRadiusKm;
+      } else {
+        restaurant.distanceKm = null;
+        restaurant.isServiceableForSelectedLocation = null;
+      }
+
+      const [categories, menuItems, activeOffers, reviewFacetRows] =
+        await Promise.all([
+          CategoryModel.find({
             restaurantId: restaurant._id,
-            moderationStatus: "visible",
-            isHidden: { $ne: true },
-          },
-        },
-        {
-          $facet: {
-            recent: [
-              { $sort: { createdAt: -1 } },
-              { $limit: 6 },
+            status: "active",
+          })
+            .select({
+              name: 1,
+              slug: 1,
+              description: 1,
+              displayOrder: 1,
+            })
+            .sort({ displayOrder: 1 })
+            .lean(),
+          MenuItemModel.find({
+            restaurantId: restaurant._id,
+            status: "active",
+            availability: "available",
+          })
+            .select({
+              categoryId: 1,
+              name: 1,
+              slug: 1,
+              description: 1,
+              images: 1,
+              basePrice: 1,
+              kind: 1,
+              availability: 1,
+              isPopular: 1,
+              variants: 1,
+              addOnGroups: 1,
+              createdAt: 1,
+            })
+            .sort({ isPopular: -1, createdAt: -1 })
+            .lean(),
+          VoucherModel.find({
+            archivedAt: null,
+            $or: [
+              { restaurantId: restaurant._id },
+              { scopeType: "all_restaurants" },
               {
-                $project: {
-                  rating: 1,
-                  comment: 1,
-                  createdAt: 1,
-                  customerId: 1,
-                  ownerReply: 1,
-                },
+                scopeType: "selected_restaurants",
+                selectedRestaurantIds: restaurant._id,
               },
             ],
-            metrics: [
-              {
-                $group: {
-                  _id: null,
-                  avgRating: { $avg: "$rating" },
-                  reviewCount: { $sum: 1 },
-                },
+            status: "Active",
+            startsAt: { $lte: new Date() },
+            endsAt: { $gte: new Date() },
+          })
+            .select({
+              restaurantId: 1,
+              name: 1,
+              code: 1,
+              type: 1,
+              mode: 1,
+              discountValue: 1,
+              minimumOrderAmount: 1,
+              display: 1,
+            })
+            .sort({ priority: -1 })
+            .lean(),
+          ReviewModel.aggregate<{
+            recent: Array<Record<string, any>>;
+            metrics: Array<{
+              _id: null;
+              avgRating: number | null;
+              reviewCount: number;
+            }>;
+          }>([
+            {
+              $match: {
+                restaurantId: restaurant._id,
+                moderationStatus: "visible",
+                isHidden: { $ne: true },
               },
-            ],
-          },
-        },
-      ]),
-    ]);
+            },
+            {
+              $facet: {
+                recent: [
+                  { $sort: { createdAt: -1 } },
+                  { $limit: 6 },
+                  {
+                    $project: {
+                      rating: 1,
+                      comment: 1,
+                      createdAt: 1,
+                      customerId: 1,
+                      ownerReply: 1,
+                    },
+                  },
+                ],
+                metrics: [
+                  {
+                    $group: {
+                      _id: null,
+                      avgRating: { $avg: "$rating" },
+                      reviewCount: { $sum: 1 },
+                    },
+                  },
+                ],
+              },
+            },
+          ]),
+        ]);
 
-  const reviewFacet = reviewFacetRows[0] ?? { recent: [], metrics: [] };
-  const recentReviews = reviewFacet.recent ?? [];
-  const reviewSummary = reviewFacet.metrics?.[0];
-  restaurant.lowestMenuPrice = menuItems.reduce<number | null>((lowest, item) => {
-    const price =
-      typeof item.basePrice === "number" && Number.isFinite(item.basePrice)
-        ? item.basePrice
-        : null;
-    if (price === null) return lowest;
-    return lowest === null ? price : Math.min(lowest, price);
-  }, null);
-  restaurant.reviewCount = reviewSummary?.reviewCount ?? 0;
-  restaurant.avgRating =
-    reviewSummary?.reviewCount && typeof reviewSummary.avgRating === "number"
-      ? Math.round(reviewSummary.avgRating * 10) / 10
-      : null;
+      const reviewFacet = reviewFacetRows[0] ?? { recent: [], metrics: [] };
+      const recentReviews = reviewFacet.recent ?? [];
+      const reviewSummary = reviewFacet.metrics?.[0];
+      restaurant.lowestMenuPrice = menuItems.reduce<number | null>((lowest, item) => {
+        const price =
+          typeof item.basePrice === "number" && Number.isFinite(item.basePrice)
+            ? item.basePrice
+            : null;
+        if (price === null) return lowest;
+        return lowest === null ? price : Math.min(lowest, price);
+      }, null);
+      restaurant.reviewCount = reviewSummary?.reviewCount ?? 0;
+      restaurant.avgRating =
+        reviewSummary?.reviewCount && typeof reviewSummary.avgRating === "number"
+          ? Math.round(reviewSummary.avgRating * 10) / 10
+          : null;
 
-  const reviewCustomerIds = [
-    ...new Set(
-      recentReviews.map((review) => review.customerId).filter(Boolean),
-    ),
-  ];
-  const reviewCustomers = reviewCustomerIds.length
-    ? await CustomerModel.find({ _id: { $in: reviewCustomerIds } })
-        .select("fullName")
-        .lean()
-    : [];
-  const reviewCustomerMap = new Map(
-    reviewCustomers.map((customer) => [
-      String(customer._id),
-      customer.fullName?.trim() || "Foodbela customer",
-    ]),
+      const reviewCustomerIds = [
+        ...new Set(
+          recentReviews.map((review) => review.customerId).filter(Boolean),
+        ),
+      ];
+      const reviewCustomers = reviewCustomerIds.length
+        ? await CustomerModel.find({ _id: { $in: reviewCustomerIds } })
+            .select("fullName")
+            .lean()
+        : [];
+      const reviewCustomerMap = new Map(
+        reviewCustomers.map((customer) => [
+          String(customer._id),
+          customer.fullName?.trim() || "Foodbela customer",
+        ]),
+      );
+
+      return {
+        restaurant,
+        categories,
+        menuItems,
+        activeOffers,
+        recentReviews: recentReviews.map((review) => ({
+          id: String(review._id),
+          rating: review.rating,
+          comment: review.comment ?? "",
+          createdAt: review.createdAt
+            ? new Date(review.createdAt).toISOString()
+            : undefined,
+          customerName:
+            reviewCustomerMap.get(review.customerId) ?? "Foodbela customer",
+          ownerReply: review.ownerReply?.message
+            ? {
+                message: review.ownerReply.message,
+                createdAt: review.ownerReply.createdAt
+                  ? new Date(review.ownerReply.createdAt).toISOString()
+                  : null,
+                updatedAt: review.ownerReply.updatedAt
+                  ? new Date(review.ownerReply.updatedAt).toISOString()
+                  : null,
+              }
+            : null,
+        })),
+      };
+    },
   );
-
-  return {
-    restaurant,
-    categories,
-    menuItems,
-    activeOffers,
-    recentReviews: recentReviews.map((review) => ({
-      id: String(review._id),
-      rating: review.rating,
-      comment: review.comment ?? "",
-      createdAt: review.createdAt
-        ? new Date(review.createdAt).toISOString()
-        : undefined,
-      customerName:
-        reviewCustomerMap.get(review.customerId) ?? "Foodbela customer",
-      ownerReply: review.ownerReply?.message
-        ? {
-            message: review.ownerReply.message,
-            createdAt: review.ownerReply.createdAt
-              ? new Date(review.ownerReply.createdAt).toISOString()
-              : null,
-            updatedAt: review.ownerReply.updatedAt
-              ? new Date(review.ownerReply.updatedAt).toISOString()
-              : null,
-          }
-        : null,
-    })),
-  };
 }
 
 type CartInputItem = {
@@ -3028,6 +3270,10 @@ async function resolveActiveVoucher(params: {
   items: Array<{ itemId: string; categoryId: string }>;
 }) {
   const now = new Date();
+  const requestedVoucherCode = params.voucherCode?.trim().toUpperCase() ?? "";
+  let requestedCouponError:
+    | { statusCode: number; code: string; message: string }
+    | null = null;
   const [previousOrderCount, activeVouchers] = await Promise.all([
     params.customerId
       ? OrderModel.countDocuments({ customerId: params.customerId })
@@ -3082,13 +3328,31 @@ async function resolveActiveVoucher(params: {
   for (const voucher of activeVouchers) {
     if (voucher.archivedAt) continue;
     const scopedVoucher = voucher as any;
+    const isRequestedCoupon =
+      Boolean(requestedVoucherCode) &&
+      voucher.mode === "coupon" &&
+      String(voucher.code ?? "").toUpperCase() === requestedVoucherCode;
     if (scopedVoucher.audienceType === "new_users" && previousOrderCount > 0) {
+      if (isRequestedCoupon) {
+        requestedCouponError = {
+          statusCode: StatusCodes.BAD_REQUEST,
+          code: "VOUCHER_NOT_FOR_THIS_CUSTOMER",
+          message: "This voucher is only available for new customers",
+        };
+      }
       continue;
     }
     if (
       scopedVoucher.audienceType === "returning_users" &&
       previousOrderCount === 0
     ) {
+      if (isRequestedCoupon) {
+        requestedCouponError = {
+          statusCode: StatusCodes.BAD_REQUEST,
+          code: "VOUCHER_NOT_FOR_THIS_CUSTOMER",
+          message: "This voucher is only available for returning customers",
+        };
+      }
       continue;
     }
     if (
@@ -3099,9 +3363,23 @@ async function resolveActiveVoucher(params: {
             customerId?.toString?.() === params.customerId,
         ))
     ) {
+      if (isRequestedCoupon) {
+        requestedCouponError = {
+          statusCode: StatusCodes.FORBIDDEN,
+          code: "VOUCHER_NOT_FOR_THIS_CUSTOMER",
+          message: "This voucher is not available for your account",
+        };
+      }
       continue;
     }
     if (voucher.minimumOrderAmount > params.subtotal) {
+      if (isRequestedCoupon) {
+        requestedCouponError = {
+          statusCode: StatusCodes.BAD_REQUEST,
+          code: "VOUCHER_MINIMUM_ORDER_NOT_MET",
+          message: `Add Tk ${Math.ceil(voucher.minimumOrderAmount - params.subtotal)} more to use this voucher`,
+        };
+      }
       continue;
     }
 
@@ -3112,6 +3390,13 @@ async function resolveActiveVoucher(params: {
         categoryIdSet.has(categoryId.toString()),
       )
     ) {
+      if (isRequestedCoupon) {
+        requestedCouponError = {
+          statusCode: StatusCodes.BAD_REQUEST,
+          code: "VOUCHER_CATEGORY_NOT_ELIGIBLE",
+          message: "This voucher is not available for the selected items",
+        };
+      }
       continue;
     }
 
@@ -3120,6 +3405,13 @@ async function resolveActiveVoucher(params: {
       voucher.applicability === "items" &&
       !voucher.itemIds.some((itemId) => itemIdSet.has(itemId.toString()))
     ) {
+      if (isRequestedCoupon) {
+        requestedCouponError = {
+          statusCode: StatusCodes.BAD_REQUEST,
+          code: "VOUCHER_ITEM_NOT_ELIGIBLE",
+          message: "This voucher is not available for the selected items",
+        };
+      }
       continue;
     }
 
@@ -3128,6 +3420,13 @@ async function resolveActiveVoucher(params: {
         voucherId: voucher._id,
       });
       if (totalUses >= voucher.maxTotalUses) {
+        if (isRequestedCoupon) {
+          requestedCouponError = {
+            statusCode: StatusCodes.CONFLICT,
+            code: "VOUCHER_USAGE_LIMIT_REACHED",
+            message: "This voucher has reached its maximum usage limit",
+          };
+        }
         continue;
       }
     }
@@ -3138,6 +3437,13 @@ async function resolveActiveVoucher(params: {
         customerId: params.customerId,
       });
       if (customerUses >= voucher.maxUsesPerUser) {
+        if (isRequestedCoupon) {
+          requestedCouponError = {
+            statusCode: StatusCodes.CONFLICT,
+            code: "VOUCHER_USER_LIMIT_REACHED",
+            message: "You have already used this voucher",
+          };
+        }
         continue;
       }
     }
@@ -3158,6 +3464,13 @@ async function resolveActiveVoucher(params: {
   );
 
   if (!couponVoucher) {
+    if (requestedCouponError) {
+      throw new AppError(
+        requestedCouponError.statusCode,
+        requestedCouponError.code,
+        requestedCouponError.message,
+      );
+    }
     throw new AppError(
       StatusCodes.BAD_REQUEST,
       "VOUCHER_NOT_FOUND",
@@ -3246,218 +3559,223 @@ export async function quoteCustomerCart(params: {
   customerId?: string;
   latitude?: number;
   longitude?: number;
-}) {
-  const [platformContent, restaurant] = await Promise.all([
-    getPlatformContent(),
-    RestaurantModel.findOne({
-      _id: params.restaurantId,
-      ...getVisibleRestaurantQuery(),
-    })
-      .select({
-        name: 1,
-        runtime: 1,
-        location: 1,
-        commercial: 1,
+}): Promise<CustomerCartQuoteResult> {
+  return customerCartQuoteCache.getOrSet(
+    buildCustomerCartQuoteCacheKey(params),
+    async () => {
+      const [platformContent, restaurant] = await Promise.all([
+        getPlatformContent(),
+        RestaurantModel.findOne({
+          _id: params.restaurantId,
+          ...getVisibleRestaurantQuery(),
+        })
+          .select({
+            name: 1,
+            runtime: 1,
+            location: 1,
+            commercial: 1,
+          })
+          .lean<Record<string, any>>(),
+      ]);
+
+      if (!restaurant) {
+        throw new AppError(
+          StatusCodes.NOT_FOUND,
+          "RESTAURANT_NOT_FOUND",
+          "Restaurant not found",
+        );
+      }
+
+      if (!params.items.length) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "CART_EMPTY",
+          "Add at least one item to continue",
+        );
+      }
+
+      const menuItemIds = params.items.map((item) => item.itemId);
+      const menuItems = await MenuItemModel.find({
+        _id: { $in: menuItemIds },
+        restaurantId: restaurant._id,
+        status: "active",
+        availability: "available",
       })
-      .lean<Record<string, any>>(),
-  ]);
+        .select({
+          categoryId: 1,
+          name: 1,
+          slug: 1,
+          images: 1,
+          basePrice: 1,
+          variants: 1,
+          addOnGroups: 1,
+        })
+        .lean();
 
-  if (!restaurant) {
-    throw new AppError(
-      StatusCodes.NOT_FOUND,
-      "RESTAURANT_NOT_FOUND",
-      "Restaurant not found",
-    );
-  }
-
-  if (!params.items.length) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "CART_EMPTY",
-      "Add at least one item to continue",
-    );
-  }
-
-  const menuItemIds = params.items.map((item) => item.itemId);
-  const menuItems = await MenuItemModel.find({
-    _id: { $in: menuItemIds },
-    restaurantId: restaurant._id,
-    status: "active",
-    availability: "available",
-  })
-    .select({
-      categoryId: 1,
-      name: 1,
-      slug: 1,
-      images: 1,
-      basePrice: 1,
-      variants: 1,
-      addOnGroups: 1,
-    })
-    .lean();
-
-  const menuItemMap = new Map(menuItems.map((item) => [String(item._id), item]));
-  const categoryIds = [
-    ...new Set(menuItems.map((item) => item.categoryId.toString())),
-  ];
-  const categories = categoryIds.length
-    ? await CategoryModel.find(
-        { _id: { $in: categoryIds }, restaurantId: restaurant._id },
-        { name: 1, slug: 1 },
-      ).lean()
-    : [];
-  const categoryMap = new Map(
-    categories.map((category) => [category._id.toString(), category]),
-  );
-
-  const resolvedItems = params.items.map((cartItem) => {
-    const menuItem = menuItemMap.get(cartItem.itemId);
-
-    if (!menuItem) {
-      throw new AppError(
-        StatusCodes.BAD_REQUEST,
-        "MENU_ITEM_NOT_AVAILABLE",
-        "One or more selected items are not available",
+      const menuItemMap = new Map(menuItems.map((item) => [String(item._id), item]));
+      const categoryIds = [
+        ...new Set(menuItems.map((item) => item.categoryId.toString())),
+      ];
+      const categories = categoryIds.length
+        ? await CategoryModel.find(
+            { _id: { $in: categoryIds }, restaurantId: restaurant._id },
+            { name: 1, slug: 1 },
+          ).lean()
+        : [];
+      const categoryMap = new Map(
+        categories.map((category) => [category._id.toString(), category]),
       );
-    }
 
-    const variantPrice = resolveSelectedVariantPrice(
-      (menuItem.variants ?? []).map((variant) => ({
-        name: variant.name,
-        options: (variant.options ?? []).map((option) => ({
-          label: option.label,
-          priceDelta: option.priceDelta,
+      const resolvedItems = params.items.map((cartItem) => {
+        const menuItem = menuItemMap.get(cartItem.itemId);
+
+        if (!menuItem) {
+          throw new AppError(
+            StatusCodes.BAD_REQUEST,
+            "MENU_ITEM_NOT_AVAILABLE",
+            "One or more selected items are not available",
+          );
+        }
+
+        const variantPrice = resolveSelectedVariantPrice(
+          (menuItem.variants ?? []).map((variant) => ({
+            name: variant.name,
+            options: (variant.options ?? []).map((option) => ({
+              label: option.label,
+              priceDelta: option.priceDelta,
+            })),
+          })),
+          cartItem.selectedVariantOptions,
+        );
+
+        const addOnPrice = resolveSelectedAddOnPrice(
+          (menuItem.addOnGroups ?? []).map((group) => ({
+            name: group.name,
+            options: (group.options ?? []).map((option) => ({
+              label: option.label,
+              price: option.price,
+            })),
+          })),
+          cartItem.selectedAddOnOptions,
+        );
+
+        const unitPrice = menuItem.basePrice + variantPrice + addOnPrice;
+        const lineTotal = unitPrice * cartItem.quantity;
+        const categoryId = menuItem.categoryId.toString();
+        const category = categoryMap.get(categoryId);
+        const image = Array.isArray(menuItem.images) ? menuItem.images[0] : null;
+
+        return {
+          itemId: String(menuItem._id),
+          categoryId,
+          itemName: menuItem.name,
+          name: menuItem.name,
+          itemSlug: menuItem.slug,
+          categoryName: category?.name ?? "",
+          categorySlug: category?.slug ?? "",
+          imageUrl: image?.url ?? "",
+          quantity: cartItem.quantity,
+          unitPrice,
+          lineTotal,
+          selectedVariantOptions: cartItem.selectedVariantOptions ?? [],
+          selectedAddOnOptions: cartItem.selectedAddOnOptions ?? [],
+        };
+      });
+
+      const subtotal = resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0);
+      const deliveryPricingConfig = resolveDeliveryPricingConfig({
+        platformContent,
+        restaurant,
+      });
+      const deliveryDistanceKm = assertRestaurantServiceableForDelivery({
+        platformContent,
+        restaurant,
+        latitude: params.latitude,
+        longitude: params.longitude,
+      });
+      const deliveryFee = calculateConfiguredDeliveryFee({
+        baseFeeTaka: deliveryPricingConfig.baseFeeTaka,
+        distanceSurchargeEnabled: deliveryPricingConfig.distanceSurchargeEnabled,
+        surchargeStartsAfterKm: deliveryPricingConfig.surchargeStartsAfterKm,
+        surchargeStepMeters: deliveryPricingConfig.surchargeStepMeters,
+        surchargeAmountTaka: deliveryPricingConfig.surchargeAmountTaka,
+        distanceKm: deliveryDistanceKm,
+      });
+      const vouchers: CustomerCacheRecord[] = await resolveActiveVoucher({
+        restaurantId: String(restaurant._id),
+        voucherCode: params.voucherCode,
+        subtotal,
+        customerId: params.customerId,
+        items: resolvedItems.map((item) => ({
+          itemId: item.itemId,
+          categoryId: item.categoryId,
         })),
-      })),
-      cartItem.selectedVariantOptions,
-    );
+      });
 
-    const addOnPrice = resolveSelectedAddOnPrice(
-      (menuItem.addOnGroups ?? []).map((group) => ({
-        name: group.name,
-        options: (group.options ?? []).map((option) => ({
-          label: option.label,
-          price: option.price,
-        })),
-      })),
-      cartItem.selectedAddOnOptions,
-    );
+      const voucherDiscounts = new Map<string, number>();
+      const discountAmount = vouchers.reduce((totalDiscount, voucher) => {
+        const baseDeliveryFee = voucher.type === "free_delivery" ? deliveryFee : 0;
+        const currentDiscount = calculateVoucherDiscount({
+          voucher,
+          subtotal: Math.max(subtotal - totalDiscount, 0),
+          deliveryFee: baseDeliveryFee,
+        });
+        voucherDiscounts.set(String(voucher._id), currentDiscount);
+        return totalDiscount + currentDiscount;
+      }, 0);
 
-    const unitPrice = menuItem.basePrice + variantPrice + addOnPrice;
-    const lineTotal = unitPrice * cartItem.quantity;
-    const categoryId = menuItem.categoryId.toString();
-    const category = categoryMap.get(categoryId);
-    const image = Array.isArray(menuItem.images) ? menuItem.images[0] : null;
+      const total = Math.max(subtotal + deliveryFee - discountAmount, 0);
+      const ownerDiscountCost = vouchers.reduce((totalOwnerCost, voucher) => {
+        const voucherDiscount = voucherDiscounts.get(String(voucher._id)) ?? 0;
+        return (
+          totalOwnerCost +
+          Math.round(
+            voucherDiscount * (((voucher as any).ownerSharePercent ?? 100) / 100),
+          )
+        );
+      }, 0);
+      const platformDiscountCost = vouchers.reduce((totalPlatformCost, voucher) => {
+        const voucherDiscount = voucherDiscounts.get(String(voucher._id)) ?? 0;
+        return (
+          totalPlatformCost +
+          Math.round(
+            voucherDiscount * (((voucher as any).platformSharePercent ?? 0) / 100),
+          )
+        );
+      }, 0);
 
-    return {
-      itemId: String(menuItem._id),
-      categoryId,
-      itemName: menuItem.name,
-      name: menuItem.name,
-      itemSlug: menuItem.slug,
-      categoryName: category?.name ?? "",
-      categorySlug: category?.slug ?? "",
-      imageUrl: image?.url ?? "",
-      quantity: cartItem.quantity,
-      unitPrice,
-      lineTotal,
-      selectedVariantOptions: cartItem.selectedVariantOptions ?? [],
-      selectedAddOnOptions: cartItem.selectedAddOnOptions ?? [],
-    };
-  });
-
-  const subtotal = resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0);
-  const deliveryPricingConfig = resolveDeliveryPricingConfig({
-    platformContent,
-    restaurant,
-  });
-  const deliveryDistanceKm = assertRestaurantServiceableForDelivery({
-    platformContent,
-    restaurant,
-    latitude: params.latitude,
-    longitude: params.longitude,
-  });
-  const deliveryFee = calculateConfiguredDeliveryFee({
-    baseFeeTaka: deliveryPricingConfig.baseFeeTaka,
-    distanceSurchargeEnabled: deliveryPricingConfig.distanceSurchargeEnabled,
-    surchargeStartsAfterKm: deliveryPricingConfig.surchargeStartsAfterKm,
-    surchargeStepMeters: deliveryPricingConfig.surchargeStepMeters,
-    surchargeAmountTaka: deliveryPricingConfig.surchargeAmountTaka,
-    distanceKm: deliveryDistanceKm,
-  });
-  const vouchers = await resolveActiveVoucher({
-    restaurantId: String(restaurant._id),
-    voucherCode: params.voucherCode,
-    subtotal,
-    customerId: params.customerId,
-    items: resolvedItems.map((item) => ({
-      itemId: item.itemId,
-      categoryId: item.categoryId,
-    })),
-  });
-
-  const voucherDiscounts = new Map<string, number>();
-  const discountAmount = vouchers.reduce((totalDiscount, voucher) => {
-    const baseDeliveryFee = voucher.type === "free_delivery" ? deliveryFee : 0;
-    const currentDiscount = calculateVoucherDiscount({
-      voucher,
-      subtotal: Math.max(subtotal - totalDiscount, 0),
-      deliveryFee: baseDeliveryFee,
-    });
-    voucherDiscounts.set(String(voucher._id), currentDiscount);
-    return totalDiscount + currentDiscount;
-  }, 0);
-
-  const total = Math.max(subtotal + deliveryFee - discountAmount, 0);
-  const ownerDiscountCost = vouchers.reduce((totalOwnerCost, voucher) => {
-    const voucherDiscount = voucherDiscounts.get(String(voucher._id)) ?? 0;
-    return (
-      totalOwnerCost +
-      Math.round(
-        voucherDiscount * (((voucher as any).ownerSharePercent ?? 100) / 100),
-      )
-    );
-  }, 0);
-  const platformDiscountCost = vouchers.reduce((totalPlatformCost, voucher) => {
-    const voucherDiscount = voucherDiscounts.get(String(voucher._id)) ?? 0;
-    return (
-      totalPlatformCost +
-      Math.round(
-        voucherDiscount * (((voucher as any).platformSharePercent ?? 0) / 100),
-      )
-    );
-  }, 0);
-
-  return {
-    restaurant: {
-      id: String(restaurant._id),
-      name: restaurant.name,
+      return {
+        restaurant: {
+          id: String(restaurant._id),
+          name: restaurant.name,
+        },
+        items: resolvedItems,
+        pricing: {
+          subtotal,
+          deliveryFee,
+          discountAmount,
+          ownerDiscountCost,
+          platformDiscountCost,
+          total,
+        },
+        appliedVouchers: summarizeAppliedVouchers(
+          vouchers.map((voucher) => ({
+            id: String(voucher._id),
+            code: voucher.code,
+            name: voucher.name,
+            type: voucher.type,
+            mode: voucher.mode,
+            fundedBy: voucher.fundedBy,
+            scopeType: (voucher as any).scopeType,
+            audienceType: (voucher as any).audienceType,
+            ownerSharePercent: voucher.ownerSharePercent,
+            platformSharePercent: voucher.platformSharePercent,
+            discountAmount: voucherDiscounts.get(String(voucher._id)) ?? 0,
+          })),
+        ),
+      };
     },
-    items: resolvedItems,
-    pricing: {
-      subtotal,
-      deliveryFee,
-      discountAmount,
-      ownerDiscountCost,
-      platformDiscountCost,
-      total,
-    },
-    appliedVouchers: summarizeAppliedVouchers(
-      vouchers.map((voucher) => ({
-        id: String(voucher._id),
-        code: voucher.code,
-        name: voucher.name,
-        type: voucher.type,
-        mode: voucher.mode,
-        fundedBy: voucher.fundedBy,
-        scopeType: (voucher as any).scopeType,
-        audienceType: (voucher as any).audienceType,
-        ownerSharePercent: voucher.ownerSharePercent,
-        platformSharePercent: voucher.platformSharePercent,
-        discountAmount: voucherDiscounts.get(String(voucher._id)) ?? 0,
-      })),
-    ),
-  };
+  );
 }
 
 export async function placeCustomerOrder(params: {
@@ -3507,9 +3825,7 @@ export async function placeCustomerOrder(params: {
 
   const orderId = new mongoose.Types.ObjectId();
   const paymentSettings = await getPaymentMethodSettings();
-  const shouldAutoAcceptOrder =
-    (restaurant.settings as { orderSettings?: { autoAcceptOrders?: boolean } } | undefined)
-      ?.orderSettings?.autoAcceptOrders === true;
+  const shouldAutoAcceptOrder = false;
   let order: any | null = null;
   let createdOrder = false;
 
@@ -3610,9 +3926,14 @@ export async function placeCustomerOrder(params: {
         paymentSnapshot = {
           provider: "Bkash",
           sessionId: paymentSession.id,
+          paymentAttemptId: paymentSession.paymentAttemptId
+            ? String(paymentSession.paymentAttemptId)
+            : "",
           paymentID: paymentSession.sandboxPaymentId,
           transactionId: paymentSession.transactionId,
           walletNumber: paymentSession.walletNumber,
+          payerReference: paymentSession.payerReference ?? "",
+          customerMsisdn: paymentSession.customerMsisdn ?? "",
           confirmedAt: paymentSession.confirmedAt,
         };
       } else {
@@ -3655,6 +3976,7 @@ export async function placeCustomerOrder(params: {
             paymentStatus,
             paymentSnapshot,
             pricing: quote.pricing,
+            appliedVouchers: quote.appliedVouchers ?? [],
             customerSnapshot: {
               id: customer.id,
               fullName: customer.fullName,
@@ -3674,9 +3996,10 @@ export async function placeCustomerOrder(params: {
       order = created;
       createdOrder = true;
 
-      if (quote.appliedVouchers.length) {
+      if (Array.isArray(quote.appliedVouchers) && quote.appliedVouchers.length) {
+        const appliedVouchers: CustomerCacheRecord[] = quote.appliedVouchers;
         await VoucherRedemptionModel.create(
-          quote.appliedVouchers.map((voucher) => {
+          appliedVouchers.map((voucher: CustomerCacheRecord) => {
             const discountAmount =
               voucher.discountAmount ?? quote.pricing.discountAmount;
             const ownerFundedAmount = Math.round(
@@ -3773,9 +4096,56 @@ export async function placeCustomerOrder(params: {
   }
 
   if (createdOrder) {
-    const orderObject = order.toObject();
+    if (Array.isArray(quote.appliedVouchers) && quote.appliedVouchers.length) {
+      customerCartQuoteCache.clear();
+    }
 
-    try {
+    if (params.paymentMethod === "Bkash" && params.paymentReference?.bkashSessionId) {
+      const paymentSession = await BkashSandboxPaymentSessionModel.findById(
+        params.paymentReference.bkashSessionId,
+      ).select("paymentAttemptId walletNumber payerReference customerMsisdn");
+      if (paymentSession?.paymentAttemptId) {
+        await updateBkashPaymentAttempt(paymentSession.paymentAttemptId, {
+          event: "order_finalized",
+          status: "order_finalized",
+          paymentStatus: "paid",
+          orderFinalizationStatus: "finalized",
+          orderId: order._id,
+          walletNumber: paymentSession.walletNumber ?? "",
+          payerReference: paymentSession.payerReference ?? "",
+          customerMsisdn: paymentSession.customerMsisdn ?? "",
+          timestamps: { orderFinalizedAt: new Date() },
+        });
+      }
+    }
+
+    const orderObject = order.toObject();
+    const platformContent = await getPlatformContent();
+    const ownerOrderObject = buildOwnerFacingOrderPayload(orderObject, platformContent);
+
+    emitSocketEvent(
+      `owner:${restaurant.ownerId.toString()}`,
+      "order.updated",
+      ownerOrderObject,
+    );
+    emitSocketEvent(
+      `restaurant:${restaurant.id}`,
+      "order.updated",
+      orderObject,
+    );
+    emitSocketEvent(
+      `customer:${customer.id}`,
+      "customer.order.created",
+      orderObject,
+    );
+    emitSocketEvent("admin:ops", "admin.order.updated", {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status: order.status,
+      path: `/orders?orderId=${order.id}`,
+    });
+
+    enqueueBackgroundTask("customer.order_created.owner_notification", async () => {
       await createOwnerNotification({
         ownerId: restaurant.ownerId.toString(),
         restaurantId: restaurant.id,
@@ -3787,11 +4157,9 @@ export async function placeCustomerOrder(params: {
         description: `Order ${order.orderNumber} has been placed.`,
         actionPath: `/orders?orderId=${order.id}`,
       });
-    } catch {
-      // Checkout is already committed; realtime order events still notify the owner UI.
-    }
+    })
 
-    try {
+    enqueueBackgroundTask("customer.order_created.owner_push", async () => {
       await sendPushToOwner({
         ownerId: restaurant.ownerId.toString(),
         payload: {
@@ -3804,25 +4172,7 @@ export async function placeCustomerOrder(params: {
           }
         }
       })
-    } catch {
-      // Checkout is already committed; realtime order events still notify the owner UI.
-    }
-
-    emitSocketEvent(
-      `owner:${restaurant.ownerId.toString()}`,
-      "order.updated",
-      orderObject,
-    );
-    emitSocketEvent(
-      `restaurant:${restaurant.id}`,
-      "order.updated",
-      orderObject,
-    );
-    emitSocketEvent(
-      `customer:${customer.id}`,
-      "customer.order.created",
-      orderObject,
-    );
+    })
   }
 
   return {
@@ -3841,7 +4191,7 @@ export async function initiateBkashPayment(params: {
   deliveryAddress: CustomerDeliveryAddressInput;
 }) {
   const customerId = ensureCustomerIdentity(params.customerId);
-  const customer = await getCustomerById(customerId);
+  await getCustomerById(customerId);
   const paymentSettings = await getPaymentMethodSettings();
 
   if (!paymentSettings.bkashEnabled) {
@@ -3870,33 +4220,89 @@ export async function initiateBkashPayment(params: {
   });
 
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  const payerReference = params.walletNumber;
+  const checkoutSnapshot = {
+    clientOrderId: normalizeClientOrderId(params.clientOrderId),
+    items: params.items,
+    voucherCode: params.voucherCode ?? "",
+    deliveryAddress: params.deliveryAddress,
+  };
   const session = await BkashSandboxPaymentSessionModel.create({
     customerId,
     restaurantId: params.restaurantId,
     walletNumber: params.walletNumber,
+    payerReference,
     amount: quote.pricing.total,
     voucherCode: params.voucherCode ?? "",
-    checkoutSnapshot: {
-      clientOrderId: normalizeClientOrderId(params.clientOrderId),
-      items: params.items,
-      voucherCode: params.voucherCode ?? "",
-      deliveryAddress: params.deliveryAddress,
-    },
+    checkoutSnapshot,
     status: "initiated",
     expiresAt,
   });
+  const attempt = await BkashPaymentAttemptModel.create({
+    customerId,
+    restaurantId: params.restaurantId,
+    sessionId: session._id,
+    clientOrderId: checkoutSnapshot.clientOrderId,
+    walletNumber: params.walletNumber,
+    walletNumberMasked: maskBkashWalletNumber(params.walletNumber),
+    payerReference,
+    amount: quote.pricing.total,
+    voucherCode: params.voucherCode ?? "",
+    status: "initiated",
+    paymentStatus: "unpaid",
+    orderFinalizationStatus: "not_started",
+    checkoutSnapshot,
+    initiatedAt: new Date(),
+    expiresAt,
+    events: [
+      {
+        event: "payment_initiated",
+        status: "initiated",
+        paymentStatus: "unpaid",
+        note: "Customer opened bKash checkout",
+        occurredAt: new Date(),
+      },
+    ],
+  });
+  session.paymentAttemptId = attempt._id;
+  await session.save();
 
   const callbackURL = `${env.BACKEND_PUBLIC_URL}${env.API_PREFIX}/customer/payments/bkash/callback?sessionId=${session.id}`;
 
-  const createdPayment = await createBkashUrlPayment({
-    amount: quote.pricing.total,
-    payerReference: customer.phone || customer.id,
-    merchantInvoiceNumber: `FB-${Date.now()}`,
-    callbackURL,
-  });
+  let createdPayment: Awaited<ReturnType<typeof createBkashUrlPayment>>;
+  try {
+    createdPayment = await createBkashUrlPayment({
+      amount: quote.pricing.total,
+      payerReference,
+      merchantInvoiceNumber: `FB-${Date.now()}`,
+      callbackURL,
+    });
+  } catch (error) {
+    session.status = "failed";
+    await session.save();
+    await updateBkashPaymentAttempt(attempt._id, {
+      event: "provider_create_failed",
+      status: "provider_create_failed",
+      paymentStatus: "failed",
+      orderFinalizationStatus: "not_applicable",
+      failureStage: "create_payment",
+      failureReason: getErrorMessage(error),
+      reason: getErrorMessage(error),
+      timestamps: { failedAt: new Date() },
+    });
+    throw error;
+  }
 
   session.sandboxPaymentId = createdPayment.paymentID;
   await session.save();
+  await updateBkashPaymentAttempt(attempt._id, {
+    event: "provider_payment_created",
+    status: "provider_created",
+    paymentStatus: "unpaid",
+    paymentID: createdPayment.paymentID,
+    providerResponse: createdPayment,
+    timestamps: { providerCreatedAt: new Date() },
+  });
 
   return {
     sessionId: session.id,
@@ -3955,11 +4361,41 @@ function getBkashCheckoutSnapshot(session: any) {
 
 async function finalizeConfirmedBkashSessionOrder(session: any) {
   if (session.orderId) {
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "order_already_finalized",
+      status: "order_finalized",
+      paymentStatus: "paid",
+      orderFinalizationStatus: "finalized",
+      orderId: session.orderId,
+      walletNumber: session.walletNumber ?? "",
+      payerReference: session.payerReference ?? "",
+      customerMsisdn: session.customerMsisdn ?? "",
+      timestamps: { orderFinalizedAt: session.updatedAt ?? new Date() },
+    });
     return String(session.orderId);
   }
 
   const checkoutSnapshot = getBkashCheckoutSnapshot(session);
   if (!checkoutSnapshot) {
+    const updatedAttempt = await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "order_finalize_failed",
+      status: "order_finalize_failed",
+      paymentStatus: "paid",
+      orderFinalizationStatus: "failed",
+      failureStage: "checkout_snapshot",
+      failureReason: "Checkout snapshot is incomplete",
+      reason: "Checkout snapshot is incomplete",
+      timestamps: { failedAt: new Date() },
+    });
+    if (updatedAttempt) {
+      enqueueAdminBkashPaidWithoutOrderAlert({
+        attempt: updatedAttempt.toObject(),
+        paymentID: session.sandboxPaymentId ?? "",
+        transactionId: session.transactionId ?? "",
+        reason: "Checkout snapshot is incomplete",
+        failureStage: "checkout_snapshot",
+      });
+    }
     return "";
   }
 
@@ -3980,6 +4416,25 @@ async function finalizeConfirmedBkashSessionOrder(session: any) {
     });
     return String(result.order?._id ?? result.order?.id ?? "");
   } catch (error) {
+    const updatedAttempt = await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "order_finalize_failed",
+      status: "order_finalize_failed",
+      paymentStatus: "paid",
+      orderFinalizationStatus: "failed",
+      failureStage: "order_finalization",
+      failureReason: getErrorMessage(error),
+      reason: getErrorMessage(error),
+      timestamps: { failedAt: new Date() },
+    });
+    if (updatedAttempt) {
+      enqueueAdminBkashPaidWithoutOrderAlert({
+        attempt: updatedAttempt.toObject(),
+        paymentID: session.sandboxPaymentId ?? "",
+        transactionId: session.transactionId ?? "",
+        reason: getErrorMessage(error),
+        failureStage: "order_finalization",
+      });
+    }
     logger.error(
       {
         err: error,
@@ -4010,6 +4465,18 @@ export async function handleBkashCallback(params: {
     params.paymentID &&
     session.sandboxPaymentId === params.paymentID
   ) {
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "callback_duplicate_success",
+      status: "confirmed_paid",
+      paymentStatus: "paid",
+      paymentID: params.paymentID,
+      transactionId: session.transactionId ?? "",
+      walletNumber: session.walletNumber,
+      payerReference: session.payerReference ?? "",
+      customerMsisdn: session.customerMsisdn ?? "",
+      note: "bKash sent a duplicate success callback",
+      timestamps: { callbackAt: new Date() },
+    });
     const orderId = await finalizeConfirmedBkashSessionOrder(session);
     return appendBkashReturnParams(redirectUrlBase, {
       status: "success",
@@ -4025,6 +4492,24 @@ export async function handleBkashCallback(params: {
   if (params.status !== "success" || !params.paymentID) {
     session.status = params.status === "cancel" ? "cancelled" : "failed";
     await session.save();
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: params.status === "cancel" ? "customer_cancelled" : "callback_failed",
+      status: params.status === "cancel" ? "customer_cancelled" : "callback_failed",
+      paymentStatus: params.status === "cancel" ? "cancelled" : "failed",
+      orderFinalizationStatus: "not_applicable",
+      paymentID: params.paymentID ?? session.sandboxPaymentId ?? "",
+      failureStage: "callback",
+      failureReason:
+        params.status === "cancel"
+          ? "Customer cancelled checkout"
+          : `Callback returned ${params.status || "unknown"} status`,
+      reason:
+        params.status === "cancel"
+          ? "Customer cancelled checkout"
+          : `Callback returned ${params.status || "unknown"} status`,
+      metadata: { callbackStatus: params.status ?? "" },
+      timestamps: { callbackAt: new Date(), failedAt: new Date() },
+    });
     return `${redirectUrlBase}?status=${params.status === "cancel" ? "cancelled" : "failed"}&sessionId=${session.id}&walletNumber=${encodeURIComponent(
       session.walletNumber,
     )}`;
@@ -4033,19 +4518,55 @@ export async function handleBkashCallback(params: {
   if (session.expiresAt.getTime() < Date.now()) {
     session.status = "expired";
     await session.save();
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "payment_expired",
+      status: "expired",
+      paymentStatus: "expired",
+      orderFinalizationStatus: "not_applicable",
+      paymentID: params.paymentID,
+      failureStage: "expiry",
+      failureReason: "bKash callback arrived after checkout expiry",
+      reason: "bKash callback arrived after checkout expiry",
+      timestamps: { callbackAt: new Date(), failedAt: new Date() },
+    });
     return `${redirectUrlBase}?status=expired&sessionId=${session.id}&walletNumber=${encodeURIComponent(
       session.walletNumber,
     )}`;
   }
 
   try {
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "callback_success",
+      status: "callback_success",
+      paymentStatus: "unpaid",
+      paymentID: params.paymentID,
+      metadata: { callbackStatus: params.status ?? "" },
+      timestamps: { callbackAt: new Date() },
+    });
     const executeResponse = await executeBkashPayment(params.paymentID);
 
     session.status = "confirmed";
     session.sandboxPaymentId = params.paymentID;
     session.transactionId = executeResponse.trxID ?? "";
+    session.payerReference = executeResponse.payerReference ?? session.payerReference ?? "";
+    session.customerMsisdn = executeResponse.customerMsisdn ?? session.customerMsisdn ?? "";
     session.confirmedAt = new Date();
     await session.save();
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "payment_executed",
+      status: "confirmed_paid",
+      paymentStatus: "paid",
+      paymentID: params.paymentID,
+      transactionId: executeResponse.trxID ?? "",
+      walletNumber: session.walletNumber,
+      payerReference: session.payerReference ?? "",
+      customerMsisdn: session.customerMsisdn ?? "",
+      providerResponse: executeResponse,
+      timestamps: {
+        executedAt: new Date(),
+        confirmedAt: session.confirmedAt,
+      },
+    });
     const orderId = await finalizeConfirmedBkashSessionOrder(session);
 
     return appendBkashReturnParams(redirectUrlBase, {
@@ -4057,13 +4578,277 @@ export async function handleBkashCallback(params: {
       paymentID: session.sandboxPaymentId ?? "",
       orderId: orderId || undefined,
     });
-  } catch {
+  } catch (error) {
     session.status = "failed";
     await session.save();
+    await updateBkashPaymentAttempt(session.paymentAttemptId, {
+      event: "execute_failed",
+      status: "execute_failed",
+      paymentStatus: "failed",
+      orderFinalizationStatus: "not_applicable",
+      paymentID: params.paymentID,
+      failureStage: "execute_payment",
+      failureReason: getErrorMessage(error),
+      reason: getErrorMessage(error),
+      timestamps: { failedAt: new Date() },
+    });
     return `${redirectUrlBase}?status=failed&sessionId=${session.id}&walletNumber=${encodeURIComponent(
       session.walletNumber,
     )}`;
   }
+}
+
+export async function reconcileBkashPaymentAttemptFromGateway(params: {
+  attemptId: string;
+  adminId?: string;
+  note?: string;
+}) {
+  const attempt = await BkashPaymentAttemptModel.findById(params.attemptId);
+
+  if (!attempt) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "BKASH_ATTEMPT_NOT_FOUND",
+      "bKash payment attempt not found",
+    );
+  }
+
+  const paymentID = safeStringValue(attempt.paymentID);
+  if (!paymentID) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "BKASH_PAYMENT_ID_MISSING",
+      "bKash payment ID is not available yet",
+    );
+  }
+
+  let providerResponse: Awaited<ReturnType<typeof queryBkashPaymentStatus>>;
+  try {
+    providerResponse = await queryBkashPaymentStatus(paymentID);
+  } catch (error) {
+    await updateBkashPaymentAttempt(attempt._id, {
+      event: "gateway_query_failed",
+      status: safeStringValue(attempt.status),
+      paymentStatus: safeStringValue(attempt.paymentStatus),
+      failureStage: "query_payment",
+      failureReason: getErrorMessage(error),
+      reason: getErrorMessage(error),
+      metadata: {
+        adminId: params.adminId ?? "",
+        note: params.note ?? "",
+      },
+      timestamps: { failedAt: new Date() },
+    });
+    throw error;
+  }
+
+  const transactionStatus = safeStringValue(providerResponse.transactionStatus);
+  const transactionId = safeStringValue(providerResponse.trxID);
+  const payerReference = safeStringValue(providerResponse.payerReference);
+  const customerMsisdn = safeStringValue(providerResponse.customerMsisdn);
+  const providerEvent = {
+    providerResponse,
+    metadata: {
+      adminId: params.adminId ?? "",
+      note: params.note ?? "",
+      transactionStatus,
+    },
+  };
+
+  if (isBkashCompletedTransaction(transactionStatus, providerResponse)) {
+    let session = attempt.sessionId
+      ? await BkashSandboxPaymentSessionModel.findById(attempt.sessionId)
+      : null;
+
+    if (!session) {
+      session = await BkashSandboxPaymentSessionModel.findOne({
+        sandboxPaymentId: paymentID,
+      });
+    }
+
+    if (!session) {
+      const updatedAttempt = await updateBkashPaymentAttempt(attempt._id, {
+        event: "gateway_reconcile_paid_missing_session",
+        status: "order_finalize_failed",
+        paymentStatus: "paid",
+        orderFinalizationStatus: "failed",
+        paymentID,
+        transactionId,
+        payerReference,
+        customerMsisdn,
+        failureStage: "missing_session",
+        failureReason:
+          "Gateway says payment is completed, but checkout session is no longer available",
+        reason:
+          "Gateway says payment is completed, but checkout session is no longer available",
+        timestamps: {
+          executedAt: new Date(),
+          confirmedAt: new Date(),
+          failedAt: new Date(),
+        },
+        ...providerEvent,
+      });
+
+      if (updatedAttempt) {
+        enqueueAdminBkashPaidWithoutOrderAlert({
+          attempt: updatedAttempt.toObject(),
+          paymentID,
+          transactionId,
+          reason:
+            "Gateway says payment is completed, but checkout session is no longer available",
+          failureStage: "missing_session",
+        });
+      }
+
+      return {
+        status: "paid_without_order",
+        paymentID,
+        transactionId,
+        orderId: "",
+        attempt: updatedAttempt?.toObject?.() ?? null,
+      };
+    }
+
+    session.status = "confirmed";
+    session.sandboxPaymentId = paymentID;
+    session.transactionId = transactionId || session.transactionId || "";
+    session.payerReference = payerReference || session.payerReference || "";
+    session.customerMsisdn = customerMsisdn || session.customerMsisdn || "";
+    session.confirmedAt = session.confirmedAt ?? new Date();
+    await session.save();
+
+    await updateBkashPaymentAttempt(attempt._id, {
+      event: "gateway_reconcile_paid",
+      status: "confirmed_paid",
+      paymentStatus: "paid",
+      paymentID,
+      transactionId: session.transactionId,
+      walletNumber: session.walletNumber ?? "",
+      payerReference: session.payerReference ?? "",
+      customerMsisdn: session.customerMsisdn ?? "",
+      timestamps: {
+        executedAt: new Date(),
+        confirmedAt: session.confirmedAt,
+      },
+      ...providerEvent,
+    });
+
+    const orderId = await finalizeConfirmedBkashSessionOrder(session);
+    const refreshedAttempt = await BkashPaymentAttemptModel.findById(attempt._id);
+    if (!orderId && refreshedAttempt) {
+      enqueueAdminBkashPaidWithoutOrderAlert({
+        attempt: refreshedAttempt.toObject(),
+        paymentID,
+        transactionId: session.transactionId,
+        reason: "Gateway confirmed the bKash payment, but order finalization did not complete.",
+        failureStage: "order_finalization",
+      });
+    }
+
+    return {
+      status: orderId ? "order_finalized" : "paid_without_order",
+      paymentID,
+      transactionId: session.transactionId,
+      orderId,
+      attempt: refreshedAttempt?.toObject?.() ?? null,
+    };
+  }
+
+  if (isBkashTerminalFailedTransaction(transactionStatus)) {
+    const paymentStatus =
+      transactionStatus.trim().toLowerCase().includes("cancel") ? "cancelled" : "failed";
+    const status =
+      paymentStatus === "cancelled" ? "customer_cancelled" : "callback_failed";
+    const updatedAttempt = await updateBkashPaymentAttempt(attempt._id, {
+      event: "gateway_reconcile_terminal",
+      status,
+      paymentStatus,
+      orderFinalizationStatus: "not_applicable",
+      paymentID,
+      failureStage: "query_payment",
+      failureReason: `Gateway transaction status is ${transactionStatus || "terminal"}`,
+      reason: `Gateway transaction status is ${transactionStatus || "terminal"}`,
+      timestamps: { failedAt: new Date() },
+      ...providerEvent,
+    });
+
+    return {
+      status: paymentStatus,
+      paymentID,
+      transactionId,
+      orderId: safeStringValue(attempt.orderId ? String(attempt.orderId) : ""),
+      attempt: updatedAttempt?.toObject?.() ?? null,
+    };
+  }
+
+  const updatedAttempt = await updateBkashPaymentAttempt(attempt._id, {
+    event: "gateway_reconcile_pending",
+    status: safeStringValue(attempt.status),
+    paymentStatus: safeStringValue(attempt.paymentStatus, "unpaid"),
+    paymentID,
+    note: `Gateway transaction status is ${transactionStatus || "pending"}`,
+    ...providerEvent,
+  });
+
+  return {
+    status: "pending",
+    paymentID,
+    transactionId,
+    orderId: safeStringValue(attempt.orderId ? String(attempt.orderId) : ""),
+    attempt: updatedAttempt?.toObject?.() ?? null,
+  };
+}
+
+export async function processPendingBkashPaymentAttemptReconciliation() {
+  if (!hasBkashGatewayConfig()) {
+    return { checked: 0, reconciled: 0, failed: 0, skipped: true };
+  }
+
+  const now = Date.now();
+  const createdBefore = new Date(now - 2 * 60 * 1000);
+  const updatedBefore = new Date(now - 5 * 60 * 1000);
+  const recentAfter = new Date(now - 2 * 60 * 60 * 1000);
+  const attempts = await BkashPaymentAttemptModel.find({
+    paymentID: { $exists: true, $type: "string", $gt: "" },
+    paymentStatus: "unpaid",
+    status: { $in: ["initiated", "provider_created", "callback_success"] },
+    createdAt: { $gte: recentAfter, $lte: createdBefore },
+    updatedAt: { $lte: updatedBefore },
+  })
+    .sort({ createdAt: 1 })
+    .limit(5)
+    .select("_id")
+    .lean();
+
+  let reconciled = 0;
+  let failed = 0;
+
+  for (const attempt of attempts) {
+    try {
+      await reconcileBkashPaymentAttemptFromGateway({
+        attemptId: String(attempt._id),
+        adminId: "system",
+        note: "Scheduled bKash payment reconciliation",
+      });
+      reconciled += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn(
+        {
+          err: error,
+          bkashPaymentAttemptId: String(attempt._id),
+        },
+        "Scheduled bKash payment reconciliation failed",
+      );
+    }
+  }
+
+  return {
+    checked: attempts.length,
+    reconciled,
+    failed,
+    skipped: false,
+  };
 }
 
 export async function listCustomerOrders(
@@ -4088,17 +4873,25 @@ export async function listCustomerOrders(
     customerId: safeCustomerId,
     ...statusFilter,
   };
+  const shouldLoadReviewFlags =
+    params?.status === "Delivered" ||
+    params?.statusGroup === "history" ||
+    (!params?.status && !params?.statusGroup);
   const orders = await OrderModel.find(orderQuery)
+    .select(CUSTOMER_ORDER_LIST_SELECT)
     .sort({ createdAt: -1 })
     .skip((page - 1) * pageSize)
-    .limit(pageSize);
+    .limit(pageSize)
+    .lean();
   const orderIds = orders.map((order) => order._id);
 
-  const reviews = orderIds.length
+  const reviews = shouldLoadReviewFlags && orderIds.length
     ? await ReviewModel.find({
         customerId: safeCustomerId,
         orderId: { $in: orderIds },
-      }).select("orderId rating")
+      })
+        .select("orderId rating")
+        .lean()
     : [];
 
   const reviewedOrderIds = new Set(
@@ -4108,21 +4901,23 @@ export async function listCustomerOrders(
     ...new Set(orders.map((order) => String(order.restaurantId ?? "")).filter(Boolean)),
   ];
   const restaurants = restaurantIds.length
-    ? await RestaurantModel.find({ _id: { $in: restaurantIds } }).lean()
+    ? await RestaurantModel.find({ _id: { $in: restaurantIds } })
+        .select("_id preparationTimeMinutes")
+        .lean()
     : [];
   const restaurantById = new Map(
     restaurants.map((restaurant) => [String(restaurant._id ?? ""), restaurant]),
   );
 
   return orders.map((order) => {
-    const orderObject = order.toObject();
+    const orderObject = order as Record<string, any>;
     return {
       ...orderObject,
       preparationTiming: buildOrderPreparationTiming({
         order: orderObject,
         restaurant: restaurantById.get(String(order.restaurantId ?? "")),
       }),
-      hasCustomerReview: reviewedOrderIds.has(order._id.toString()),
+      hasCustomerReview: reviewedOrderIds.has(String(order._id ?? "")),
     };
   });
 }
@@ -4152,15 +4947,28 @@ export async function getCustomerOrderDetails(params: {
 
   const orderObject = order.toObject();
   const restaurant = await RestaurantModel.findById(order.restaurantId).lean();
+  const queuedTrackingMeta = await buildQueuedDeliveryTrackingMeta(orderObject);
+  const paymentSettings = await getPaymentMethodSettings();
+  const paymentSnapshot =
+    orderObject.paymentSnapshot && typeof orderObject.paymentSnapshot === "object"
+      ? {
+          ...orderObject.paymentSnapshot,
+          refundEtaMinutes: paymentSettings.bkashRefundEtaMinutes,
+        }
+      : { refundEtaMinutes: paymentSettings.bkashRefundEtaMinutes };
 
   return {
     ...orderObject,
+    paymentSnapshot,
     preparationTiming: buildOrderPreparationTiming({
       order: orderObject,
       restaurant,
     }),
     riderTracking: decorateTrackingSnapshot(
-      (orderObject as Record<string, any>).riderTracking ?? {},
+      {
+        ...((orderObject as Record<string, any>).riderTracking ?? {}),
+        ...queuedTrackingMeta,
+      },
       order.status,
     ),
     customerReview: review
@@ -4221,6 +5029,8 @@ export async function cancelCustomerOrder(params: {
       refundReason: params.reason ?? "customer_cancelled",
     };
     order.markModified("paymentSnapshot");
+  } else if (order.paymentMethod === "Cash" && order.paymentStatus !== "paid") {
+    order.paymentStatus = "cancelled";
   }
   order.history.push({
     status: "Cancelled",
@@ -4250,7 +5060,13 @@ export async function cancelCustomerOrder(params: {
 
   const restaurant = await RestaurantModel.findById(order.restaurantId);
   if (restaurant) {
-    try {
+    const platformContent = await getPlatformContent();
+    const ownerOrderObject = buildOwnerFacingOrderPayload(
+      order.toObject(),
+      platformContent,
+    );
+
+    enqueueBackgroundTask("customer.order_cancelled.owner_notification", async () => {
       await createOwnerNotification({
         ownerId: restaurant.ownerId.toString(),
         restaurantId: restaurant.id,
@@ -4262,14 +5078,12 @@ export async function cancelCustomerOrder(params: {
         description: `Order ${order.orderNumber} was cancelled by the customer.`,
         actionPath: `/orders?orderId=${order.id}`,
       });
-    } catch {
-      // Cancellation is already saved; owner notification persistence is best-effort.
-    }
+    })
 
     emitSocketEvent(
       `owner:${restaurant.ownerId.toString()}`,
       "order.updated",
-      order.toObject(),
+      ownerOrderObject,
     );
     emitSocketEvent(
       `restaurant:${restaurant.id}`,
@@ -4283,6 +5097,22 @@ export async function cancelCustomerOrder(params: {
     "customer.order.updated",
     order.toObject(),
   );
+  emitSocketEvent("admin:ops", "admin.order.updated", {
+    orderId: order.id,
+    orderNumber: order.orderNumber,
+    status: order.status,
+    path: `/orders?orderId=${order.id}`,
+  });
+
+  enqueueAdminOrderTerminalExceptionAlert({
+    order: order.toObject(),
+    actor: "customer",
+    nextStatus: "Cancelled",
+    previousStatus: "New",
+    reason: params.reason,
+    occurredAt: cancelledAt,
+    refundOnly: true,
+  });
 
   return order;
 }
@@ -4331,7 +5161,7 @@ export async function createCustomerReview(params: {
 
   const restaurant = await RestaurantModel.findById(order.restaurantId);
   if (restaurant) {
-    try {
+    enqueueBackgroundTask("customer.review_created.owner_notification", async () => {
       await createOwnerNotification({
         ownerId: restaurant.ownerId.toString(),
         restaurantId: restaurant.id,
@@ -4343,9 +5173,7 @@ export async function createCustomerReview(params: {
         description: `A ${params.rating}-star review was added for order ${order.orderNumber}.`,
         actionPath: `/reviews?reviewId=${review.id}`,
       });
-    } catch {
-      // Review submission should not fail after the review has been saved.
-    }
+    })
   }
 
   return review;
@@ -4649,3 +5477,28 @@ export async function appendCustomerSupportCaseMessage(params: {
 
   return mapCustomerSupportCase(supportCase);
 }
+
+const discoverableRestaurantsCache =
+  createInMemoryAsyncCache<DiscoverableRestaurantsResult>({
+    ttlMs: CUSTOMER_READ_CACHE_TTL_MS,
+    maxEntries: CUSTOMER_READ_CACHE_MAX_ENTRIES,
+    staleWhileRevalidateMs: 60_000,
+  })
+
+const customerDiscoveryHomeCache =
+  createInMemoryAsyncCache<CustomerDiscoveryHomeResult>({
+    ttlMs: CUSTOMER_READ_CACHE_TTL_MS,
+    maxEntries: CUSTOMER_READ_CACHE_MAX_ENTRIES,
+    staleWhileRevalidateMs: CUSTOMER_DISCOVERY_STALE_REVALIDATE_MS,
+  })
+
+const customerRestaurantDetailsCache =
+  createInMemoryAsyncCache<CustomerRestaurantDetailsResult>({
+    ttlMs: CUSTOMER_READ_CACHE_TTL_MS,
+    maxEntries: CUSTOMER_READ_CACHE_MAX_ENTRIES,
+  })
+
+const customerCartQuoteCache = createInMemoryAsyncCache<CustomerCartQuoteResult>({
+  ttlMs: CUSTOMER_READ_CACHE_TTL_MS,
+  maxEntries: CUSTOMER_READ_CACHE_MAX_ENTRIES,
+})

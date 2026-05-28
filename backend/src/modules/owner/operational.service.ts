@@ -3,9 +3,14 @@ import mongoose from "mongoose"
 import type { SortOrder } from "mongoose"
 
 import { emitSocketEvent } from "../../config/socket"
+import { enqueueBackgroundTask } from "../../common/utils/background-task"
 import { slugify } from "../../common/utils/slugify"
 import { AppError } from "../../common/utils/app-error"
-import { runAutoDispatchForReadyOrders } from "../admin/orders-monitor.service"
+import { enqueueAdminOrderTerminalExceptionAlert } from "../admin/order-exception-alerts"
+import {
+  invalidateAdminMonitoringCaches,
+  runAutoDispatchForReadyOrders
+} from "../admin/orders-monitor.service"
 import { OwnerModel, RestaurantModel, RiderModel } from "../auth/auth.model"
 import { sendPushToCustomer } from "../customer/push.service"
 import { VoucherRedemptionModel } from "../customer/customer.model"
@@ -13,6 +18,7 @@ import { grantReferralRewardForDeliveredOrder } from "../customer/referral.servi
 import { getPlatformContent } from "../public/content.service"
 import { sendPushToRider } from "../rider/push.service"
 import { syncOrderLedgerForFinalStatus } from "./finance.service"
+import { decorateOwnerFinancials } from "./order-financials"
 import {
   CategoryModel,
   MenuItemModel,
@@ -59,7 +65,7 @@ function getOwnerAutoCancelSettings(content: Record<string, any>) {
     autoCancelUnacceptedOrdersEnabled:
       typeof dispatch.autoCancelUnacceptedOrdersEnabled === "boolean"
         ? dispatch.autoCancelUnacceptedOrdersEnabled
-        : false,
+        : true,
     autoCancelAfterMinutes:
       typeof dispatch.autoCancelAfterMinutes === "number"
         ? dispatch.autoCancelAfterMinutes
@@ -75,6 +81,104 @@ function getOwnerAutoCancelSettings(content: Record<string, any>) {
         ? dispatch.preparationMaxExtraMinutes
         : 20
   }
+}
+
+function getOwnerAppSettings(content: Record<string, any>) {
+  const ownerApp = content?.operations?.ownerApp ?? {}
+  return {
+    showCustomerPhoneNumbers:
+      typeof ownerApp.showCustomerPhoneNumbers === "boolean"
+        ? ownerApp.showCustomerPhoneNumbers
+        : true
+  }
+}
+
+function getRiderEtaSettings(content: Record<string, any>) {
+  const dispatch = content?.operations?.dispatch ?? {}
+  const speedKmph =
+    typeof dispatch.riderEtaSpeedKmph === "number" &&
+    Number.isFinite(dispatch.riderEtaSpeedKmph)
+      ? dispatch.riderEtaSpeedKmph
+      : 24
+  const routeFactor =
+    typeof dispatch.riderEtaRouteFactor === "number" &&
+    Number.isFinite(dispatch.riderEtaRouteFactor)
+      ? dispatch.riderEtaRouteFactor
+      : 1.1
+
+  return {
+    speedKmph: Math.min(45, Math.max(6, speedKmph)),
+    routeFactor: Math.min(2, Math.max(1, routeFactor))
+  }
+}
+
+function applyOwnerOrderPrivacy<T extends Record<string, any>>(
+  order: T,
+  settings: ReturnType<typeof getOwnerAppSettings>
+) {
+  const ownerOrder = decorateOwnerFinancials(order)
+
+  if (settings.showCustomerPhoneNumbers) return ownerOrder
+
+  return {
+    ...ownerOrder,
+    customerSnapshot: {
+      ...(ownerOrder.customerSnapshot ?? {}),
+      phone: ""
+    }
+  }
+}
+
+function emitAdminOrderUpdated(order: Record<string, any>) {
+  emitSocketEvent("admin:ops", "admin.order.updated", {
+    orderId: String(order._id ?? order.id ?? ""),
+    orderNumber: String(order.orderNumber ?? ""),
+    status: String(order.status ?? ""),
+    path: `/orders?orderId=${String(order._id ?? order.id ?? "")}`
+  })
+}
+
+function emitAdminLiveMapUpdated(payload: Record<string, unknown>) {
+  invalidateAdminMonitoringCaches()
+  emitSocketEvent("admin:live-map", "admin.live-map.updated", payload)
+}
+
+async function buildOwnerFacingOrderPayload(order: Record<string, any>) {
+  const content = await getPlatformContent()
+  return applyOwnerOrderPrivacy(order, getOwnerAppSettings(content as Record<string, any>))
+}
+
+export async function emitOrderRealtimeUpdate(
+  order: Record<string, any>,
+  liveMapPayload: Record<string, unknown> = {}
+) {
+  const restaurantId = String(order.restaurantId ?? "").trim()
+  const orderId = String(order._id ?? order.id ?? "").trim()
+  const ownerFacingOrder = await buildOwnerFacingOrderPayload(order)
+
+  if (restaurantId) {
+    const restaurantOwner = await OwnerModel.findOne({ activeRestaurantId: restaurantId }).select("_id").lean()
+    if (restaurantOwner?._id) {
+      emitSocketEvent(`owner:${restaurantOwner._id.toString()}`, "order.updated", ownerFacingOrder)
+    }
+    emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", ownerFacingOrder)
+  }
+
+  if (order.customerId) {
+    emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", order)
+  }
+
+  if (order.riderId) {
+    emitSocketEvent(`rider:${order.riderId}`, "rider.order.updated", order)
+  }
+
+  emitAdminOrderUpdated(order)
+  emitAdminLiveMapUpdated({
+    type: "order.updated",
+    orderId,
+    status: String(order.status ?? ""),
+    ...liveMapPayload
+  })
 }
 
 function decorateOwnerOrderAutomation(
@@ -177,15 +281,14 @@ function roundDistanceKm(distanceKm: number) {
   return rounded < 0.1 ? 0 : rounded
 }
 
-function estimateCycleRouteDistanceKm(directDistanceKm: number) {
+function estimateCycleRouteDistanceKm(directDistanceKm: number, routeFactor: number) {
   if (directDistanceKm <= 0.1) return 0
-  if (directDistanceKm < 1) return directDistanceKm * 1.12
-  if (directDistanceKm < 3) return directDistanceKm * 1.18
-  return directDistanceKm * 1.22
+  return directDistanceKm * routeFactor
 }
 
-function clampCycleSpeedKmph(speedKmph: number) {
-  return Math.min(22, Math.max(8, speedKmph))
+function clampCycleSpeedKmph(speedKmph: number, fallbackSpeedKmph = 24) {
+  const safeSpeed = Number.isFinite(speedKmph) ? speedKmph : fallbackSpeedKmph
+  return Math.min(45, Math.max(6, safeSpeed))
 }
 
 function deriveCycleSpeedKmph(params: {
@@ -195,9 +298,14 @@ function deriveCycleSpeedKmph(params: {
   latitude: number
   longitude: number
   reportedSpeedKmph?: number
+  fallbackSpeedKmph?: number
 }) {
+  const fallbackSpeedKmph = clampCycleSpeedKmph(params.fallbackSpeedKmph ?? 24)
   if (typeof params.reportedSpeedKmph === "number" && Number.isFinite(params.reportedSpeedKmph)) {
-    return clampCycleSpeedKmph(params.reportedSpeedKmph)
+    return Math.max(
+      clampCycleSpeedKmph(params.reportedSpeedKmph, fallbackSpeedKmph),
+      fallbackSpeedKmph * 0.85
+    )
   }
 
   if (
@@ -205,7 +313,7 @@ function deriveCycleSpeedKmph(params: {
     typeof params.previousLongitude !== "number" ||
     !params.previousUpdatedAt
   ) {
-    return 14
+    return fallbackSpeedKmph
   }
 
   const previousUpdatedAt = new Date(params.previousUpdatedAt).getTime()
@@ -213,7 +321,7 @@ function deriveCycleSpeedKmph(params: {
   const elapsedHours = (now - previousUpdatedAt) / (1000 * 60 * 60)
 
   if (elapsedHours <= 0 || elapsedHours > 0.35) {
-    return 14
+    return fallbackSpeedKmph
   }
 
   const movedDistanceKm = calculateDirectDistanceKm(
@@ -224,10 +332,13 @@ function deriveCycleSpeedKmph(params: {
   )
 
   if (movedDistanceKm < 0.02) {
-    return 12
+    return fallbackSpeedKmph
   }
 
-  return clampCycleSpeedKmph(movedDistanceKm / elapsedHours)
+  return Math.max(
+    clampCycleSpeedKmph(movedDistanceKm / elapsedHours, fallbackSpeedKmph),
+    fallbackSpeedKmph * 0.85
+  )
 }
 
 function estimateCycleTracking(params: {
@@ -239,6 +350,8 @@ function estimateCycleTracking(params: {
   previousLongitude?: number
   previousUpdatedAt?: string | Date | null
   reportedSpeedKmph?: number
+  etaSpeedKmph?: number
+  routeFactor?: number
 }) {
   const directDistanceKm = calculateDirectDistanceKm(
     params.riderLatitude,
@@ -246,14 +359,17 @@ function estimateCycleTracking(params: {
     params.customerLatitude,
     params.customerLongitude
   )
-  const routeDistanceKm = estimateCycleRouteDistanceKm(directDistanceKm)
+  const etaSpeedKmph = clampCycleSpeedKmph(params.etaSpeedKmph ?? 24)
+  const routeFactor = Math.min(2, Math.max(1, params.routeFactor ?? 1.1))
+  const routeDistanceKm = estimateCycleRouteDistanceKm(directDistanceKm, routeFactor)
   const speedKmph = deriveCycleSpeedKmph({
     previousLatitude: params.previousLatitude,
     previousLongitude: params.previousLongitude,
     previousUpdatedAt: params.previousUpdatedAt,
     latitude: params.riderLatitude,
     longitude: params.riderLongitude,
-    reportedSpeedKmph: params.reportedSpeedKmph
+    reportedSpeedKmph: params.reportedSpeedKmph,
+    fallbackSpeedKmph: etaSpeedKmph
   })
   const remainingDurationMinutes =
     routeDistanceKm <= 0 ? 0 : Math.max(1, Math.round((routeDistanceKm / speedKmph) * 60))
@@ -347,7 +463,7 @@ async function safeSendCustomerOrderStatusPush(params: {
 }) {
   const customerMessage = getCustomerOrderStatusMessage(params.nextStatus)
 
-  try {
+  enqueueBackgroundTask("owner.order_status.customer_push", async () => {
     await sendPushToCustomer({
       customerId: params.customerId,
       payload: {
@@ -361,9 +477,7 @@ async function safeSendCustomerOrderStatusPush(params: {
         }
       }
     })
-  } catch {
-    // Order state must remain successful even when external push delivery is unavailable.
-  }
+  })
 }
 
 function applyOrderStatusTimestamp(
@@ -678,7 +792,7 @@ export async function listMenuItemsWithFilters(params: {
             ? { basePrice: 1, updatedAt: -1 }
             : { updatedAt: -1 }
   const page = Math.max(1, params.page ?? 1)
-  const pageSize = Math.min(500, Math.max(1, params.pageSize ?? 20))
+  const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 20))
   const [items, total] = await Promise.all([
     MenuItemModel.find(query).sort(sort).skip((page - 1) * pageSize).limit(pageSize),
     MenuItemModel.countDocuments(query)
@@ -841,6 +955,8 @@ export async function listOrders(params: {
   pageSize?: number
 }) {
   const { restaurantId } = await getOwnerRestaurantContext(params.ownerId)
+  const content = await getPlatformContent()
+  const ownerAppSettings = getOwnerAppSettings(content as Record<string, any>)
   const query: Record<string, unknown> = { restaurantId }
   const andClauses: Array<Record<string, unknown>> = []
 
@@ -861,12 +977,19 @@ export async function listOrders(params: {
   }
 
   if (params.search) {
+    const searchClauses: Array<Record<string, unknown>> = [
+      { orderNumber: { $regex: params.search, $options: "i" } },
+      { "customerSnapshot.fullName": { $regex: params.search, $options: "i" } },
+    ]
+
+    if (ownerAppSettings.showCustomerPhoneNumbers) {
+      searchClauses.push({
+        "customerSnapshot.phone": { $regex: params.search, $options: "i" },
+      })
+    }
+
     andClauses.push({
-      $or: [
-        { orderNumber: { $regex: params.search, $options: "i" } },
-        { "customerSnapshot.fullName": { $regex: params.search, $options: "i" } },
-        { "customerSnapshot.phone": { $regex: params.search, $options: "i" } },
-      ],
+      $or: searchClauses,
     })
   }
 
@@ -898,22 +1021,25 @@ export async function listOrders(params: {
     params.sortBy === "oldest"
       ? { createdAt: 1 }
       : params.sortBy === "highestValue"
-        ? { "pricing.total": -1, createdAt: -1 }
+        ? { "pricing.subtotal": -1, createdAt: -1 }
         : { createdAt: -1 }
   const page = Math.max(1, params.page ?? 1)
-  const pageSize = Math.min(500, Math.max(1, params.pageSize ?? 20))
+  const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 20))
 
-  const [items, total, content, restaurant] = await Promise.all([
+  const [items, total, restaurant] = await Promise.all([
     OrderModel.find(query).sort(sort).skip((page - 1) * pageSize).limit(pageSize).lean(),
     OrderModel.countDocuments(query),
-    getPlatformContent(),
     RestaurantModel.findById(restaurantId).lean()
   ])
   const autoCancelSettings = getOwnerAutoCancelSettings(content as Record<string, any>)
 
   return {
     items: items.map((order) =>
-      decorateOwnerOrderAutomation(order, autoCancelSettings, restaurant as Record<string, any> | null)
+      decorateOwnerOrderAutomation(
+        applyOwnerOrderPrivacy(order, ownerAppSettings),
+        autoCancelSettings,
+        restaurant as Record<string, any> | null
+      )
     ),
     total
   }
@@ -932,7 +1058,7 @@ export async function getOrderById(params: { ownerId: string; orderId: string })
   }
 
   return decorateOwnerOrderAutomation(
-    order,
+    applyOwnerOrderPrivacy(order, getOwnerAppSettings(content as Record<string, any>)),
     getOwnerAutoCancelSettings(content as Record<string, any>),
     restaurant as Record<string, any> | null
   )
@@ -944,7 +1070,9 @@ export async function listOwnerRidersForAssignment(ownerId: string) {
   const riders = await RiderModel.find({
     status: "active"
   })
+    .select("_id fullName phone vehicleType isAvailableForAssignments")
     .sort({ createdAt: -1 })
+    .limit(100)
     .lean()
 
   const riderIds = riders.map((rider) => rider._id.toString())
@@ -1055,7 +1183,7 @@ export async function assignOwnerRiderToOrder(params: {
       assignmentAction: "unassigned"
     })
     emitSocketEvent(`rider:${previousRiderId}`, "rider.order.updated", order.toObject())
-    try {
+    enqueueBackgroundTask("owner.assignment.previous_rider_push", async () => {
       await sendPushToRider({
         riderId: previousRiderId,
         payload: {
@@ -1068,13 +1196,12 @@ export async function assignOwnerRiderToOrder(params: {
           }
         }
       })
-    } catch {
-      // Assignment is already saved; external push delivery should not fail it.
-    }
+    })
   }
 
-  emitSocketEvent(`owner:${params.ownerId}`, "order.updated", order.toObject())
-  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", order.toObject())
+  const ownerOrderObject = await buildOwnerFacingOrderPayload(order.toObject())
+  emitSocketEvent(`owner:${params.ownerId}`, "order.updated", ownerOrderObject)
+  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", ownerOrderObject)
   emitSocketEvent(`rider:${rider.id}`, "rider.assignment.updated", {
     orderId: order.id,
     orderNumber: order.orderNumber,
@@ -1083,12 +1210,13 @@ export async function assignOwnerRiderToOrder(params: {
   })
   emitSocketEvent(`rider:${rider.id}`, "rider.order.updated", order.toObject())
   emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", order.toObject())
-  emitSocketEvent("admin:live-map", "admin.live-map.updated", {
+  emitAdminOrderUpdated(order.toObject())
+  emitAdminLiveMapUpdated({
     type: "rider.assignment",
     orderId: order.id,
     riderId: rider.id,
   })
-  try {
+  enqueueBackgroundTask("owner.assignment.rider_push", async () => {
     await sendPushToRider({
       riderId: rider.id,
       payload: {
@@ -1104,10 +1232,8 @@ export async function assignOwnerRiderToOrder(params: {
         }
       }
     })
-  } catch {
-    // Assignment is already saved; external push delivery should not fail it.
-  }
-  try {
+  })
+  enqueueBackgroundTask("owner.assignment.customer_push", async () => {
     await sendPushToCustomer({
       customerId: order.customerId,
       payload: {
@@ -1123,11 +1249,14 @@ export async function assignOwnerRiderToOrder(params: {
         }
       }
     })
-  } catch {
-    // Assignment is already saved; external push delivery should not fail it.
-  }
+  })
 
-  return order
+  const responseContent = await getPlatformContent()
+  return decorateOwnerOrderAutomation(
+    ownerOrderObject,
+    getOwnerAutoCancelSettings(responseContent as Record<string, any>),
+    null
+  )
 }
 
 export async function transitionOrder(params: {
@@ -1189,6 +1318,9 @@ export async function transitionOrder(params: {
       setPayload["paymentSnapshot.refundStatus"] = "pending"
       setPayload["paymentSnapshot.refundRequestedAt"] = now
     }
+    if (currentOrder.paymentMethod === "Cash" && currentOrder.paymentStatus !== "paid") {
+      setPayload.paymentStatus = "cancelled"
+    }
   }
 
   if (params.nextStatus === "Cancelled") {
@@ -1202,6 +1334,9 @@ export async function transitionOrder(params: {
       setPayload.paymentStatus = "refund_pending"
       setPayload["paymentSnapshot.refundStatus"] = "pending"
       setPayload["paymentSnapshot.refundRequestedAt"] = now
+    }
+    if (currentOrder.paymentMethod === "Cash" && currentOrder.paymentStatus !== "paid") {
+      setPayload.paymentStatus = "cancelled"
     }
   }
 
@@ -1257,14 +1392,32 @@ export async function transitionOrder(params: {
   }
 
   const orderObject = order.toObject()
-  emitSocketEvent(`owner:${owner.id}`, "order.updated", orderObject)
-  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", orderObject)
+  const responseContent = await getPlatformContent()
+  const ownerOrderObject = applyOwnerOrderPrivacy(
+    orderObject,
+    getOwnerAppSettings(responseContent as Record<string, any>)
+  )
+  emitSocketEvent(`owner:${owner.id}`, "order.updated", ownerOrderObject)
+  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", ownerOrderObject)
   emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", orderObject)
-  emitSocketEvent("admin:live-map", "admin.live-map.updated", {
+  emitAdminOrderUpdated(orderObject)
+  emitAdminLiveMapUpdated({
     type: "order.transition",
     orderId: order.id,
     status: order.status,
   })
+
+  if (params.nextStatus === "Rejected" || params.nextStatus === "Cancelled") {
+    enqueueAdminOrderTerminalExceptionAlert({
+      order: orderObject,
+      actor: "owner",
+      nextStatus: params.nextStatus,
+      previousStatus: currentOrder.status,
+      reason: params.note,
+      occurredAt: now,
+      alwaysNotify: true
+    })
+  }
 
   await safeSendCustomerOrderStatusPush({
     customerId: order.customerId,
@@ -1277,7 +1430,11 @@ export async function transitionOrder(params: {
     void runAutoDispatchForReadyOrders().catch(() => undefined)
   }
 
-  return order
+  return decorateOwnerOrderAutomation(
+    ownerOrderObject,
+    getOwnerAutoCancelSettings(responseContent as Record<string, any>),
+    restaurant as Record<string, any> | null
+  )
 }
 
 export async function extendOrderPreparation(params: {
@@ -1364,17 +1521,22 @@ export async function extendOrderPreparation(params: {
   }
 
   const orderObject = updatedOrder.toObject()
-  emitSocketEvent(`owner:${owner.id}`, "order.updated", orderObject)
-  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", orderObject)
+  const ownerOrderObject = applyOwnerOrderPrivacy(
+    orderObject,
+    getOwnerAppSettings(content as Record<string, any>)
+  )
+  emitSocketEvent(`owner:${owner.id}`, "order.updated", ownerOrderObject)
+  emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", ownerOrderObject)
   emitSocketEvent(`customer:${updatedOrder.customerId}`, "customer.order.updated", orderObject)
-  emitSocketEvent("admin:live-map", "admin.live-map.updated", {
+  emitAdminOrderUpdated(orderObject)
+  emitAdminLiveMapUpdated({
     type: "order.preparation_extended",
     orderId: updatedOrder.id,
     status: updatedOrder.status
   })
 
   return decorateOwnerOrderAutomation(
-    orderObject,
+    ownerOrderObject,
     getOwnerAutoCancelSettings(content as Record<string, any>),
     restaurant as Record<string, any> | null
   )
@@ -1415,6 +1577,9 @@ export async function transitionOrderBySystem(params: {
       setPayload.paymentStatus = "refund_pending"
       setPayload["paymentSnapshot.refundStatus"] = "pending"
       setPayload["paymentSnapshot.refundRequestedAt"] = now
+    }
+    if (order.paymentMethod === "Cash" && order.paymentStatus !== "paid") {
+      setPayload.paymentStatus = "cancelled"
     }
   }
 
@@ -1501,9 +1666,10 @@ export async function transitionOrderBySystem(params: {
   }
 
   const restaurantOwner = await OwnerModel.findOne({ activeRestaurantId: updatedOrder.restaurantId })
+  const ownerFacingOrder = await buildOwnerFacingOrderPayload(updatedOrder.toObject())
 
   if (restaurantOwner) {
-    try {
+    enqueueBackgroundTask("owner.system_transition.owner_notification", async () => {
       await createOwnerNotification({
         ownerId: restaurantOwner.id,
         restaurantId: updatedOrder.restaurantId.toString(),
@@ -1515,23 +1681,39 @@ export async function transitionOrderBySystem(params: {
         description: `Order ${updatedOrder.orderNumber} is now ${params.nextStatus}.`,
         actionPath: `/orders?order=${updatedOrder.id}`
       })
-    } catch {
-      // The order transition already succeeded; notification persistence is best-effort.
-    }
+    })
 
-    emitSocketEvent(`owner:${restaurantOwner.id}`, "order.updated", updatedOrder.toObject())
+    emitSocketEvent(`owner:${restaurantOwner.id}`, "order.updated", ownerFacingOrder)
   }
 
-  emitSocketEvent(`restaurant:${updatedOrder.restaurantId.toString()}`, "order.updated", updatedOrder.toObject())
+  emitSocketEvent(`restaurant:${updatedOrder.restaurantId.toString()}`, "order.updated", ownerFacingOrder)
   emitSocketEvent(`customer:${updatedOrder.customerId}`, "customer.order.updated", updatedOrder.toObject())
+  emitAdminOrderUpdated(updatedOrder.toObject())
   if (updatedOrder.riderId) {
     emitSocketEvent(`rider:${updatedOrder.riderId}`, "rider.order.updated", updatedOrder.toObject())
   }
-  emitSocketEvent("admin:live-map", "admin.live-map.updated", {
+  emitAdminLiveMapUpdated({
     type: "order.transition",
     orderId: updatedOrder.id,
     status: updatedOrder.status,
   })
+
+  if (
+    params.nextStatus === "Cancelled" &&
+    (params.actor !== "admin" || updatedOrder.paymentMethod === "Bkash")
+  ) {
+    enqueueAdminOrderTerminalExceptionAlert({
+      order: updatedOrder.toObject(),
+      actor: params.actor,
+      nextStatus: "Cancelled",
+      previousStatus: order.status,
+      reason: params.note,
+      occurredAt: now,
+      alwaysNotify: params.actor !== "admin",
+      refundOnly: params.actor === "admin"
+    })
+  }
+
   await safeSendCustomerOrderStatusPush({
     customerId: updatedOrder.customerId,
     orderId: updatedOrder.id,
@@ -1591,6 +1773,8 @@ export async function updateOrderRiderLocation(params: {
       history?: Array<Record<string, unknown>>
     } | null) ?? {}
 
+  const platformContent = await getPlatformContent()
+  const riderEtaSettings = getRiderEtaSettings(platformContent)
   const trackingEstimate = estimateCycleTracking({
     riderLatitude: params.latitude,
     riderLongitude: params.longitude,
@@ -1599,7 +1783,9 @@ export async function updateOrderRiderLocation(params: {
     previousLatitude: currentTracking.currentLocation?.latitude,
     previousLongitude: currentTracking.currentLocation?.longitude,
     previousUpdatedAt: currentTracking.lastUpdatedAt,
-    reportedSpeedKmph: params.speedKmph
+    reportedSpeedKmph: params.speedKmph,
+    etaSpeedKmph: riderEtaSettings.speedKmph,
+    routeFactor: riderEtaSettings.routeFactor
   })
 
   const trackingSnapshot = {
@@ -1646,23 +1832,24 @@ export async function updateOrderRiderLocation(params: {
   await order.save()
 
   const restaurantOwner = await OwnerModel.findOne({ activeRestaurantId: order.restaurantId })
+  const ownerFacingOrder = await buildOwnerFacingOrderPayload(order.toObject())
 
   if (restaurantOwner) {
-    emitSocketEvent(`owner:${restaurantOwner.id}`, "order.updated", order.toObject())
+    emitSocketEvent(`owner:${restaurantOwner.id}`, "order.updated", ownerFacingOrder)
   }
-  emitSocketEvent(`restaurant:${order.restaurantId.toString()}`, "order.updated", order.toObject())
+  emitSocketEvent(`restaurant:${order.restaurantId.toString()}`, "order.updated", ownerFacingOrder)
   emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", order.toObject())
   if (order.riderId) {
     emitSocketEvent(`rider:${order.riderId}`, "rider.order.updated", order.toObject())
   }
-  emitSocketEvent("admin:live-map", "admin.live-map.updated", {
+  emitAdminLiveMapUpdated({
     type: "rider.location",
     orderId: order.id,
     status: order.status,
   })
 
   if (trackingEstimate.isNearCustomer && !currentTracking.nearCustomerNotifiedAt) {
-    try {
+    enqueueBackgroundTask("owner.rider_near.customer_push", async () => {
       await sendPushToCustomer({
         customerId: order.customerId,
         payload: {
@@ -1675,9 +1862,7 @@ export async function updateOrderRiderLocation(params: {
           }
         }
       })
-    } catch {
-      // Location updates should continue even if push delivery is temporarily unavailable.
-    }
+    })
   }
 
   return order

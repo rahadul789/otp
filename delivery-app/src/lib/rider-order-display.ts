@@ -63,6 +63,38 @@ export function getOrderStatusBadge(status?: string) {
   }
 }
 
+export function getPaymentMethodBadge(value?: string | null) {
+  const normalized = `${value ?? ""}`.trim().toLowerCase();
+
+  if (normalized.includes("bkash")) {
+    return {
+      label: "bKash",
+      backgroundColor: "#FFE4F1",
+      borderColor: "#F9A8D4",
+      color: "#BE185D",
+      icon: "wallet-outline" as const,
+    };
+  }
+
+  if (normalized.includes("cash") || normalized.includes("cod")) {
+    return {
+      label: "COD",
+      backgroundColor: palette.warningSoft,
+      borderColor: "#F2D5A8",
+      color: palette.warning,
+      icon: "cash-outline" as const,
+    };
+  }
+
+  return {
+    label: value ? `${value}`.trim() : "--",
+    backgroundColor: palette.surfaceMuted,
+    borderColor: palette.border,
+    color: palette.mutedForeground,
+    icon: "card-outline" as const,
+  };
+}
+
 export function getOrderTimingInfo(order: Pick<RiderOrder, "status" | "createdAt" | "updatedAt" | "timestamps">) {
   const timestamps = order.timestamps ?? {};
 

@@ -126,9 +126,12 @@ export function RestaurantHeroCard({
             style={[
               styles.favoriteButton,
               isFavorite ? styles.favoriteButtonActive : null,
+              favoriteDisabled ? styles.favoriteButtonDisabled : null,
             ]}
             onPress={handleFavoritePress}
-            disabled={favoriteDisabled}
+            onPressIn={(event) => event.stopPropagation()}
+            onPressOut={(event) => event.stopPropagation()}
+            accessibilityState={{ disabled: favoriteDisabled, selected: isFavorite }}
             hitSlop={8}
           >
             <Ionicons
@@ -141,7 +144,7 @@ export function RestaurantHeroCard({
 
         {hasOffer ? (
           <View style={styles.offerBadge}>
-            <Ionicons name="pricetag" size={12} color="#fff" />
+            <Ionicons name="pricetag" size={10} color="#fff" />
             <Text numberOfLines={1} style={styles.offerBadgeText}>
               {offerLabel}
             </Text>
@@ -219,7 +222,7 @@ function Metric({
 const styles = StyleSheet.create({
   card: {
     overflow: "hidden",
-    borderRadius: 28,
+    borderRadius: 16,
     backgroundColor: palette.surface,
     shadowColor: palette.shadow,
     shadowOpacity: 1,
@@ -228,7 +231,7 @@ const styles = StyleSheet.create({
     elevation: 7,
   },
   cardCompact: {
-    borderRadius: 24,
+    borderRadius: 14,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
     elevation: 5,
@@ -347,23 +350,30 @@ const styles = StyleSheet.create({
   favoriteButtonActive: {
     backgroundColor: palette.secondary,
   },
+  favoriteButtonDisabled: {
+    opacity: 0.76,
+  },
   offerBadge: {
     position: "absolute",
-    right: 10,
-    bottom: 10,
-    maxWidth: "74%",
+    right: 8,
+    bottom: 8,
+    maxWidth: "62%",
+    zIndex: 4,
+    elevation: 4,
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,99,146,0.94)",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 99, 146, 0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.72)",
   },
   offerBadgeText: {
     flexShrink: 1,
-    fontSize: 11,
-    lineHeight: 14,
+    fontSize: 9,
+    lineHeight: 12,
     fontWeight: "800",
     color: "#fff",
   },

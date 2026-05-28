@@ -37,6 +37,24 @@ const toneStyles = {
   },
 } as const;
 
+function getFallbackBannerEmoji(
+  text: string,
+  tone: keyof typeof toneStyles,
+) {
+  if (text.includes("delivered")) return "\u{1F389}";
+  if (text.includes("rider") || text.includes("way")) return "\u{1F6F5}";
+  if (text.includes("prepar")) return "\u{1F468}\u200D\u{1F373}";
+  if (text.includes("pickup") || text.includes("packed")) return "\u{1F6CD}\uFE0F";
+  if (text.includes("accepted") || text.includes("confirmed")) return "\u2705";
+  if (text.includes("review") || text.includes("feedback")) return "\u2B50";
+  if (text.includes("cart") || text.includes("added") || text.includes("reorder")) return "\u{1F6D2}";
+  if (text.includes("profile") || text.includes("account")) return "\u{1F464}";
+  if (text.includes("sign out") || text.includes("failed") || text.includes("cancel")) return "\u26A0\uFE0F";
+  if (tone === "success") return "\u2728";
+  if (tone === "warning") return "\u26A0\uFE0F";
+  return "\u{1F37D}\uFE0F";
+}
+
 function getBannerEmoji(banner: {
   emoji?: string;
   tone: keyof typeof toneStyles;
@@ -46,19 +64,7 @@ function getBannerEmoji(banner: {
   if (banner.emoji) return banner.emoji;
 
   const text = `${banner.title} ${banner.description}`.toLowerCase();
-
-  if (text.includes("delivered")) return "🎉";
-  if (text.includes("rider") || text.includes("way")) return "🛵";
-  if (text.includes("prepar")) return "👨‍🍳";
-  if (text.includes("pickup") || text.includes("packed")) return "🛍️";
-  if (text.includes("accepted") || text.includes("confirmed")) return "✅";
-  if (text.includes("review") || text.includes("feedback")) return "⭐";
-  if (text.includes("cart") || text.includes("added") || text.includes("reorder")) return "🛒";
-  if (text.includes("profile") || text.includes("account")) return "👤";
-  if (text.includes("sign out") || text.includes("failed") || text.includes("cancel")) return "⚠️";
-  if (banner.tone === "success") return "✨";
-  if (banner.tone === "warning") return "⚠️";
-  return "🍽️";
+  return getFallbackBannerEmoji(text, banner.tone);
 }
 
 export function AppBannerHost() {

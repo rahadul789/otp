@@ -1,17 +1,19 @@
 import { Router } from "express"
-import rateLimit from "express-rate-limit"
 import {
   createOtpSendLimiter,
   createOtpVerifyLimiter,
   createPasswordRecoveryLimiter,
   createRefreshLimiter,
+  createRiderLocationLimiter,
   createSigninLimiter
 } from "../../common/middleware/rate-limit"
 
 import { requireAuth, requireRole } from "../../common/middleware/auth"
 import {
+  getRiderLiveMapView,
   getRiderOrder,
   getRiderOrders,
+  getRiderOrdersSummary,
   getRiderProfileSummary,
   logoutRiderAuth,
   deleteRiderPushToken,
@@ -38,12 +40,7 @@ const riderAuthVerifyLimiter = createOtpVerifyLimiter()
 const riderSigninLimiter = createSigninLimiter()
 const riderPasswordRecoveryLimiter = createPasswordRecoveryLimiter()
 const riderRefreshLimiter = createRefreshLimiter()
-const riderLocationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 900,
-  standardHeaders: true,
-  legacyHeaders: false
-})
+const riderLocationLimiter = createRiderLocationLimiter()
 
 riderRouter.post("/auth/phone/start", riderAuthStartLimiter, startRiderPhoneAuth)
 riderRouter.post("/auth/phone/verify", riderAuthVerifyLimiter, verifyRiderPhoneAuth)
@@ -63,14 +60,16 @@ riderRouter.patch(
 )
 riderRouter.patch(
   "/profile/location",
-  riderLocationLimiter,
   requireAuth,
   requireRole("rider"),
+  riderLocationLimiter,
   patchRiderProfileLocation
 )
 riderRouter.post("/push-tokens", requireAuth, requireRole("rider"), postRiderPushToken)
 riderRouter.delete("/push-tokens", requireAuth, requireRole("rider"), deleteRiderPushToken)
+riderRouter.get("/live-map", requireAuth, requireRole("rider"), getRiderLiveMapView)
 riderRouter.get("/orders", requireAuth, requireRole("rider"), getRiderOrders)
+riderRouter.get("/orders/summary", requireAuth, requireRole("rider"), getRiderOrdersSummary)
 riderRouter.get("/orders/:orderId", requireAuth, requireRole("rider"), getRiderOrder)
 riderRouter.post("/orders/:orderId/accept", requireAuth, requireRole("rider"), postRiderAccept)
 riderRouter.post("/orders/:orderId/pickup", requireAuth, requireRole("rider"), postRiderPickup)
@@ -83,8 +82,8 @@ riderRouter.post(
 )
 riderRouter.post(
   "/orders/:orderId/location",
-  riderLocationLimiter,
   requireAuth,
   requireRole("rider"),
+  riderLocationLimiter,
   postRiderOrderLocation
 )

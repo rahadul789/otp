@@ -9,6 +9,7 @@ type ApiEnvelope<T> = {
 };
 
 let refreshPromise: Promise<boolean> | null = null;
+const INTERNET_REACHABILITY_URL = "https://clients3.google.com/generate_204";
 
 async function parseResponse<T>(response: Response) {
   const text = await response.text();
@@ -39,13 +40,39 @@ async function parseResponse<T>(response: Response) {
   return JSON.parse(text) as ApiEnvelope<T>;
 }
 
-function getNetworkAwareMessage(error: unknown) {
+function isNetworkFailure(error: unknown) {
   if (error instanceof TypeError) {
-    return "You appear to be offline. Reconnect and try again.";
+    return true;
   }
 
   if (error instanceof Error && /network request failed/i.test(error.message)) {
-    return "You appear to be offline. Reconnect and try again.";
+    return true;
+  }
+
+  return false;
+}
+
+async function hasInternetConnection() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3500);
+
+  try {
+    await fetch(`${INTERNET_REACHABILITY_URL}?t=${Date.now()}`, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function getNetworkAwareMessage(error: unknown) {
+  if (isNetworkFailure(error)) {
+    return "No internet connection. Reconnect and try again.";
   }
 
   return error instanceof Error ? error.message : "Request failed. Please try again.";
@@ -130,8 +157,19 @@ async function request<T>(path: string, init?: RequestInit, allowRetry = true) {
       clearTimeout(slowTimer);
       slowTimer = null;
     }
+
+    if (isNetworkFailure(error)) {
+      const hasInternet = await hasInternetConnection();
+      if (hasInternet) {
+        const message =
+          "Unable to reach Foodbela server. Please check the backend URL or try again.";
+        networkStore.markServerIssue(message);
+        throw new Error(message);
+      }
+    }
+
     const message = getNetworkAwareMessage(error);
-    useNetworkStore.getState().markOffline(message);
+    networkStore.markOffline(message);
     throw new Error(message);
   }
 
@@ -161,6 +199,13 @@ export async function apiPost<T>(path: string, body?: unknown, allowRetry = true
 export async function apiPatch<T>(path: string, body?: unknown) {
   return request<T>(path, {
     method: "PATCH",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+export async function apiPut<T>(path: string, body?: unknown) {
+  return request<T>(path, {
+    method: "PUT",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }

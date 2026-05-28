@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query"
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { api } from "@/lib/api"
 import { buildQueryString, compactQueryParams } from "@/lib/filtering"
@@ -451,10 +451,15 @@ export function useOwnerPayoutTransactionsQuery(
   })
 }
 
-export function useOwnerPayoutRequestMutation() {
+export function useRequestOwnerPayoutMutation() {
+  const queryClient = useQueryClient()
+
   return useMutation({
-    mutationFn: (payload: { amount: number }) =>
-      api.post<OwnerPayoutHistoryResponse>("/owner/payouts/request", payload),
+    mutationFn: () => api.post<OwnerPayoutHistoryResponse>("/owner/payouts/request", {}),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+    },
   })
 }
 
@@ -474,6 +479,7 @@ export function useOwnerDashboardSummaryQuery(
     queryKey: ["owner", "dashboard", "summary", normalizedParams],
     enabled,
     placeholderData: keepPreviousData,
+    staleTime: 1000 * 10,
     queryFn: ({ signal }) =>
       api.get<OwnerDashboardSummaryResponse>(path, signal),
   })
@@ -639,6 +645,7 @@ export function useOwnerOrdersQuery(
     queryKey: ["owner", "orders", normalizedParams],
     enabled,
     placeholderData: keepPreviousData,
+    staleTime: 1000 * 5,
     queryFn: ({ signal }) => api.get<OwnerListResponse<OwnerOrderResponse>>(path, signal),
   })
 }
@@ -677,6 +684,7 @@ export function useOwnerAnalyticsOrdersQuery(
     queryKey: ["owner", "analytics", "orders", analyticsListParams],
     enabled,
     placeholderData: keepPreviousData,
+    staleTime: 1000 * 10,
     queryFn: ({ signal }) =>
       api.get<OwnerListResponse<OwnerOrderResponse>>(path, signal),
   })

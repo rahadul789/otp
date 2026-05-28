@@ -54,6 +54,7 @@ export type CustomerPaymentSettings = {
   bkashEnabled: boolean;
   bkashLabel: string;
   bkashSubtitle: string;
+  bkashRefundEtaMinutes: number;
 };
 
 type PlatformContentResponse = {
@@ -122,23 +123,6 @@ type CustomerProfile = {
     orderUpdates?: boolean;
     restaurantStatus?: boolean;
     reviewReplies?: boolean;
-  };
-  accountRequest?: {
-    type?: "deactivate" | "delete" | null;
-    reason?: string;
-    reviewNote?: string;
-    reviewedByAdminId?: string | null;
-    reviewedByAdminName?: string;
-    status?: string;
-    requestedAt?: string | null;
-    reviewedAt?: string | null;
-    history?: {
-      action?: string;
-      note?: string;
-      actorId?: string;
-      actorName?: string;
-      createdAt?: string | null;
-    }[];
   };
   previousPhones?: {
     phone: string;
@@ -369,6 +353,10 @@ export function useCustomerPaymentSettingsQuery() {
         bkashLabel: payments.bkashLabel || "bKash",
         bkashSubtitle:
           payments.bkashSubtitle || "Continue to the official hosted payment page.",
+        bkashRefundEtaMinutes:
+          typeof payments.bkashRefundEtaMinutes === "number"
+            ? payments.bkashRefundEtaMinutes
+            : 60,
       } satisfies CustomerPaymentSettings;
     },
   });
@@ -698,8 +686,23 @@ type CustomerOrderResponse = {
   orderNumber: string;
   status: string;
   paymentMethod: string;
+  paymentStatus?: string;
   terminalReason?: string;
   cancelledBy?: string;
+  paymentSnapshot?: {
+    provider?: string;
+    sessionId?: string;
+    paymentAttemptId?: string;
+    paymentID?: string;
+    transactionId?: string;
+    walletNumber?: string;
+    confirmedAt?: string | null;
+    refundStatus?: string;
+    refundNote?: string;
+    refundRequestedAt?: string | null;
+    refundReviewedAt?: string | null;
+    refundEtaMinutes?: number;
+  };
   customerSnapshot?: {
     id?: string;
     fullName?: string;
@@ -726,6 +729,7 @@ type CustomerOrderResponse = {
   };
   riderTracking?: {
     isActive?: boolean;
+    isFocused?: boolean;
     startedAt?: string;
     lastUpdatedAt?: string;
     freshness?: {
@@ -738,6 +742,8 @@ type CustomerOrderResponse = {
     remainingDistanceKm?: number;
     directDistanceKm?: number;
     remainingDurationMinutes?: number;
+    queueEtaMinutes?: number;
+    queuePosition?: number;
     speedKmph?: number;
     isNearCustomer?: boolean;
     nearCustomerNotifiedAt?: string | null;
@@ -1074,51 +1080,6 @@ export function useCustomerMediaUploadSignatureMutation() {
   });
 }
 
-export function useCustomerAccountRequestMutation() {
-  const updateCustomerProfile = useCustomerAuthStore((state) => state.updateCustomerProfile);
-
-  return useMutation({
-    mutationFn: async (params: {
-      type: "deactivate" | "delete";
-      reason?: string;
-    }) => {
-      const response = await apiProtectedPost<{
-        customer: CustomerProfile;
-      }>("/customer/account-request", params);
-      return response.data;
-    },
-    onSuccess: (data) => {
-      updateCustomerProfile(data.customer);
-      useAppBannerStore.getState().showBanner({
-        title: "Request submitted",
-        description: "Your account request has been recorded and will be reviewed.",
-        tone: "success",
-      });
-    },
-  });
-}
-
-export function useCustomerCancelAccountRequestMutation() {
-  const updateCustomerProfile = useCustomerAuthStore((state) => state.updateCustomerProfile);
-
-  return useMutation({
-    mutationFn: async () => {
-      const response = await apiDelete<{
-        customer: CustomerProfile;
-      }>("/customer/account-request");
-      return response.data;
-    },
-    onSuccess: (data) => {
-      updateCustomerProfile(data.customer);
-      useAppBannerStore.getState().showBanner({
-        title: "Request cancelled",
-        description: "Your pending account request has been removed.",
-        tone: "success",
-      });
-    },
-  });
-}
-
 export function useCustomerOrdersQuery(enabled = true) {
   const isAuthenticated = useCustomerAuthStore((state) => Boolean(state.accessToken));
 
@@ -1179,6 +1140,8 @@ export function useCustomerActiveOrderQuery(enabled = true) {
   return useQuery({
     queryKey: ["customer", "orders", "active"],
     enabled: enabled && isAuthenticated,
+    refetchInterval: (query) => (query.state.data ? 10_000 : false),
+    refetchIntervalInBackground: false,
     queryFn: async () => {
       const response = await apiProtectedGet<CustomerOrderResponse[]>(
         "/customer/orders?page=1&pageSize=1&statusGroup=live"

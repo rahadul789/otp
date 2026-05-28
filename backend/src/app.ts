@@ -39,6 +39,10 @@ function isRoutineRequestLog(req: express.Request) {
 export function createApp() {
   const app = express();
 
+  if (env.TRUST_PROXY_HOPS > 0) {
+    app.set("trust proxy", env.TRUST_PROXY_HOPS);
+  }
+
   app.use(
     cors({
       origin: [
@@ -75,9 +79,14 @@ export function createApp() {
         limit: env.RATE_LIMIT_MAX,
         standardHeaders: true,
         legacyHeaders: false,
+        message: {
+          message: "Too many requests. Please slow down and try again shortly.",
+        },
         skip: (req) =>
           (req.method === "POST" &&
             /^\/api\/v1\/rider\/orders\/[^/]+\/location$/.test(req.path)) ||
+          (req.method === "PATCH" &&
+            req.path === `${env.API_PREFIX}/rider/profile/location`) ||
           (req.method === "POST" &&
             req.path === `${env.API_PREFIX}/customer/analytics/events`) ||
           (req.method === "POST" &&

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { secureStateStorage } from "@/src/lib/secure-storage";
+import { appStateStorage } from "@/src/lib/app-storage";
 import type { SavedLocation, StartupStatus } from "@/src/types/location";
 
 type LocationStore = {
@@ -139,7 +139,7 @@ export const useLocationStore = create<LocationStore>()(
     }),
     {
       name: "customer-location-state",
-      storage: createJSONStorage(() => secureStateStorage),
+      storage: createJSONStorage(() => appStateStorage),
       partialize: (state) => ({
         permissionGranted: state.permissionGranted,
         currentCoordinates: state.currentCoordinates,

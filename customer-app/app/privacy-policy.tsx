@@ -33,7 +33,7 @@ const privacyItems = [
 const controlItems = [
   "You can update your name from Personal info.",
   "You can update your delivery point from Profile.",
-  "You can send account requests from this app.",
+  "You can ask support for account or privacy help any time.",
 ];
 
 export default function PrivacyPolicyScreen() {
@@ -126,12 +126,6 @@ export default function PrivacyPolicyScreen() {
             </Text>
           </View>
           <View style={styles.actionRow}>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={() => router.push("/account-request")}
-            >
-              <Text style={styles.secondaryButtonText}>Requests</Text>
-            </Pressable>
             <Pressable
               style={styles.primaryButton}
               onPress={() => router.push("/support")}

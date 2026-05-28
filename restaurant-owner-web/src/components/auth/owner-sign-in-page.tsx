@@ -12,7 +12,6 @@ import { toast } from "sonner"
 
 import { AuthFieldMessage, AuthShell } from "@/components/auth/auth-shell"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -42,7 +41,6 @@ export function OwnerSignInPage() {
 
   const [identifier, setIdentifier] = React.useState("")
   const [password, setPassword] = React.useState("")
-  const [rememberMe, setRememberMe] = React.useState(true)
   const [showPassword, setShowPassword] = React.useState(false)
   const [errors, setErrors] = React.useState<Record<string, string>>({})
   const [submitError, setSubmitError] = React.useState("")
@@ -145,10 +143,7 @@ export function OwnerSignInPage() {
               maxLength={11}
             />
           </div>
-          <AuthFieldMessage
-            error={errors.identifier}
-            hint="Use the verified phone number linked to your owner account."
-          />
+          <AuthFieldMessage error={errors.identifier} />
         </div>
 
         <div className="space-y-2">
@@ -192,19 +187,6 @@ export function OwnerSignInPage() {
             </button>
           </div>
           <AuthFieldMessage error={errors.password} />
-        </div>
-
-        <div className="flex items-center justify-between gap-3 rounded-2xl border bg-muted/20 px-4 py-3">
-          <label className="flex items-center gap-3 text-sm">
-            <Checkbox
-              checked={rememberMe}
-              onCheckedChange={(checked) => setRememberMe(Boolean(checked))}
-            />
-            Remember this device
-          </label>
-          <p className="text-xs text-muted-foreground">
-            {rememberMe ? "Saved for future sign-ins" : "Session only"}
-          </p>
         </div>
 
         <AuthFieldMessage

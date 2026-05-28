@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,7 +20,15 @@ import {
   useOwnerOrderDetailsQuery,
   useOwnerOrderTransitionMutation,
 } from "@/src/hooks/use-owner-api";
-import { formatCurrency, formatTime, getOrderPlacedAt } from "@/src/lib/format";
+import { useNow } from "@/src/hooks/use-now";
+import {
+  formatCurrency,
+  formatTime,
+  getOrderPlacedAt,
+  getOwnerOrderDiscount,
+  getOwnerOrderNetSales,
+  getOwnerOrderSubtotal,
+} from "@/src/lib/format";
 import {
   formatAutoCancelCountdown,
   getAutoCancelRemainingSeconds,
@@ -42,14 +50,9 @@ export default function OrderDetailsScreen() {
   const [pendingAction, setPendingAction] = useState("");
   const [pendingExtension, setPendingExtension] = useState<number | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [now, setNow] = useState(Date.now());
+  const now = useNow();
   const order = orderQuery.data;
   const autoCancelSeconds = order ? getAutoCancelRemainingSeconds(order, now) : null;
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   function handleBack() {
     if (router.canGoBack()) {
@@ -149,10 +152,12 @@ export default function OrderDetailsScreen() {
             </Text>
           </View>
           {order ? (
-            <StatusPill
-              label={getOrderStatusLabel(order.status)}
-              tone={getOrderStatusTone(order.status)}
-            />
+            <View style={styles.headerBadgeStack}>
+              <StatusPill
+                label={getOrderStatusLabel(order.status)}
+                tone={getOrderStatusTone(order.status)}
+              />
+            </View>
           ) : null}
         </View>
 
@@ -176,8 +181,8 @@ export default function OrderDetailsScreen() {
                   value={formatTime(getOrderPlacedAt(order)) || "Just now"}
                 />
                 <InfoBlock
-                  label="Total"
-                  value={formatCurrency(order.pricing?.total)}
+                  label="Food sales"
+                  value={formatCurrency(getOwnerOrderNetSales(order))}
                   alignRight
                 />
               </View>
@@ -187,7 +192,11 @@ export default function OrderDetailsScreen() {
                   label="Customer"
                   value={order.customerSnapshot?.fullName || "Customer"}
                 />
-                <InfoBlock label="Payment" value={order.paymentMethod || "Payment"} alignRight />
+                <InfoBlock
+                  label="Items"
+                  value={`${order.itemsSnapshot?.length ?? 0} items`}
+                  alignRight
+                />
               </View>
               {order.customerSnapshot?.phone ? (
                 <Text style={styles.phoneText}>{order.customerSnapshot.phone}</Text>
@@ -251,20 +260,37 @@ export default function OrderDetailsScreen() {
             </View>
 
             <View style={styles.sectionCard}>
-              <Text style={styles.sectionTitle}>Delivery address</Text>
-              <Text style={styles.addressTitle}>
-                {order.customerSnapshot?.deliveryAddress?.label || "Customer address"}
-              </Text>
-              <Text style={styles.addressText}>
-                {[
-                  order.customerSnapshot?.deliveryAddress?.addressLine,
-                  order.customerSnapshot?.deliveryAddress?.details,
-                  order.customerSnapshot?.deliveryAddress?.area,
-                  order.customerSnapshot?.deliveryAddress?.district,
-                ]
-                  .filter(Boolean)
-                  .join(", ") || "Address details not available."}
-              </Text>
+              <Text style={styles.sectionTitle}>Restaurant summary</Text>
+              <SummaryLine
+                label="Food subtotal"
+                value={formatCurrency(getOwnerOrderSubtotal(order))}
+              />
+              {getOwnerOrderDiscount(order) > 0 ? (
+                <SummaryLine
+                  label="Owner voucher/discount"
+                  value={`-${formatCurrency(getOwnerOrderDiscount(order))}`}
+                />
+              ) : null}
+              <View style={styles.summaryDivider} />
+              <SummaryLine
+                label="Restaurant net sales"
+                value={formatCurrency(getOwnerOrderNetSales(order))}
+                strong
+              />
+              {order.appliedVouchers?.length ? (
+                <View style={styles.voucherList}>
+                  {order.appliedVouchers.map((voucher, index) => (
+                    <SummaryLine
+                      key={`${voucher.id ?? voucher.code ?? voucher.name ?? "voucher"}-${index}`}
+                      label={voucher.name || voucher.code || "Owner voucher"}
+                      value={`-${formatCurrency(
+                        voucher.ownerDiscountCost ?? voucher.discountAmount,
+                      )}`}
+                      muted
+                    />
+                  ))}
+                </View>
+              ) : null}
             </View>
 
             {order.history?.length ? (
@@ -386,6 +412,43 @@ function InfoBlock({
     <View style={[styles.infoBlock, alignRight ? styles.infoBlockRight : null]}>
       <Text style={styles.infoLabel}>{label}</Text>
       <Text numberOfLines={1} style={styles.infoValue}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function SummaryLine({
+  label,
+  value,
+  strong,
+  muted,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <View style={styles.summaryLine}>
+      <Text
+        numberOfLines={1}
+        style={[
+          styles.summaryLabel,
+          muted ? styles.summaryMuted : null,
+          strong ? styles.summaryStrong : null,
+        ]}
+      >
+        {label}
+      </Text>
+      <Text
+        numberOfLines={1}
+        style={[
+          styles.summaryValue,
+          muted ? styles.summaryMuted : null,
+          strong ? styles.summaryStrong : null,
+        ]}
+      >
         {value}
       </Text>
     </View>
@@ -546,6 +609,11 @@ const styles = StyleSheet.create({
   },
   headerTextWrap: {
     flex: 1,
+  },
+  headerBadgeStack: {
+    alignItems: "flex-end",
+    gap: 6,
+    maxWidth: 130,
   },
   title: {
     fontSize: 24,
@@ -721,6 +789,45 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: palette.foreground,
   },
+  summaryLine: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  summaryLabel: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+  },
+  summaryValue: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  summaryStrong: {
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  summaryMuted: {
+    color: palette.mutedForeground,
+  },
+  summaryDivider: {
+    height: 1,
+    backgroundColor: palette.border,
+  },
+  voucherList: {
+    borderRadius: 14,
+    backgroundColor: palette.surfaceMuted,
+    padding: 10,
+    gap: 6,
+  },
   actionRow: {
     flexDirection: "row",
     gap: 9,
@@ -785,18 +892,6 @@ const styles = StyleSheet.create({
   itemMeta: {
     fontSize: 12,
     lineHeight: 18,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  addressTitle: {
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: "900",
-    color: palette.foreground,
-  },
-  addressText: {
-    fontSize: 13,
-    lineHeight: 19,
     fontWeight: "600",
     color: palette.mutedForeground,
   },

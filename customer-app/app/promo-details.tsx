@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { PromoDetailsSkeleton } from "@/src/components/loading-skeleton";
 import { Screen } from "@/src/components/screen";
 import { useCustomerNotificationCampaignQuery } from "@/src/hooks/use-customer-api";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
@@ -63,10 +64,7 @@ export default function PromoDetailsScreen() {
 
         {campaignQuery.isLoading ? (
           <View style={styles.feedbackWrap}>
-            <View style={styles.loadingCard}>
-              <ActivityIndicator size="small" color={palette.secondary} />
-              <Text style={styles.loadingText}>Loading offer...</Text>
-            </View>
+            <PromoDetailsSkeleton />
           </View>
         ) : campaignQuery.isError && !fallbackTitle ? (
           <View style={styles.feedbackWrap}>

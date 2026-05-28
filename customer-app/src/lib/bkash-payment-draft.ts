@@ -1,4 +1,4 @@
-import { secureStateStorage } from "@/src/lib/secure-storage";
+import { appStateStorage } from "@/src/lib/app-storage";
 
 export type BkashPaymentDraftItem = {
   itemId: string;
@@ -70,11 +70,11 @@ function isBkashPaymentDraft(value: unknown): value is BkashPaymentDraft {
 }
 
 export async function saveBkashPaymentDraft(draft: BkashPaymentDraft) {
-  await secureStateStorage.setItem(draftKey(draft.sessionId), JSON.stringify(draft));
+  await appStateStorage.setItem(draftKey(draft.sessionId), JSON.stringify(draft));
 }
 
 export async function getBkashPaymentDraft(sessionId: string) {
-  const rawValue = await secureStateStorage.getItem(draftKey(sessionId));
+  const rawValue = await appStateStorage.getItem(draftKey(sessionId));
   if (!rawValue) return null;
 
   try {
@@ -86,5 +86,5 @@ export async function getBkashPaymentDraft(sessionId: string) {
 }
 
 export async function clearBkashPaymentDraft(sessionId: string) {
-  await secureStateStorage.removeItem(draftKey(sessionId));
+  await appStateStorage.removeItem(draftKey(sessionId));
 }

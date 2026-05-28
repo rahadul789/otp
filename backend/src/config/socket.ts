@@ -108,7 +108,7 @@ export function createSocketServer(server: HttpServer) {
     const accessToken = getSocketAccessToken(socket)
 
     if (!accessToken) {
-      return next()
+      return next(new Error("Socket access token is required"))
     }
 
     try {

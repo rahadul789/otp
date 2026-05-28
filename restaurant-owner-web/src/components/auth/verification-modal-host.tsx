@@ -1,5 +1,5 @@
 import * as React from "react"
-import { BadgeCheck, LoaderCircle, RefreshCw, ShieldCheck } from "lucide-react"
+import { BadgeCheck, LoaderCircle, RefreshCw, ShieldCheck, X } from "lucide-react"
 import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
@@ -69,7 +69,9 @@ export function VerificationModalHost() {
     (Boolean(verificationRequest.verificationSessionId) ||
       (ownerAccount.isAuthenticated &&
         (Boolean(ownerAccount.pendingPhone) ||
-          Boolean(payoutMethod.pendingAccountNumber) ||
+          (Boolean(payoutMethod.pendingAccountNumber) &&
+            (!payoutMethod.pendingVerificationStatus ||
+              payoutMethod.pendingVerificationStatus === "otp_pending")) ||
           (!ownerAccount.isPhoneVerified &&
             restaurantLifecycleStatus === "account_created"))))
   )
@@ -167,19 +169,14 @@ export function VerificationModalHost() {
           } else if (verificationRequest.purpose === "owner_payout_verify") {
             setPayoutMethod((current) => ({
               ...current,
-              type: "bkash",
-              accountName: current.pendingAccountName || current.accountName,
-              accountNumber:
-                current.pendingAccountNumber || current.accountNumber,
-              bankName: "",
-              branchName: "",
-              pendingAccountName: "",
-              pendingAccountNumber: "",
-              verificationSource: null,
-              isVerified: true,
-              verifiedAt: new Date().toISOString(),
+              pendingVerificationStatus: "admin_pending",
+              pendingVerifiedAt: new Date().toISOString(),
+              pendingAdminNote: "",
             }))
-            toast.success("bKash number verified successfully.")
+            toast.success("bKash number verified.", {
+              description:
+                "Admin approval is required before the new number becomes active.",
+            })
           } else {
             if (result.nextStatus === "phone_verified") {
               setRestaurantLifecycleStatus("phone_verified")
@@ -199,18 +196,14 @@ export function VerificationModalHost() {
       } else if (payoutMethod.pendingAccountNumber) {
         setPayoutMethod((current) => ({
           ...current,
-          type: "bkash",
-          accountName: current.pendingAccountName || current.accountName,
-          accountNumber: current.pendingAccountNumber || current.accountNumber,
-          bankName: "",
-          branchName: "",
-          pendingAccountName: "",
-          pendingAccountNumber: "",
-          verificationSource: null,
-          isVerified: true,
-          verifiedAt: new Date().toISOString(),
+          pendingVerificationStatus: "admin_pending",
+          pendingVerifiedAt: new Date().toISOString(),
+          pendingAdminNote: "",
         }))
-        toast.success("bKash number verified successfully.")
+        toast.success("bKash number verified.", {
+          description:
+            "Admin approval is required before the new number becomes active.",
+        })
       } else {
         setOwnerAccount((current) => ({
           ...current,
@@ -298,13 +291,51 @@ export function VerificationModalHost() {
     payoutMethod.pendingAccountNumber ||
     ownerAccount.pendingPhone ||
     ownerAccount.phone
+  const canDismissVerification =
+    verificationRequest.purpose === "owner_phone_change" ||
+    verificationRequest.purpose === "owner_payout_verify" ||
+    Boolean(payoutMethod.pendingAccountNumber)
+
+  function handleDismiss() {
+    if (!canDismissVerification || isLoading) return
+    setVerificationModalOpen(false)
+    setVerificationRequest({
+      verificationSessionId: null,
+      purpose: null,
+      phone: "",
+      referenceId: null,
+      pendingPassword: "",
+      resendAvailableInSeconds: undefined,
+    })
+    setCode("")
+    setError("")
+    setSecondsLeft(RESEND_SECONDS)
+  }
 
   return (
-    <Dialog open={requiresVerification} onOpenChange={() => undefined}>
+    <Dialog
+      open={requiresVerification}
+      onOpenChange={(open) => {
+        if (!open) handleDismiss()
+      }}
+    >
       <DialogContent
         showCloseButton={false}
         className="max-w-[calc(100%-2rem)] gap-0 overflow-hidden rounded-[32px] p-0 sm:max-w-[560px]"
       >
+        {canDismissVerification ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="absolute right-4 top-4 z-10 rounded-full bg-white/10 text-white hover:bg-white/20 hover:text-white"
+            onClick={handleDismiss}
+            disabled={isLoading}
+            aria-label="Close verification"
+          >
+            <X className="size-4" />
+          </Button>
+        ) : null}
         <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-6 py-6 text-white">
           <div className="mb-4 inline-flex size-12 items-center justify-center rounded-2xl bg-white/10">
             <ShieldCheck className="size-5" />
@@ -382,7 +413,9 @@ export function VerificationModalHost() {
           </div>
 
           <div className="rounded-3xl border bg-muted/20 p-4 text-sm text-muted-foreground">
-            The modal will close automatically after successful verification.
+            {canDismissVerification
+              ? "You can close this and keep your current number active. The new number activates only after OTP verification."
+              : "The modal will close automatically after successful verification."}
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">

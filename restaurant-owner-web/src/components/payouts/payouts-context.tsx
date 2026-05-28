@@ -37,6 +37,9 @@ export function PayoutsProvider({
         left.verifiedAt === right.verifiedAt &&
         left.pendingAccountName === right.pendingAccountName &&
         left.pendingAccountNumber === right.pendingAccountNumber &&
+        left.pendingVerificationStatus === right.pendingVerificationStatus &&
+        left.pendingVerifiedAt === right.pendingVerifiedAt &&
+        left.pendingAdminNote === right.pendingAdminNote &&
         left.verificationSource === right.verificationSource
       )
     },

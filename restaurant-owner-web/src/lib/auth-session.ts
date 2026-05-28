@@ -1,5 +1,7 @@
 const LEGACY_AUTH_SESSION_STORAGE_KEY = "restaurant-owner-auth-session"
 
+export const OWNER_ACCESS_TOKEN_UPDATED_EVENT = "owner-access-token-updated"
+
 export type OwnerAuthSession = {
   accessToken: string
 }
@@ -12,6 +14,14 @@ function clearLegacyStoredSession() {
   }
 
   window.localStorage.removeItem(LEGACY_AUTH_SESSION_STORAGE_KEY)
+}
+
+function notifyOwnerAccessTokenUpdated() {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  window.dispatchEvent(new Event(OWNER_ACCESS_TOKEN_UPDATED_EVENT))
 }
 
 export function takeLegacyOwnerRefreshToken() {
@@ -41,9 +51,11 @@ export function getOwnerAuthSession(): OwnerAuthSession | null {
 export function setOwnerAuthSession(session: OwnerAuthSession) {
   ownerAuthSession = session
   clearLegacyStoredSession()
+  notifyOwnerAccessTokenUpdated()
 }
 
 export function clearOwnerAuthSession() {
   ownerAuthSession = null
   clearLegacyStoredSession()
+  notifyOwnerAccessTokenUpdated()
 }

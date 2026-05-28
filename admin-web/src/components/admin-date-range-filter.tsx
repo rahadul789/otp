@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 
-export const ADMIN_TIME_PRESET_OPTIONS = [
+const ADMIN_TIME_PRESET_OPTIONS = [
   { value: "today", label: "Today" },
   { value: "yesterday", label: "Yesterday" },
   { value: "last7Days", label: "Last 7 days" },
@@ -31,7 +31,7 @@ export const ADMIN_TIME_PRESET_OPTIONS = [
   { value: "custom", label: "Custom range" },
 ] as const
 
-export type AdminTimePreset = (typeof ADMIN_TIME_PRESET_OPTIONS)[number]["value"]
+type AdminTimePreset = (typeof ADMIN_TIME_PRESET_OPTIONS)[number]["value"]
 
 type AdminDateRangeFilterProps<TPreset extends string = AdminTimePreset> = {
   value: TPreset

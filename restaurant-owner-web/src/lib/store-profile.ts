@@ -118,7 +118,6 @@ export function calculateProfileCompletion(params: {
       weight: PROFILE_COMPLETION_WEIGHTS.basicInfo,
       isComplete:
         Boolean(storeSettings.name.trim()) &&
-        Boolean(storeSettings.description.trim()) &&
         Boolean(storeSettings.cuisineType.trim()) &&
         storeSettings.tags.length > 0,
       hint: "Complete your restaurant basics",

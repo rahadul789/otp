@@ -146,6 +146,16 @@ type RiderVerificationFilter =
 type RiderSort = "newest" | "recentLogin" | "mostActive" | "mostDelivered"
 type RiderStatus = "active" | "suspended" | "locked"
 type RiderVerificationStatus = "pending" | "approved" | "rejected"
+const riderMainTabValues = [
+  "directory",
+  "kyc",
+  "live",
+  "assignments",
+  "earnings",
+  "analytics",
+  "dispatch",
+] as const
+type RiderMainTab = (typeof riderMainTabValues)[number]
 const riderDetailsTabValues = [
   "overview",
   "availability",
@@ -162,6 +172,12 @@ type EditableDispatchSettings = Omit<
   AdminDispatchSettings,
   "metrics" | "recentLogs"
 >
+
+function normalizeRiderMainTab(value?: string | null): RiderMainTab {
+  return riderMainTabValues.includes(value as RiderMainTab)
+    ? (value as RiderMainTab)
+    : "directory"
+}
 
 function normalizeRiderDetailsTab(value?: string | null): RiderDetailsTab {
   return riderDetailsTabValues.includes(value as RiderDetailsTab)
@@ -378,7 +394,6 @@ function CreateRiderDialog({
     React.useState<RiderVerificationStatus>("pending")
   const [nationalIdNumber, setNationalIdNumber] = React.useState("")
   const [monthlySalary, setMonthlySalary] = React.useState("0")
-  const [payoutDay, setPayoutDay] = React.useState("1")
   const mutation = useMutation({
     mutationFn: createAdminRider,
     onSuccess: () => {
@@ -389,7 +404,6 @@ function CreateRiderDialog({
       setVerificationStatus("pending")
       setNationalIdNumber("")
       setMonthlySalary("0")
-      setPayoutDay("1")
       invalidateRiderQueries(queryClient)
       onOpenChange(false)
     },
@@ -469,7 +483,7 @@ function CreateRiderDialog({
               placeholder="NID or verification reference"
             />
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3">
             <div className="space-y-2">
               <Label htmlFor="rider-salary">Monthly salary</Label>
               <Input
@@ -481,19 +495,10 @@ function CreateRiderDialog({
                 placeholder="0"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="rider-payout-day">Payout day</Label>
-              <Input
-                id="rider-payout-day"
-                type="number"
-                min={1}
-                max={28}
-                value={payoutDay}
-                onChange={(event) => setPayoutDay(event.target.value)}
-                placeholder="1"
-              />
-            </div>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Salary cycle starts from the rider creation date and renews on the same date next month.
+          </p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
@@ -509,7 +514,7 @@ function CreateRiderDialog({
                 verificationStatus,
                 nationalIdNumber,
                 monthlySalary: Number(monthlySalary) || 0,
-                payoutDay: Number(payoutDay) || 1,
+                payoutDay: 1,
                 isAvailableForAssignments:
                   status === "active" && verificationStatus === "approved",
               })
@@ -780,9 +785,8 @@ function RiderDetailsSheet({
   })
   const rider = detailsQuery.data
   const [salaryDraft, setSalaryDraft] = React.useState("0")
-  const [payoutDayDraft, setPayoutDayDraft] = React.useState("1")
   const [adjustmentType, setAdjustmentType] =
-    React.useState<"bonus" | "tip" | "reimbursement" | "penalty" | "deduction">("reimbursement")
+    React.useState<"bonus" | "tip" | "reimbursement" | "penalty" | "deduction">("bonus")
   const [adjustmentAmount, setAdjustmentAmount] = React.useState("")
   const [adjustmentNote, setAdjustmentNote] = React.useState("")
   const [paymentReference, setPaymentReference] = React.useState("")
@@ -822,7 +826,6 @@ function RiderDetailsSheet({
   React.useEffect(() => {
     if (!rider) return
     setSalaryDraft(`${rider.payroll.monthlySalary ?? 0}`)
-    setPayoutDayDraft(`${rider.payroll.payoutDay ?? 1}`)
   }, [rider])
 
   return (
@@ -898,9 +901,9 @@ function RiderDetailsSheet({
                   helper="Completed deliveries"
                 />
                 <StatCard
-                  label="Monthly salary"
+                  label="Salary default"
                   value={formatCurrency(rider.payroll.baseSalary)}
-                  helper={`Payroll ${rider.payroll.month}`}
+                  helper="Not counted until paid"
                 />
               </div>
 
@@ -1027,14 +1030,14 @@ function RiderDetailsSheet({
                   <div className="space-y-4">
                     <div className="grid gap-4 md:grid-cols-4">
                       <StatCard
-                        label="Base salary"
+                        label="Salary default"
                         value={formatCurrency(rider.payroll.baseSalary)}
-                        helper={`Month ${rider.payroll.month}`}
+                        helper="Used when marking paid"
                       />
                       <StatCard
-                        label="Manual adjustment"
+                        label="Bonus / adjustment"
                         value={formatCurrency(rider.payroll.platformBonus)}
-                        helper="Admin-added allowance"
+                        helper="For this payment record"
                       />
                       <StatCard
                         label="Penalty"
@@ -1042,7 +1045,7 @@ function RiderDetailsSheet({
                         helper="Penalty or deduction"
                       />
                       <StatCard
-                        label="Net payout"
+                        label="Payment total"
                         value={formatCurrency(rider.payroll.netPayable)}
                         helper={`Status: ${rider.payroll.status}`}
                       />
@@ -1053,11 +1056,11 @@ function RiderDetailsSheet({
                         <CardHeader>
                           <CardTitle>Salary settings</CardTitle>
                           <CardDescription>
-                            Fixed monthly salary paid by the platform.
+                            Default monthly salary. It does not affect platform finance until a payment is marked paid.
                           </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-3">
-                          <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="grid gap-3">
                             <div className="space-y-2">
                               <Label>Monthly salary</Label>
                               <Input
@@ -1067,24 +1070,17 @@ function RiderDetailsSheet({
                                 onChange={(event) => setSalaryDraft(event.target.value)}
                               />
                             </div>
-                            <div className="space-y-2">
-                              <Label>Payout day</Label>
-                              <Input
-                                type="number"
-                                min={1}
-                                max={28}
-                                value={payoutDayDraft}
-                                onChange={(event) => setPayoutDayDraft(event.target.value)}
-                              />
-                            </div>
                           </div>
+                          <p className="text-xs text-muted-foreground">
+                            This value is only the default amount for the manual payment record.
+                          </p>
                           <Button
                             disabled={payrollSettingsMutation.isPending}
                             onClick={() =>
                               payrollSettingsMutation.mutate({
                                 riderId: rider.id,
                                 monthlySalary: Number(salaryDraft) || 0,
-                                payoutDay: Number(payoutDayDraft) || 1,
+                                payoutDay: 1,
                                 isPayrollEnabled: true,
                               })
                             }
@@ -1103,7 +1099,7 @@ function RiderDetailsSheet({
                         <CardHeader>
                           <CardTitle>Salary adjustment</CardTitle>
                           <CardDescription>
-                            Optional monthly salary correction. Orders do not add extra rider pay.
+                            Add bonus, reimbursement, or deduction before marking salary paid.
                           </CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-3">
@@ -1119,6 +1115,7 @@ function RiderDetailsSheet({
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="bonus">Allowance</SelectItem>
+                                <SelectItem value="tip">Bonus</SelectItem>
                                 <SelectItem value="reimbursement">Reimbursement</SelectItem>
                                 <SelectItem value="penalty">Penalty</SelectItem>
                                 <SelectItem value="deduction">Deduction</SelectItem>
@@ -1162,31 +1159,18 @@ function RiderDetailsSheet({
 
                     <Card>
                       <CardHeader>
-                        <CardTitle>Payroll cycle</CardTitle>
+                        <CardTitle>Salary payment record</CardTitle>
                         <CardDescription>
-                          Approve and mark this rider payroll as paid after month-end review.
+                          Mark paid only when the platform actually pays the rider. That record appears in Finance &gt; Transactions.
                         </CardDescription>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         <div className="grid gap-3 text-sm md:grid-cols-3">
-                          <InfoRow label="Next payout" value={formatDate(rider.payroll.nextPayoutDate)} />
-                          <InfoRow label="Approved" value={formatDate(rider.payroll.approvedAt)} />
+                          <InfoRow label="Next reminder" value={formatDate(rider.payroll.nextPayoutDate)} />
                           <InfoRow label="Paid" value={formatDate(rider.payroll.paidAt)} />
+                          <InfoRow label="Reference" value={rider.payroll.paymentReference || "N/A"} />
                         </div>
                         <div className="flex flex-col gap-2 sm:flex-row">
-                          <Button
-                            variant="outline"
-                            disabled={payrollStatusMutation.isPending}
-                            onClick={() =>
-                              payrollStatusMutation.mutate({
-                                riderId: rider.id,
-                                month: rider.payroll.month,
-                                status: "approved",
-                              })
-                            }
-                          >
-                            Approve payroll
-                          </Button>
                           <Input
                             value={paymentReference}
                             onChange={(event) => setPaymentReference(event.target.value)}
@@ -1204,9 +1188,17 @@ function RiderDetailsSheet({
                               })
                             }
                           >
-                            Mark paid
+                            {payrollStatusMutation.isPending ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <WalletCards className="size-4" />
+                            )}
+                            Mark salary paid
                           </Button>
                         </div>
+                        <p className="text-xs text-muted-foreground">
+                          Current payment total: {formatCurrency(rider.payroll.netPayable)}. Unpaid salary defaults are ignored in platform profit, cash, and ledger summaries.
+                        </p>
                         <div className="overflow-hidden rounded-lg border">
                           <Table>
                             <TableHeader>
@@ -1968,10 +1960,12 @@ export function RidersPage() {
   const queryClient = useQueryClient()
   const { policy: refreshPolicy } = useAdminRefreshPolicy()
   const [searchParams, setSearchParams] = useSearchParams()
-  const initialTab = React.useMemo(() => {
-    if (typeof window === "undefined") return "directory"
-    return window.location.hash === "#dispatch" ? "dispatch" : "directory"
-  }, [])
+  const mainTab = normalizeRiderMainTab(
+    searchParams.get("tab") ??
+      (typeof window !== "undefined" && window.location.hash === "#dispatch"
+        ? "dispatch"
+        : "directory")
+  )
   const [search, setSearch] = React.useState("")
   const [status, setStatus] = React.useState<RiderStatusFilter>("all")
   const [availability, setAvailability] =
@@ -2031,6 +2025,7 @@ export function RidersPage() {
         sortBy: "newest",
         pageSize: 50,
       }),
+    enabled: mainTab === "kyc",
   })
   const earningsQuery = useQuery({
     queryKey: ["admin-riders", "earnings"],
@@ -2039,27 +2034,34 @@ export function RidersPage() {
         sortBy: "mostDelivered",
         pageSize: 50,
       }),
+    enabled: mainTab === "earnings" || mainTab === "analytics",
   })
   const payrollQuery = useQuery({
     queryKey: ["admin-rider-payroll"],
     queryFn: () => listAdminRiderPayroll(),
+    enabled: mainTab === "earnings",
   })
   const liveMapQuery = useQuery({
     queryKey: ["admin-live-map"],
     queryFn: getAdminLiveMap,
-    refetchInterval: refreshPolicy.liveMapMs || false,
+    enabled: mainTab === "live",
+    refetchInterval: mainTab === "live" ? refreshPolicy.liveMapMs || false : false,
+    refetchIntervalInBackground: false,
   })
   const assignmentOptionsQuery = useQuery({
     queryKey: ["admin-rider-assignment-options"],
     queryFn: listAdminRidersAssignmentOptions,
+    enabled: mainTab === "assignments",
   })
   const candidatesQuery = useQuery({
     queryKey: ["admin-rider-candidates"],
     queryFn: listAdminRiderAssignmentCandidates,
+    enabled: mainTab === "assignments",
   })
   const dispatchQuery = useQuery({
     queryKey: ["admin-dispatch-settings"],
     queryFn: getAdminDispatchSettings,
+    enabled: mainTab === "dispatch",
   })
   const availabilityMutation = useMutation({
     mutationFn: updateAdminRiderAvailability,
@@ -2166,6 +2168,16 @@ export function RidersPage() {
     nextParams.delete("riderTab")
     setSearchParams(nextParams, { replace: true })
   }, [searchParams, setSearchParams])
+
+  const setMainTab = React.useCallback(
+    (tab: RiderMainTab) => {
+      const nextParams = new URLSearchParams(searchParams)
+      if (tab === "directory") nextParams.delete("tab")
+      else nextParams.set("tab", tab)
+      setSearchParams(nextParams, { replace: true })
+    },
+    [searchParams, setSearchParams]
+  )
 
   function resetFilters() {
     setSearch("")
@@ -2287,7 +2299,11 @@ export function RidersPage() {
         />
       </div>
 
-      <Tabs defaultValue={initialTab} className="gap-4">
+      <Tabs
+        value={mainTab}
+        onValueChange={(value) => setMainTab(normalizeRiderMainTab(value))}
+        className="gap-4"
+      >
         <TabsList className="flex h-auto w-full flex-wrap justify-start">
           <TabsTrigger value="directory">Rider directory</TabsTrigger>
           <TabsTrigger value="kyc">KYC review</TabsTrigger>
@@ -2719,7 +2735,7 @@ export function RidersPage() {
         riderId={selectedRiderId}
         open={Boolean(selectedRiderId)}
         activeTab={selectedRiderTab}
-        refreshIntervalMs={refreshPolicy.liveMapMs}
+        refreshIntervalMs={refreshPolicy.riderDetailsMs}
         onTabChange={setRiderDetailsTab}
         onOpenChange={(open) => {
           if (!open) closeRiderDetails()

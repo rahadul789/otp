@@ -3,16 +3,13 @@ import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Animated,
   BackHandler,
   FlatList,
   Image,
   Keyboard,
-  Modal,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   View,
@@ -22,7 +19,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppBottomSheet } from "@/src/components/app-bottom-sheet";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import {
+  MenuCategoryChipsSkeleton,
+  MenuPopularSkeleton,
+  RestaurantDetailsSkeleton,
+} from "@/src/components/loading-skeleton";
 import { styles } from "@/src/components/restaurant-details/restaurant-details.styles";
 import {
   CategoryRail,
@@ -56,6 +59,7 @@ import { palette } from "@/src/theme/palette";
 import type {
   CustomerMenuAddOnGroup,
   CustomerMenuVariantGroup,
+  CustomerVoucherOffer,
   CustomerRestaurantMenuItem,
 } from "@/src/types/restaurant";
 
@@ -89,6 +93,44 @@ type Row =
       item: CustomerRestaurantMenuItem;
     };
 
+function formatOfferValue(offer: CustomerVoucherOffer) {
+  if (offer.type === "free_delivery") {
+    return "Free delivery";
+  }
+
+  if (offer.type === "percentage" && typeof offer.discountValue === "number") {
+    return `${offer.discountValue}% off`;
+  }
+
+  if (typeof offer.discountValue === "number") {
+    return `${formatCurrency(offer.discountValue)} off`;
+  }
+
+  return offer.name;
+}
+
+function formatOfferLabel(offer: CustomerVoucherOffer) {
+  const value = formatOfferValue(offer);
+  return offer.mode === "coupon" && offer.code ? `${offer.code} - ${value}` : value;
+}
+
+function buildOfferExplanation(offer: CustomerVoucherOffer) {
+  const minimumText =
+    typeof offer.minimumOrderAmount === "number" && offer.minimumOrderAmount > 0
+      ? ` Your food subtotal needs to be at least ${formatCurrency(offer.minimumOrderAmount)}.`
+      : "";
+  const maxText =
+    typeof offer.maximumDiscountAmount === "number" && offer.maximumDiscountAmount > 0
+      ? ` The maximum discount is ${formatCurrency(offer.maximumDiscountAmount)}.`
+      : "";
+
+  if (offer.mode === "coupon") {
+    return `Use code ${offer.code ?? "shown here"} at checkout. Foodbela will check the rules and apply ${formatOfferValue(offer).toLowerCase()} if your cart is eligible.${minimumText}${maxText}`;
+  }
+
+  return `This offer applies automatically at checkout when your cart is eligible. You do not need to enter a code.${minimumText}${maxText}`;
+}
+
 export default function RestaurantDetailsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -117,6 +159,7 @@ export default function RestaurantDetailsScreen() {
   const [isSearchMode, setIsSearchMode] = useState(false);
   const [showStickyControls, setShowStickyControls] = useState(false);
   const [isInfoSheetVisible, setInfoSheetVisible] = useState(false);
+  const [selectedOffer, setSelectedOffer] = useState<CustomerVoucherOffer | null>(null);
   const [cartConflictItem, setCartConflictItem] = useState<PendingCartAdd | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
 
@@ -385,6 +428,14 @@ export default function RestaurantDetailsScreen() {
       ) ?? null,
     [detailsData?.activeOffers]
   );
+  const presentCustomizer = useCallback((item: CustomerRestaurantMenuItem) => {
+    const defaults = buildDefaultSelections(item);
+    setSelectedItem(item);
+    setQuantity(1);
+    setSelectedVariants(defaults.defaultVariants);
+    setSelectedAddOns(defaults.defaultAddOns);
+  }, []);
+
   const openCustomizer = useCallback((item: CustomerRestaurantMenuItem) => {
     if (restaurant?._id) {
       void trackCustomerEvent({
@@ -403,12 +454,14 @@ export default function RestaurantDetailsScreen() {
       });
     }
 
-    const defaults = buildDefaultSelections(item);
-    setSelectedItem(item);
-    setQuantity(1);
-    setSelectedVariants(defaults.defaultVariants);
-    setSelectedAddOns(defaults.defaultAddOns);
-  }, [restaurant?._id]);
+    if (isSearchMode) {
+      Keyboard.dismiss();
+      scheduleTimeout(() => presentCustomizer(item), 180);
+      return;
+    }
+
+    presentCustomizer(item);
+  }, [isSearchMode, presentCustomizer, restaurant?._id, scheduleTimeout]);
 
   function closeCustomizer() {
     setSelectedItem(null);
@@ -702,10 +755,7 @@ export default function RestaurantDetailsScreen() {
   if (detailsQuery.isLoading) {
     return (
       <Screen>
-        <View style={styles.centerState}>
-          <ActivityIndicator size="small" color={palette.primary} />
-          <Text style={styles.centerStateText}>Loading restaurant details...</Text>
-        </View>
+        <RestaurantDetailsSkeleton />
       </Screen>
     );
   }
@@ -862,9 +912,15 @@ export default function RestaurantDetailsScreen() {
                   </Text>
                 </View>
                 {detailsData?.activeOffers[0] ? (
-                  <Text style={styles.offerPill}>
-                    {detailsData.activeOffers[0].name}
-                  </Text>
+                  <Pressable
+                    style={styles.offerPillButton}
+                    onPress={() => setSelectedOffer(detailsData.activeOffers[0])}
+                  >
+                    <Ionicons name="pricetag" size={12} color={palette.surface} />
+                    <Text style={styles.offerPillText} numberOfLines={1}>
+                      {formatOfferLabel(detailsData.activeOffers[0])}
+                    </Text>
+                  </Pressable>
                 ) : null}
               </View>
             </View>
@@ -902,16 +958,21 @@ export default function RestaurantDetailsScreen() {
                       contentContainerStyle={styles.inlineOfferRow}
                     >
                       {detailsData.activeOffers.map((offer) => (
-                        <View key={offer._id} style={styles.inlineOfferChip}>
+                        <Pressable
+                          key={offer._id}
+                          style={styles.inlineOfferChip}
+                          onPress={() => setSelectedOffer(offer)}
+                        >
                           <Ionicons
                             name={offer.mode === "auto" ? "flash-outline" : "pricetag-outline"}
                             size={12}
                             color={palette.secondary}
                           />
                           <Text style={styles.inlineOfferText}>
-                            {offer.mode === "coupon" && offer.code ? offer.code : offer.name}
+                            {formatOfferLabel(offer)}
                           </Text>
-                        </View>
+                          <Ionicons name="chevron-forward" size={11} color={palette.secondary} />
+                        </Pressable>
                       ))}
                     </ScrollView>
                   ) : null}
@@ -925,6 +986,15 @@ export default function RestaurantDetailsScreen() {
                     icon={fact.icon}
                     label={fact.label}
                     value={fact.value}
+                    onPress={
+                      fact.key === "rating"
+                        ? () =>
+                            router.push({
+                              pathname: "/restaurants/[restaurantId]/reviews",
+                              params: { restaurantId: restaurant._id },
+                            })
+                        : undefined
+                    }
                   />
                 ))}
               </View>
@@ -970,33 +1040,6 @@ export default function RestaurantDetailsScreen() {
               </View>
             ) : null}
 
-            {recentReviews.length || typeof restaurant.avgRating === "number" ? (
-              <View style={styles.reviewPreviewSection}>
-                <Pressable
-                  style={styles.reviewEntryCard}
-                  onPress={() =>
-                    router.push({
-                      pathname: "/restaurants/[restaurantId]/reviews",
-                      params: { restaurantId: restaurant._id },
-                    })
-                  }
-                >
-                  <View style={styles.reviewEntryIconWrap}>
-                    <Ionicons name="chatbubbles-outline" size={18} color={palette.secondary} />
-                  </View>
-                  <View style={styles.reviewEntryCopy}>
-                    <Text style={styles.reviewEntryTitle}>Guest reviews</Text>
-                    <Text style={styles.reviewEntrySubtitle}>
-                      {typeof restaurant.avgRating === "number" && (restaurant.reviewCount ?? 0) > 0
-                        ? `${restaurant.avgRating} average from ${restaurant.reviewCount} review${(restaurant.reviewCount ?? 0) === 1 ? "" : "s"}`
-                        : "Open the review screen to see customer feedback."}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={16} color={palette.mutedForeground} />
-                </Pressable>
-              </View>
-            ) : null}
-
             <View
               style={styles.controlsWrap}
               onLayout={(event) => {
@@ -1011,11 +1054,15 @@ export default function RestaurantDetailsScreen() {
                     onFocus={openSearchMode}
                     showSoftInputOnFocus={false}
                   />
-                <CategoryRail
-                  categories={tabItems}
-                  activeCategoryId={activeCategoryId}
-                  onPressCategory={handlePressCategory}
-                />
+                {isMenuLoading ? (
+                  <MenuCategoryChipsSkeleton />
+                ) : (
+                  <CategoryRail
+                    categories={tabItems}
+                    activeCategoryId={activeCategoryId}
+                    onPressCategory={handlePressCategory}
+                  />
+                )}
               </View>
             </View>
           </View>
@@ -1077,23 +1124,17 @@ export default function RestaurantDetailsScreen() {
           );
         }}
         ListEmptyComponent={
-          <View style={styles.emptyCard}>
-            <View style={styles.emptyIconWrap}>
-              {isMenuLoading ? (
-                <ActivityIndicator size="small" color={palette.secondary} />
-              ) : (
+          isMenuLoading ? (
+            <MenuPopularSkeleton />
+          ) : (
+            <View style={styles.emptyCard}>
+              <View style={styles.emptyIconWrap}>
                 <Ionicons name="search-outline" size={20} color={palette.secondary} />
-              )}
+              </View>
+              <Text style={styles.emptyTitle}>No items found</Text>
+              <Text style={styles.emptySubtitle}>Try another search or another category.</Text>
             </View>
-            <Text style={styles.emptyTitle}>
-              {isMenuLoading ? "Loading menu" : "No items found"}
-            </Text>
-            <Text style={styles.emptySubtitle}>
-              {isMenuLoading
-                ? "Fresh items are coming up."
-                : "Try another search or another category."}
-            </Text>
-          </View>
+          )
         }
       />
 
@@ -1210,21 +1251,36 @@ export default function RestaurantDetailsScreen() {
         bottomInset={Math.max(insets.bottom, 12)}
       />
 
-      {cartConflictItem ? (
-        <View style={styles.modalBackdrop}>
-          <Pressable
-            style={StyleSheet.absoluteFillObject}
-            onPress={() => setCartConflictItem(null)}
-          />
-          <View style={styles.modalCard}>
-            <View style={styles.modalGlow} />
+      <AppBottomSheet
+        visible={Boolean(cartConflictItem)}
+        onClose={() => setCartConflictItem(null)}
+        title="Start a fresh cart?"
+        subtitle={`Your cart already has items from ${conflictingRestaurantName}.`}
+        leadingIcon="sparkles-outline"
+        snapPoints={[0.7, 0.9]}
+        initialSnapPoint={0.7}
+        scroll={false}
+        footer={
+          <View style={styles.modalActions}>
+            <Pressable
+              style={styles.modalSecondaryButton}
+              onPress={() => setCartConflictItem(null)}
+            >
+              <Text style={styles.modalSecondaryButtonText}>Keep current cart</Text>
+            </Pressable>
+            <Pressable style={styles.modalPrimaryButton} onPress={handleConfirmReplaceCart}>
+              <Text style={styles.modalPrimaryButtonText}>Replace and add</Text>
+            </Pressable>
+          </View>
+        }
+      >
+        {cartConflictItem ? (
+          <>
             <View style={styles.modalBadge}>
-              <Ionicons name="sparkles" size={14} color={palette.secondary} />
+              <Ionicons name="bag-handle-outline" size={14} color={palette.secondary} />
               <Text style={styles.modalBadgeText}>Cart switch</Text>
             </View>
-            <Text style={styles.modalTitle}>Start a fresh cart?</Text>
             <Text style={styles.modalText}>
-              Your cart already has items from {conflictingRestaurantName}.
               Add this item to start a new cart for {restaurant.name}.
             </Text>
             <View style={styles.modalPreviewRow}>
@@ -1243,44 +1299,19 @@ export default function RestaurantDetailsScreen() {
                 </Text>
               </View>
             </View>
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalSecondaryButton}
-                onPress={() => setCartConflictItem(null)}
-              >
-                <Text style={styles.modalSecondaryButtonText}>Keep current cart</Text>
-              </Pressable>
-              <Pressable style={styles.modalPrimaryButton} onPress={handleConfirmReplaceCart}>
-                <Text style={styles.modalPrimaryButtonText}>Replace and add</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      ) : null}
+          </>
+        ) : null}
+      </AppBottomSheet>
 
-      <Modal
+      <AppBottomSheet
         visible={isInfoSheetVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setInfoSheetVisible(false)}
+        onClose={() => setInfoSheetVisible(false)}
+        title="Restaurant info"
+        subtitle="Quick facts, location, offers, and cuisine"
+        leadingIcon="information-circle-outline"
+        snapPoints={[0.7, 0.9]}
+        initialSnapPoint={0.7}
       >
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={StyleSheet.absoluteFillObject}
-            onPress={() => setInfoSheetVisible(false)}
-          />
-          <View style={[styles.infoSheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
-            <View style={styles.infoSheetHandle} />
-            <View style={styles.infoSheetHeader}>
-              <Text style={styles.infoSheetTitle}>Restaurant info</Text>
-              <Pressable
-                style={styles.infoSheetClose}
-                onPress={() => setInfoSheetVisible(false)}
-              >
-                <Ionicons name="close" size={18} color={palette.foreground} />
-              </Pressable>
-            </View>
-
             <View style={styles.infoSheetCard}>
               <Text style={styles.infoSheetSectionTitle}>Quick facts</Text>
               <View style={styles.infoSheetMetricsGrid}>
@@ -1391,34 +1422,85 @@ export default function RestaurantDetailsScreen() {
                 />
               </View>
             ) : null}
-          </View>
-        </View>
-      </Modal>
+      </AppBottomSheet>
 
-      <Modal
-        visible={Boolean(selectedItem)}
-        animationType="slide"
-        transparent
-        onRequestClose={closeCustomizer}
+      <AppBottomSheet
+        visible={Boolean(selectedOffer)}
+        onClose={() => setSelectedOffer(null)}
+        title={selectedOffer ? formatOfferLabel(selectedOffer) : "Offer details"}
+        subtitle={selectedOffer?.name ?? "How this offer works"}
+        leadingIcon={selectedOffer?.mode === "auto" ? "flash-outline" : "pricetag-outline"}
+        snapPoints={[0.7, 0.9]}
+        initialSnapPoint={0.7}
       >
-        <View style={styles.sheetBackdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={closeCustomizer} />
-          <View style={[styles.customSheet, { paddingBottom: Math.max(insets.bottom, 18) }]}>
-            <View style={styles.customHandle} />
+        {selectedOffer ? (
+          <>
+            <View style={styles.offerSheetHero}>
+              <View style={styles.offerSheetIcon}>
+                <Ionicons
+                  name={selectedOffer.mode === "auto" ? "flash" : "ticket-outline"}
+                  size={22}
+                  color={palette.secondary}
+                />
+              </View>
+              <View style={styles.offerSheetCopy}>
+                <Text style={styles.offerSheetTitle}>{selectedOffer.name}</Text>
+                <Text style={styles.offerSheetSubtitle}>{buildOfferExplanation(selectedOffer)}</Text>
+              </View>
+            </View>
+
+            <View style={styles.infoSheetCard}>
+              <Text style={styles.infoSheetSectionTitle}>Offer rules</Text>
+              <InfoSheetRow
+                icon={selectedOffer.mode === "auto" ? "flash-outline" : "keypad-outline"}
+                label="Apply method"
+                value={
+                  selectedOffer.mode === "coupon" && selectedOffer.code
+                    ? `Enter code ${selectedOffer.code} at checkout`
+                    : "Applied automatically at checkout"
+                }
+              />
+              <InfoSheetRow
+                icon="wallet-outline"
+                label="Discount"
+                value={formatOfferValue(selectedOffer)}
+              />
+              <InfoSheetRow
+                icon="basket-outline"
+                label="Minimum order"
+                value={
+                  typeof selectedOffer.minimumOrderAmount === "number" &&
+                  selectedOffer.minimumOrderAmount > 0
+                    ? formatCurrency(selectedOffer.minimumOrderAmount)
+                    : "No minimum order"
+                }
+              />
+              {typeof selectedOffer.maximumDiscountAmount === "number" &&
+              selectedOffer.maximumDiscountAmount > 0 ? (
+                <InfoSheetRow
+                  icon="shield-checkmark-outline"
+                  label="Maximum discount"
+                  value={formatCurrency(selectedOffer.maximumDiscountAmount)}
+                />
+              ) : null}
+            </View>
+          </>
+        ) : null}
+      </AppBottomSheet>
+
+      <AppBottomSheet
+        visible={Boolean(selectedItem)}
+        onClose={closeCustomizer}
+        title={selectedItem?.name ?? "Item details"}
+        subtitle={selectedItemHasCustomizations ? "Customize your item" : "Ready to add"}
+        leadingIcon={selectedItemHasCustomizations ? "options-outline" : "restaurant-outline"}
+        snapPoints={[0.72, 0.9]}
+        initialSnapPoint={0.72}
+        scroll={false}
+        contentContainerStyle={styles.customBottomSheetContent}
+      >
             {selectedItem ? (
               <>
-                <View style={styles.customHeaderRow}>
-                  <View style={styles.customHeaderCopy}>
-                    <Text style={styles.customKicker}>
-                      {selectedItemHasCustomizations ? "Customize" : "Item details"}
-                    </Text>
-                    <Text style={styles.customTitle}>{selectedItem.name}</Text>
-                  </View>
-                  <Pressable style={styles.customCloseButton} onPress={closeCustomizer}>
-                    <Ionicons name="close" size={18} color={palette.foreground} />
-                  </Pressable>
-                </View>
-
                 <View style={styles.customHeroCard}>
                   {selectedItem.images?.[0]?.url ? (
                     <Image
@@ -1442,6 +1524,7 @@ export default function RestaurantDetailsScreen() {
                 </View>
 
                 <ScrollView
+                  style={styles.customScrollArea}
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.customContent}
                 >
@@ -1587,7 +1670,12 @@ export default function RestaurantDetailsScreen() {
                   })}
                 </ScrollView>
 
-                <View style={styles.customFooter}>
+                <View
+                  style={[
+                    styles.customFooter,
+                    { paddingBottom: Math.max(insets.bottom + 14, 24) },
+                  ]}
+                >
                   <View style={styles.quantityWrap}>
                     <Pressable
                       style={styles.quantityButton}
@@ -1633,9 +1721,7 @@ export default function RestaurantDetailsScreen() {
                 </View>
               </>
             ) : null}
-          </View>
-        </View>
-      </Modal>
+      </AppBottomSheet>
     </Screen>
   );
 }

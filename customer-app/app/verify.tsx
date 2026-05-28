@@ -70,6 +70,7 @@ export default function VerifyScreen() {
   );
   const [otpLockCountdown, setOtpLockCountdown] = useState(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [fullNameFocused, setFullNameFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
   const [confirmPasswordFocused, setConfirmPasswordFocused] = useState(false);
@@ -172,6 +173,7 @@ export default function VerifyScreen() {
     errorText && isOtpStep && !isCustomerRateLimitMessage(errorText)
   );
   const verifyOtpDisabled =
+    isAuthSubmitting ||
     verifyOtpMutation.isPending ||
     registerMutation.isPending ||
     otpIsLocked ||
@@ -179,6 +181,7 @@ export default function VerifyScreen() {
   const passwordIsStrongEnough = password.trim().length >= 6;
   const passwordsMatch = password.length > 0 && password === confirmPassword;
   const createAccountDisabled =
+    isAuthSubmitting ||
     registerMutation.isPending;
 
   useEffect(() => {
@@ -200,7 +203,7 @@ export default function VerifyScreen() {
     : currentPendingAuth.phone;
 
   async function handleVerifyOtp() {
-    if (otpIsLocked) {
+    if (isAuthSubmitting || otpIsLocked) {
       return;
     }
 
@@ -213,6 +216,7 @@ export default function VerifyScreen() {
     }
 
     setErrorText("");
+    setIsAuthSubmitting(true);
 
     try {
       const data = await verifyOtpMutation.mutateAsync({
@@ -241,6 +245,7 @@ export default function VerifyScreen() {
         resolvePostAuthRedirect(currentPendingAuth.redirectTo) as never,
       );
     } catch (error) {
+      setIsAuthSubmitting(false);
       setOtpCode("");
       const message = getCustomerAuthErrorMessage(
         error,
@@ -269,7 +274,7 @@ export default function VerifyScreen() {
   }
 
   async function handleResend() {
-    if (otpIsLocked || resendCountdown > 0) {
+    if (isAuthSubmitting || otpIsLocked || resendCountdown > 0) {
       return;
     }
 
@@ -315,6 +320,10 @@ export default function VerifyScreen() {
   }
 
   async function handleCreateAccount() {
+    if (isAuthSubmitting) {
+      return;
+    }
+
     if (!fullName.trim()) {
       setErrorText("Enter your name to finish creating the account.");
       return;
@@ -331,6 +340,7 @@ export default function VerifyScreen() {
     }
 
     setErrorText("");
+    setIsAuthSubmitting(true);
 
     try {
       await registerMutation.mutateAsync({
@@ -354,6 +364,7 @@ export default function VerifyScreen() {
       setPendingPhoneAuth(null);
       router.replace(redirectTo as never);
     } catch (error) {
+      setIsAuthSubmitting(false);
       setErrorText(getCustomerAuthErrorMessage(error, "Could not finish creating the account."));
     }
   }
@@ -486,7 +497,7 @@ export default function VerifyScreen() {
                   onPress={handleVerifyOtp}
                   disabled={verifyOtpDisabled}
                 >
-                  {verifyOtpMutation.isPending || registerMutation.isPending ? (
+                  {isAuthSubmitting || verifyOtpMutation.isPending || registerMutation.isPending ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <View style={styles.primaryButtonContent}>
@@ -505,10 +516,10 @@ export default function VerifyScreen() {
                 <Pressable
                   style={[
                     styles.secondaryButton,
-                    otpIsLocked || resendCountdown > 0 || resendMutation.isPending ? styles.secondaryButtonDisabled : null,
+                    isAuthSubmitting || otpIsLocked || resendCountdown > 0 || resendMutation.isPending ? styles.secondaryButtonDisabled : null,
                   ]}
                   onPress={handleResend}
-                  disabled={otpIsLocked || resendCountdown > 0 || resendMutation.isPending}
+                  disabled={isAuthSubmitting || otpIsLocked || resendCountdown > 0 || resendMutation.isPending}
                 >
                   {resendMutation.isPending ? (
                     <ActivityIndicator size="small" color={palette.foreground} />
@@ -699,7 +710,7 @@ export default function VerifyScreen() {
                         }}
                         onBlur={() => setConfirmPasswordFocused(false)}
                         onSubmitEditing={() => {
-                          if (!registerMutation.isPending) {
+                          if (!createAccountDisabled) {
                             void handleCreateAccount();
                           }
                         }}
@@ -768,7 +779,7 @@ export default function VerifyScreen() {
                   onPress={handleCreateAccount}
                   disabled={createAccountDisabled}
                 >
-                  {registerMutation.isPending ? (
+                  {isAuthSubmitting || registerMutation.isPending ? (
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <View style={styles.primaryButtonContent}>

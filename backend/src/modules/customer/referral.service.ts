@@ -3,6 +3,7 @@ import mongoose from "mongoose"
 import { StatusCodes } from "http-status-codes"
 
 import { AppError } from "../../common/utils/app-error"
+import { enqueueBackgroundTask } from "../../common/utils/background-task"
 import { logger } from "../../config/logger"
 import { createAdminOperationalAlert } from "../admin/admin-alert.service"
 import { OrderModel } from "../owner/operational.model"
@@ -1235,7 +1236,7 @@ export async function grantReferralRewardForDeliveredOrder(params: {
     return { rewarded: false, reason: rewardSkippedReason ?? "already_rewarded" }
   }
 
-  try {
+  enqueueBackgroundTask("customer.referral_reward.push", async () => {
     await sendPushToCustomer({
       customerId: referrer.id,
       payload: {
@@ -1248,16 +1249,7 @@ export async function grantReferralRewardForDeliveredOrder(params: {
         },
       },
     })
-  } catch (error) {
-    logger.warn(
-      {
-        error,
-        referrerCustomerId: referrer.id,
-        referredCustomerId: referredCustomer.id,
-      },
-      "Referral reward push failed"
-    )
-  }
+  })
 
   return {
     rewarded: true,

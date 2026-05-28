@@ -2,6 +2,7 @@ import { StatusCodes } from "http-status-codes"
 import mongoose from "mongoose"
 
 import { AppError } from "../../common/utils/app-error"
+import { emitSocketEvent } from "../../config/socket"
 import { VoucherAuditModel, VoucherModel, VoucherRedemptionModel } from "../customer/customer.model"
 import { CustomerModel } from "../customer/customer.model"
 import { sendPushToCustomer } from "../customer/push.service"
@@ -23,6 +24,8 @@ type VoucherListParams = {
 
 type VoucherAnalytics = {
   totalUses: number
+  appliedCount: number
+  deliveredCount: number
   uniqueUsers: number
   repeatUsage: number
   totalDiscountGiven: number
@@ -35,6 +38,37 @@ type VoucherAnalytics = {
     uses: number
     discount: number
   }>
+  usageRows: Array<{
+    id: string
+    orderId: string
+    orderNumber: string
+    customerId: string
+    customerName: string
+    customerPhone: string
+    status: string
+    appliedAt: string | null
+    deliveredAt: string | null
+    discountAmount: number
+    ownerDiscountCost: number
+    platformDiscountCost: number
+    revenue: number
+    released: boolean
+  }>
+}
+
+function emitOwnerVoucherChanged(params: {
+  ownerId: string
+  restaurantId: string
+  action: "created" | "updated" | "deleted"
+  voucherId?: string
+}) {
+  const payload = {
+    restaurantId: params.restaurantId,
+    voucherId: params.voucherId ?? "",
+    action: params.action
+  }
+  emitSocketEvent(`owner:${params.ownerId}`, "promotion.updated", payload)
+  emitSocketEvent(`restaurant:${params.restaurantId}`, "promotion.updated", payload)
 }
 
 type VoucherMutationParams = {
@@ -247,6 +281,16 @@ function assertAdminCreatedVoucherFunding(params: { fundedBy?: string }) {
   }
 }
 
+function assertOwnerVoucherType(params: { type?: string }) {
+  if (params.type === "free_delivery") {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "OWNER_FREE_DELIVERY_NOT_ALLOWED",
+      "Restaurant owners can create flat or percentage discounts only"
+    )
+  }
+}
+
 function buildVoucherAuditSnapshot(voucher: Record<string, any> | null) {
   if (!voucher) return null
   return {
@@ -421,8 +465,11 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
           appliedAt: 1,
           createdAt: 1,
           "order.status": 1,
+          "order.orderNumber": 1,
           "order.customerId": 1,
-          "order.pricing": 1
+          "order.customerSnapshot": 1,
+          "order.pricing": 1,
+          "order.timestamps": 1
         }
       }
     ]),
@@ -492,8 +539,53 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
     let revenueGenerated = 0
     let totalDeliveryCostCovered = 0
     let totalUses = 0
+    const usageRows: VoucherAnalytics["usageRows"] = []
 
     voucherRedemptions.forEach((redemption) => {
+      const discountAmount = numberValue(
+        redemption.discountBreakdown?.discountAmount,
+        numberValue(redemption.order?.pricing?.discountAmount)
+      )
+      const ownerDiscountCost = numberValue(
+        redemption.discountBreakdown?.ownerDiscountCost,
+        numberValue(redemption.discountBreakdown?.ownerFundedAmount)
+      )
+      const platformDiscountCost = numberValue(
+        redemption.discountBreakdown?.platformDiscountCost,
+        numberValue(redemption.discountBreakdown?.platformFundedAmount)
+      )
+      const customerId =
+        objectIdString(redemption.voucherSnapshot?.customerId) ||
+        objectIdString(redemption.order?.customerId)
+      const appliedAt = redemption.appliedAt ?? redemption.createdAt
+      usageRows.push({
+        id: objectIdString(redemption._id),
+        orderId: objectIdString(redemption.orderId),
+        orderNumber: String(redemption.order?.orderNumber ?? ""),
+        customerId,
+        customerName: String(
+          redemption.order?.customerSnapshot?.fullName ??
+            redemption.order?.customerSnapshot?.name ??
+            "Customer"
+        ),
+        customerPhone: String(redemption.order?.customerSnapshot?.phone ?? ""),
+        status: String(redemption.order?.status ?? ""),
+        appliedAt:
+          appliedAt && !Number.isNaN(new Date(appliedAt).getTime())
+            ? new Date(appliedAt).toISOString()
+            : null,
+        deliveredAt: redemption.order?.timestamps?.deliveredAt
+          ? new Date(redemption.order.timestamps.deliveredAt).toISOString()
+          : redemption.order?.timestamps?.Delivered
+            ? new Date(redemption.order.timestamps.Delivered).toISOString()
+            : null,
+        discountAmount,
+        ownerDiscountCost,
+        platformDiscountCost,
+        revenue: numberValue(redemption.order?.pricing?.total),
+        released: Boolean(redemption.releasedAt)
+      })
+
       if (
         redemption.releasedAt ||
         ["Cancelled", "Rejected"].includes(redemption.order?.status)
@@ -502,12 +594,8 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
       }
 
       totalUses += 1
-      const customerId =
-        objectIdString(redemption.voucherSnapshot?.customerId) ||
-        objectIdString(redemption.order?.customerId)
       if (customerId) uniqueUsers.add(customerId)
 
-      const appliedAt = redemption.appliedAt ?? redemption.createdAt
       const appliedDate = appliedAt ? new Date(appliedAt) : null
       const pointKey =
         appliedDate && !Number.isNaN(appliedDate.getTime())
@@ -518,10 +606,6 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
 
       if (redemption.order?.status !== "Delivered") return
 
-      const discountAmount = numberValue(
-        redemption.discountBreakdown?.discountAmount,
-        numberValue(redemption.order?.pricing?.discountAmount)
-      )
       totalDiscountGiven += discountAmount
       totalOrdersUsingVoucher += 1
       revenueGenerated += numberValue(redemption.order?.pricing?.total)
@@ -533,6 +617,8 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
     const remainingUsage = maxTotalUses > 0 ? Math.max(0, maxTotalUses - totalUses) : null
     const analytics: VoucherAnalytics = {
       totalUses,
+      appliedCount: totalUses,
+      deliveredCount: totalOrdersUsingVoucher,
       uniqueUsers: uniqueUsers.size,
       repeatUsage: Math.max(0, totalUses - uniqueUsers.size),
       totalDiscountGiven,
@@ -540,7 +626,14 @@ async function attachVoucherAnalytics(vouchers: Array<Record<string, any>>) {
       revenueGenerated,
       remainingUsage,
       totalDeliveryCostCovered,
-      points: pointSeed.map(({ label, uses, discount }) => ({ label, uses, discount }))
+      points: pointSeed.map(({ label, uses, discount }) => ({ label, uses, discount })),
+      usageRows: usageRows
+        .sort((left, right) => {
+          const leftTime = left.appliedAt ? new Date(left.appliedAt).getTime() : 0
+          const rightTime = right.appliedAt ? new Date(right.appliedAt).getTime() : 0
+          return rightTime - leftTime
+        })
+        .slice(0, 50)
     }
 
     return {
@@ -754,6 +847,7 @@ export async function listOwnerVouchersWithFilters(params: {
 }
 
 export async function createOwnerVoucher(params: VoucherMutationParams & { ownerId: string }) {
+  assertOwnerVoucherType({ type: params.type })
   const restaurant = await getOwnerRestaurant(params.ownerId)
   const applicability = params.applicability ?? "all"
   await validateVoucherTargets({
@@ -782,6 +876,12 @@ export async function createOwnerVoucher(params: VoucherMutationParams & { owner
     actorId: params.ownerId,
     action: "created"
   })
+  emitOwnerVoucherChanged({
+    ownerId: params.ownerId,
+    restaurantId: restaurant.id,
+    action: "created",
+    voucherId: voucher.id
+  })
   return voucher
 }
 
@@ -789,6 +889,7 @@ export async function updateOwnerVoucher(params: VoucherPatchParams & {
   ownerId: string
   voucherId: string
 }) {
+  assertOwnerVoucherType({ type: params.type })
   const restaurant = await getOwnerRestaurant(params.ownerId)
   const voucher = await VoucherModel.findOne({
     _id: params.voucherId,
@@ -817,6 +918,12 @@ export async function updateOwnerVoucher(params: VoucherPatchParams & {
     action: "updated",
     before,
     after: updated.toObject()
+  })
+  emitOwnerVoucherChanged({
+    ownerId: params.ownerId,
+    restaurantId: restaurant.id,
+    action: "updated",
+    voucherId: updated.id
   })
   return updated
 }
@@ -1114,6 +1221,12 @@ export async function deleteOwnerVoucher(params: { ownerId: string; voucherId: s
     restaurantId: restaurant.id,
     createdByType: "owner",
     createdById: params.ownerId
+  })
+  emitOwnerVoucherChanged({
+    ownerId: params.ownerId,
+    restaurantId: restaurant.id,
+    action: "deleted",
+    voucherId: params.voucherId
   })
   return { deleted: true }
 }

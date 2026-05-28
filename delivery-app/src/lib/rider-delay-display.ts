@@ -30,6 +30,8 @@ const DEFAULT_THRESHOLDS: RiderDeliveryThresholds = {
   deliveryWatchAfterPickupMinutes: 20,
   deliveryLateAfterPickupMinutes: 25,
   deliveryCriticalAfterPickupMinutes: 30,
+  riderEtaSpeedKmph: 24,
+  riderEtaRouteFactor: 1.1,
 };
 
 function getTimestamp(order: RiderOrder, status: string) {
@@ -82,6 +84,14 @@ function getThresholds(thresholds?: Partial<RiderDeliveryThresholds> | null) {
     deliveryWatchAfterPickupMinutes: watch,
     deliveryLateAfterPickupMinutes: late,
     deliveryCriticalAfterPickupMinutes: critical,
+    riderEtaSpeedKmph:
+      typeof thresholds?.riderEtaSpeedKmph === "number"
+        ? thresholds.riderEtaSpeedKmph
+        : DEFAULT_THRESHOLDS.riderEtaSpeedKmph,
+    riderEtaRouteFactor:
+      typeof thresholds?.riderEtaRouteFactor === "number"
+        ? thresholds.riderEtaRouteFactor
+        : DEFAULT_THRESHOLDS.riderEtaRouteFactor,
   };
 }
 

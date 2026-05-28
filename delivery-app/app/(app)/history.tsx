@@ -14,17 +14,18 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { useRiderOrdersQuery, type RiderOrder } from "@/src/hooks/use-rider-api";
+import { useRiderOrdersPagedQuery, type RiderOrder } from "@/src/hooks/use-rider-api";
 import { useDeliveryCopy } from "@/src/lib/copy";
 import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
-import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
+import { getOrderStatusBadge, getOrderTimingInfo, getPaymentMethodBadge } from "@/src/lib/rider-order-display";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 import { RiderScreenHeader } from "@/src/components/rider-screen-header";
 import { useNetworkStatus } from "@/src/hooks/use-network-status";
 
-type StatusFilter = "all" | "Delivered" | "Cancelled";
+type StatusFilter = "all" | "Delivered" | "Cancelled" | "Rejected";
 type RangeFilter = "all" | "today" | "last7" | "thisMonth" | "last30";
+const HISTORY_PAGE_STEP = 20;
 
 function getOrderTime(order: RiderOrder) {
   return new Date(order.updatedAt ?? order.createdAt ?? 0).getTime();
@@ -65,6 +66,7 @@ function isWithinRange(order: RiderOrder, rangeFilter: RangeFilter) {
 function getStatusFilterLabel(copy: ReturnType<typeof useDeliveryCopy>["copy"], status: StatusFilter) {
   if (status === "all") return copy.common.allStatus;
   if (status === "Delivered") return copy.common.delivered;
+  if (status === "Rejected") return "Rejected";
   return copy.common.cancelled;
 }
 
@@ -78,7 +80,8 @@ function getRangeFilterLabel(copy: ReturnType<typeof useDeliveryCopy>["copy"], r
 
 export default function HistoryScreen() {
   const rider = useRiderAuthStore((state) => state.rider);
-  const ordersQuery = useRiderOrdersQuery("history");
+  const [pageSize, setPageSize] = useState(HISTORY_PAGE_STEP);
+  const ordersQuery = useRiderOrdersPagedQuery("history", pageSize);
   const { copy } = useDeliveryCopy();
   const isNetworkOnline = useNetworkStatus();
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -89,6 +92,8 @@ export default function HistoryScreen() {
   const [draftStatusFilter, setDraftStatusFilter] = useState<StatusFilter>("all");
   const [draftRangeFilter, setDraftRangeFilter] = useState<RangeFilter>("all");
   const orders = useMemo(() => ordersQuery.data ?? [], [ordersQuery.data]);
+  const canLoadMoreHistory =
+    orders.length >= pageSize && !ordersQuery.isLoading && !ordersQuery.isFetching;
   const isAssignmentsPaused = rider?.isAvailableForAssignments === false;
   const statusTone = !isNetworkOnline ? "offline" : isAssignmentsPaused ? "paused" : "online";
   const statusLabel = !isNetworkOnline
@@ -192,6 +197,10 @@ export default function HistoryScreen() {
     setRangeFilter(draftRangeFilter);
     setIsFilterOpen(false);
   }, [draftRangeFilter, draftStatusFilter]);
+
+  const loadMoreHistory = useCallback(() => {
+    setPageSize((current) => current + HISTORY_PAGE_STEP);
+  }, []);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -309,8 +318,29 @@ export default function HistoryScreen() {
             </View>
           )
         }
+        ListFooterComponent={
+          filteredOrders.length ? (
+            <View style={styles.footerWrap}>
+              {ordersQuery.isFetching && !ordersQuery.isLoading ? (
+                <ActivityIndicator size="small" color={palette.primary} />
+              ) : canLoadMoreHistory ? (
+                <Pressable
+                  accessibilityRole="button"
+                  style={styles.loadMoreButton}
+                  onPress={loadMoreHistory}
+                >
+                  <Text style={styles.loadMoreText}>Show more history</Text>
+                  <Ionicons name="chevron-down" size={16} color={palette.foreground} />
+                </Pressable>
+              ) : (
+                <Text style={styles.endOfListText}>Latest loaded history is shown here.</Text>
+              )}
+            </View>
+          ) : null
+        }
         renderItem={({ item }) => {
           const statusBadge = getOrderStatusBadge(item.status);
+          const paymentBadge = getPaymentMethodBadge(item.paymentMethod);
           const timingInfo = getOrderTimingInfo(item);
           return (
             <Pressable style={styles.card} onPress={() => router.push(`/orders/${item.id}`)}>
@@ -329,6 +359,20 @@ export default function HistoryScreen() {
                     {statusBadge.label}
                   </Text>
                 </View>
+              </View>
+              <View
+                style={[
+                  styles.paymentBadge,
+                  {
+                    backgroundColor: paymentBadge.backgroundColor,
+                    borderColor: paymentBadge.borderColor,
+                  },
+                ]}
+              >
+                <Ionicons name={paymentBadge.icon} size={13} color={paymentBadge.color} />
+                <Text style={[styles.paymentBadgeText, { color: paymentBadge.color }]}>
+                  {paymentBadge.label}
+                </Text>
               </View>
               <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
               <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
@@ -364,7 +408,7 @@ export default function HistoryScreen() {
             <View style={styles.filterSection}>
               <Text style={styles.filterSectionTitle}>{historyCopy.filterStatus}</Text>
               <View style={styles.filterRow}>
-                {(["all", "Delivered", "Cancelled"] as const).map((status) => {
+                {(["all", "Delivered", "Cancelled", "Rejected"] as const).map((status) => {
                   const active = draftStatusFilter === status;
                   return (
                     <Pressable
@@ -682,6 +726,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   status: { fontSize: 12, fontWeight: "800" },
+  paymentBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  paymentBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
   name: { fontSize: 15, fontWeight: "700", color: palette.foreground },
   metaStrong: { fontSize: 13, fontWeight: "700", color: palette.foreground },
   meta: { fontSize: 13, color: palette.mutedForeground },
@@ -714,5 +772,33 @@ const styles = StyleSheet.create({
     color: palette.mutedForeground,
     textAlign: "center",
     maxWidth: 280,
+  },
+  footerWrap: {
+    minHeight: 70,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 8,
+  },
+  loadMoreButton: {
+    minHeight: 46,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  loadMoreText: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  endOfListText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: palette.mutedForeground,
   },
 });

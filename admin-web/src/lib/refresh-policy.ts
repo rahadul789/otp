@@ -5,6 +5,8 @@ export type AdminRefreshPolicy = {
   dashboardMs: number
   operationsHealthMs: number
   liveMapMs: number
+  sessionsMs: number
+  riderDetailsMs: number
 }
 
 export const DEFAULT_ADMIN_REFRESH_POLICY: AdminRefreshPolicy = {
@@ -12,6 +14,8 @@ export const DEFAULT_ADMIN_REFRESH_POLICY: AdminRefreshPolicy = {
   dashboardMs: 30_000,
   operationsHealthMs: 30_000,
   liveMapMs: 15_000,
+  sessionsMs: 30_000,
+  riderDetailsMs: 30_000,
 }
 
 const STORAGE_KEY = "foodbela-admin-refresh-policy"
@@ -49,6 +53,14 @@ export function getAdminRefreshPolicy(): AdminRefreshPolicy {
       liveMapMs: normalizeInterval(
         parsed.liveMapMs,
         DEFAULT_ADMIN_REFRESH_POLICY.liveMapMs,
+      ),
+      sessionsMs: normalizeInterval(
+        parsed.sessionsMs,
+        DEFAULT_ADMIN_REFRESH_POLICY.sessionsMs,
+      ),
+      riderDetailsMs: normalizeInterval(
+        parsed.riderDetailsMs,
+        DEFAULT_ADMIN_REFRESH_POLICY.riderDetailsMs,
       ),
     }
   } catch {

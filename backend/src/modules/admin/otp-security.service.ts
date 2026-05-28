@@ -1,5 +1,6 @@
 import { StatusCodes } from "http-status-codes"
 
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache"
 import { AppError } from "../../common/utils/app-error"
 import { OtpAbuseBlockModel, OtpSecurityEventModel, OtpSessionModel } from "../auth/auth.model"
 
@@ -82,6 +83,12 @@ function serializeBlock(block: Record<string, any>) {
   }
 }
 
+const otpSecurityEventsCache = createInMemoryAsyncCache<any>({
+  ttlMs: 30_000,
+  staleWhileRevalidateMs: 60_000,
+  maxEntries: 24,
+})
+
 export async function listOtpSecurityEvents(params: ListOtpSecurityParams = {}) {
   const hours = Math.min(168, Math.max(1, params.hours ?? 24))
   const page = Math.max(1, params.page ?? 1)
@@ -90,11 +97,13 @@ export async function listOtpSecurityEvents(params: ListOtpSecurityParams = {}) 
   const query: Record<string, unknown> = {
     createdAt: { $gte: since },
   }
+  const cacheKey = [params.phone ?? "", hours, page, pageSize].join("|")
 
   if (params.phone?.trim()) {
     query.phone = params.phone.trim()
   }
 
+  return otpSecurityEventsCache.getOrSet(cacheKey, async () => {
   const [total, events, summaryRows, phoneRows, lockedSessionCount, blocks] = await Promise.all([
     OtpSecurityEventModel.countDocuments(query),
     OtpSecurityEventModel.find(query)
@@ -210,6 +219,7 @@ export async function listOtpSecurityEvents(params: ListOtpSecurityParams = {}) 
     page,
     pageSize,
   }
+  })
 }
 
 export async function upsertOtpAbuseBlock(params: UpsertOtpBlockParams) {
@@ -268,6 +278,7 @@ export async function upsertOtpAbuseBlock(params: UpsertOtpBlockParams) {
     await block.save()
   }
 
+  otpSecurityEventsCache.clear()
   return serializeBlock(block.toObject())
 }
 
@@ -296,6 +307,7 @@ export async function unblockOtpAbuseBlock(params: UnblockOtpBlockParams) {
     block.audit.splice(0, block.audit.length - 30)
   }
   await block.save()
+  otpSecurityEventsCache.clear()
 
   return serializeBlock(block.toObject())
 }

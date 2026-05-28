@@ -12,16 +12,37 @@ export function NetworkStatusBanner() {
   if (status === "online") return null;
 
   const isOffline = status === "offline";
+  const isServerIssue = status === "server";
 
   return (
     <SafeAreaView pointerEvents="none" edges={["top"]} style={styles.safeArea}>
-      <View style={[styles.banner, isOffline ? styles.offline : styles.slow]}>
+      <View
+        style={[
+          styles.banner,
+          isOffline ? styles.offline : isServerIssue ? styles.server : styles.slow,
+        ]}
+      >
         <Ionicons
-          name={isOffline ? "cloud-offline-outline" : "cellular-outline"}
+          name={
+            isOffline
+              ? "cloud-offline-outline"
+              : isServerIssue
+                ? "server-outline"
+                : "cellular-outline"
+          }
           size={17}
-          color={isOffline ? "#B42318" : palette.warningText}
+          color={isOffline ? "#B42318" : isServerIssue ? palette.info : palette.warningText}
         />
-        <Text style={[styles.text, isOffline ? styles.offlineText : styles.slowText]}>
+        <Text
+          style={[
+            styles.text,
+            isOffline
+              ? styles.offlineText
+              : isServerIssue
+                ? styles.serverText
+                : styles.slowText,
+          ]}
+        >
           {message}
         </Text>
       </View>
@@ -61,6 +82,10 @@ const styles = StyleSheet.create({
     backgroundColor: palette.warningSurface,
     borderColor: "#FAD99B",
   },
+  server: {
+    backgroundColor: palette.infoSoft,
+    borderColor: "#BFD0FF",
+  },
   text: {
     flex: 1,
     fontSize: 12,
@@ -72,5 +97,8 @@ const styles = StyleSheet.create({
   },
   slowText: {
     color: palette.warningText,
+  },
+  serverText: {
+    color: palette.info,
   },
 });

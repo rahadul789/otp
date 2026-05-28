@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { AppBottomSheet } from "@/src/components/app-bottom-sheet";
 import { palette } from "@/src/theme/palette";
 
 type ReorderCartSwitchModalProps = {
@@ -21,48 +22,46 @@ export function ReorderCartSwitchModal({
   onConfirm,
 }: ReorderCartSwitchModalProps) {
   return (
-    <Modal
+    <AppBottomSheet
       visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
+      onClose={onClose}
+      title="Start a fresh cart?"
+      subtitle={`Replace items from ${currentRestaurantName} with this reorder from ${incomingRestaurantName}.`}
+      leadingIcon="refresh-outline"
+      snapPoints={[0.7, 0.9]}
+      initialSnapPoint={0.7}
+      scroll={false}
+      footer={
+        <View style={styles.modalActions}>
+          <Pressable style={styles.modalSecondaryButton} onPress={onClose}>
+            <Text style={styles.modalSecondaryButtonText}>Keep current cart</Text>
+          </Pressable>
+          <Pressable style={styles.modalPrimaryButton} onPress={onConfirm}>
+            <Text style={styles.modalPrimaryButtonText}>Replace and reorder</Text>
+          </Pressable>
+        </View>
+      }
     >
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
-          <View style={styles.modalGlow} />
+      <View style={styles.modalBadge}>
+        <Ionicons name="sparkles-outline" size={12} color={palette.secondary} />
+        <Text style={styles.modalBadgeText}>Cart switch</Text>
+      </View>
 
-          <View style={styles.modalBadge}>
-            <Ionicons name="sparkles-outline" size={12} color={palette.secondary} />
-            <Text style={styles.modalBadgeText}>Cart switch</Text>
-          </View>
+      <Text style={styles.modalText}>
+        Your cart already has items from {currentRestaurantName}. Replace it with this reorder
+        from {incomingRestaurantName}.
+      </Text>
 
-          <Text style={styles.modalTitle}>Start a fresh cart?</Text>
-          <Text style={styles.modalText}>
-            Your cart already has items from {currentRestaurantName}. Replace it with this reorder
-            from {incomingRestaurantName}.
-          </Text>
-
-          <View style={styles.modalPreviewRow}>
-            <View style={styles.modalPreviewImageFallback}>
-              <Ionicons name="refresh-outline" size={20} color={palette.secondary} />
-            </View>
-            <View style={styles.modalPreviewCopy}>
-              <Text style={styles.modalPreviewTitle}>{previewItemName}</Text>
-              <Text style={styles.modalPreviewSubtitle}>Reorder from your delivered items</Text>
-            </View>
-          </View>
-
-          <View style={styles.modalActions}>
-            <Pressable style={styles.modalSecondaryButton} onPress={onClose}>
-              <Text style={styles.modalSecondaryButtonText}>Keep current cart</Text>
-            </Pressable>
-            <Pressable style={styles.modalPrimaryButton} onPress={onConfirm}>
-              <Text style={styles.modalPrimaryButtonText}>Replace and reorder</Text>
-            </Pressable>
-          </View>
+      <View style={styles.modalPreviewRow}>
+        <View style={styles.modalPreviewImageFallback}>
+          <Ionicons name="refresh-outline" size={20} color={palette.secondary} />
+        </View>
+        <View style={styles.modalPreviewCopy}>
+          <Text style={styles.modalPreviewTitle}>{previewItemName}</Text>
+          <Text style={styles.modalPreviewSubtitle}>Reorder from your delivered items</Text>
         </View>
       </View>
-    </Modal>
+    </AppBottomSheet>
   );
 }
 

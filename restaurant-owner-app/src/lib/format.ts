@@ -23,3 +23,59 @@ export function getOrderPlacedAt(order: { timestamps?: Record<string, string | u
     ""
   );
 }
+
+type OwnerPricingLike = {
+  subtotal?: number;
+  deliveryFee?: number;
+  discountAmount?: number;
+  ownerDiscountCost?: number;
+  restaurantSubtotal?: number;
+  restaurantNetSales?: number;
+  customerPaidTotal?: number;
+  ownerVisibleDiscount?: number;
+  total?: number;
+};
+
+export function getOwnerOrderSubtotal(order: { pricing?: OwnerPricingLike }) {
+  if (typeof order.pricing?.restaurantSubtotal === "number") {
+    return order.pricing.restaurantSubtotal;
+  }
+  if (typeof order.pricing?.subtotal === "number") {
+    return order.pricing.subtotal;
+  }
+  return Math.max(
+    0,
+    (order.pricing?.total ?? 0) -
+      (order.pricing?.deliveryFee ?? 0) +
+      (order.pricing?.discountAmount ?? getOwnerOrderDiscount(order))
+  );
+}
+
+export function getOwnerOrderDiscount(order: { pricing?: OwnerPricingLike }) {
+  return (
+    order.pricing?.ownerDiscountCost ??
+    order.pricing?.ownerVisibleDiscount ??
+    order.pricing?.discountAmount ??
+    0
+  );
+}
+
+export function getOwnerOrderNetSales(order: { pricing?: OwnerPricingLike }) {
+  return (
+    order.pricing?.restaurantNetSales ??
+    Math.max(0, getOwnerOrderSubtotal(order) - getOwnerOrderDiscount(order))
+  );
+}
+
+export function getOwnerOrderCustomerPaidTotal(order: { pricing?: OwnerPricingLike }) {
+  return (
+    order.pricing?.customerPaidTotal ??
+    order.pricing?.total ??
+    Math.max(
+      0,
+      (order.pricing?.subtotal ?? 0) +
+        (order.pricing?.deliveryFee ?? 0) -
+        (order.pricing?.discountAmount ?? getOwnerOrderDiscount(order))
+    )
+  );
+}

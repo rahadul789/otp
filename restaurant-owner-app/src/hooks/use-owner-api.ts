@@ -5,8 +5,10 @@ import {
   apiGet,
   apiPatch,
   apiPost,
+  apiPut,
   type OwnerAuthResponse,
 } from "@/src/lib/api";
+import { patchOwnerOrderQueryCaches } from "@/src/lib/owner-order-cache";
 import { useOwnerAuthStore } from "@/src/store/auth-store";
 
 export type OwnerListResponse<T> = {
@@ -60,8 +62,24 @@ export type OwnerOrder = {
     subtotal?: number;
     deliveryFee?: number;
     discountAmount?: number;
+    ownerDiscountCost?: number;
+    platformDiscountCost?: number;
+    restaurantSubtotal?: number;
+    restaurantNetSales?: number;
+    customerPaidTotal?: number;
+    ownerVisibleDiscount?: number;
     total?: number;
   };
+  appliedVouchers?: {
+    id?: string;
+    code?: string;
+    name?: string;
+    type?: string;
+    fundedBy?: string;
+    discountAmount?: number;
+    totalDiscountAmount?: number;
+    ownerDiscountCost?: number;
+  }[];
   customerSnapshot?: {
     fullName?: string;
     phone?: string;
@@ -132,6 +150,61 @@ export type OwnerMenuItem = {
   images?: { url?: string }[];
 };
 
+export type OwnerVoucher = {
+  _id: string;
+  fundedBy: "owner" | "platform" | "shared";
+  stackingRule: "exclusive" | "stackable";
+  mode: "auto" | "coupon";
+  type: "flat" | "percentage" | "free_delivery";
+  name: string;
+  code?: string;
+  discountValue?: number | null;
+  minimumOrderAmount?: number | null;
+  maxTotalUses?: number | null;
+  maxUsesPerUser?: number | null;
+  allowRepeatUsage?: boolean;
+  status: "Draft" | "Active";
+  applicability: "all" | "categories" | "items";
+  categoryIds?: string[];
+  itemIds?: string[];
+  startsAt: string;
+  endsAt: string;
+  createdAt: string;
+  updatedAt: string;
+  analytics?: {
+    totalUses: number;
+    appliedCount: number;
+    deliveredCount: number;
+    uniqueUsers: number;
+    repeatUsage: number;
+    totalDiscountGiven: number;
+    totalOrdersUsingVoucher: number;
+    revenueGenerated: number;
+    remainingUsage: number | null;
+    totalDeliveryCostCovered: number;
+  };
+};
+
+export type OwnerVoucherPayload = {
+  fundedBy: "owner";
+  stackingRule: "exclusive";
+  mode: "auto" | "coupon";
+  type: "flat" | "percentage";
+  name: string;
+  code?: string;
+  discountValue?: number;
+  minimumOrderAmount?: number;
+  maxTotalUses?: number;
+  maxUsesPerUser?: number;
+  allowRepeatUsage?: boolean;
+  status: "Draft" | "Active";
+  applicability: "all";
+  categoryIds?: string[];
+  itemIds?: string[];
+  startsAt: string;
+  endsAt: string;
+};
+
 export type OwnerDashboardSummary = {
   restaurant: {
     id: string;
@@ -162,6 +235,9 @@ export type OwnerPayoutSummary = {
   lifetimeDiscountCost?: number;
   lifetimeDeliveryCost?: number;
   nextSettlementAvailableAt: string | null;
+  minimumPayoutAmountTaka?: number;
+  oneActivePayoutRequest?: boolean;
+  hasActivePayoutRequest?: boolean;
   lastPayout?: {
     _id?: string;
     amount: number;
@@ -177,13 +253,44 @@ export type OwnerPayoutSummary = {
     bankName?: string;
     branchName?: string;
     isVerified?: boolean;
+    pendingType?: "bkash" | "bank" | null;
+    pendingAccountName?: string;
+    pendingAccountNumber?: string | null;
+    pendingVerificationStatus?: "otp_pending" | "admin_pending" | "rejected" | null;
+    pendingVerifiedAt?: string | null;
+    pendingAdminNote?: string;
   } | null;
+};
+
+export type OwnerPayoutMethodResponse = {
+  payoutMethod: NonNullable<OwnerPayoutSummary["payoutMethod"]>;
+  verificationSessionId: string | null;
+  expiresInSeconds?: number;
+  resendAvailableInSeconds?: number;
+};
+
+export type OwnerPayoutHistory = {
+  _id: string;
+  amount: number;
+  status: "pending" | "processing" | "completed" | "failed";
+  batchReference?: string;
+  failureReason?: string;
+  providerReference?: string;
+  providerPayoutId?: string;
+  providerTransactionId?: string;
+  paymentProofUrl?: string;
+  processingNote?: string;
+  requestedAt: string;
+  processedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type OwnerPlatformContent = {
   operations?: {
     ownerApp?: {
       webDashboardUrl?: string;
+      showCustomerPhoneNumbers?: boolean;
     };
   };
 };
@@ -341,6 +448,7 @@ export function useOwnerDashboardSummaryQuery(enabled = true) {
   return useQuery({
     queryKey: ["owner", "dashboard", "summary", "today"],
     enabled,
+    staleTime: 10_000,
     queryFn: async () => {
       const response = await apiGet<OwnerDashboardSummary>(
         "/owner/dashboard/summary?preset=today",
@@ -372,7 +480,7 @@ export function useUpdateOwnerStoreSettingsMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (payload: { phone?: string }) => {
+    mutationFn: async (payload: { phone?: string; preparationTimeMinutes?: number | null }) => {
       const response = await apiPatch<OwnerStoreSettings>(
         "/owner/store-settings",
         payload,
@@ -380,6 +488,68 @@ export function useUpdateOwnerStoreSettingsMutation() {
       return response.data;
     },
     onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["owner", "store-settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
+    },
+  });
+}
+
+export function useOwnerVouchersQuery(enabled = true) {
+  return useQuery({
+    queryKey: ["owner", "vouchers"],
+    enabled,
+    queryFn: async () => {
+      const response = await apiGet<OwnerListResponse<OwnerVoucher>>(
+        "/owner/vouchers?page=1&pageSize=50&sortBy=newestUpdated",
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useCreateOwnerVoucherMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: OwnerVoucherPayload) => {
+      const response = await apiPost<OwnerVoucher>("/owner/vouchers", payload);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] });
+      await queryClient.invalidateQueries({ queryKey: ["owner", "store-settings"] });
+    },
+  });
+}
+
+export function useUpdateOwnerVoucherMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: { id: string; body: Partial<OwnerVoucherPayload> }) => {
+      const response = await apiPatch<OwnerVoucher>(
+        `/owner/vouchers/${payload.id}`,
+        payload.body,
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] });
+      await queryClient.invalidateQueries({ queryKey: ["owner", "store-settings"] });
+    },
+  });
+}
+
+export function useDeleteOwnerVoucherMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (voucherId: string) => {
+      const response = await apiDelete<{ deleted: true }>(`/owner/vouchers/${voucherId}`);
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] });
       await queryClient.invalidateQueries({ queryKey: ["owner", "store-settings"] });
     },
   });
@@ -403,6 +573,7 @@ export function useOwnerOrdersQuery(
     queryKey: ["owner", "orders", params ?? {}],
     enabled,
     refetchInterval: enabled ? 20_000 : false,
+    staleTime: 5_000,
     queryFn: async () => {
       const response = await apiGet<OwnerListResponse<OwnerOrder>>(
         `/owner/orders${query ? `?${query}` : ""}`,
@@ -443,12 +614,13 @@ export function useOwnerOrderTransitionMutation() {
       return response.data;
     },
     onSuccess: async (order) => {
+      patchOwnerOrderQueryCaches(queryClient, order);
       await queryClient.invalidateQueries({ queryKey: ["owner", "orders"] });
-      queryClient.setQueryData(["owner", "orders", "details", order._id], order);
       await queryClient.invalidateQueries({
         queryKey: ["owner", "orders", "details", order._id],
       });
       await queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
+      await queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] });
     },
   });
 }
@@ -467,12 +639,13 @@ export function useExtendOwnerOrderPreparationMutation() {
       return response.data;
     },
     onSuccess: async (order) => {
+      patchOwnerOrderQueryCaches(queryClient, order);
       await queryClient.invalidateQueries({ queryKey: ["owner", "orders"] });
-      queryClient.setQueryData(["owner", "orders", "details", order._id], order);
       await queryClient.invalidateQueries({
         queryKey: ["owner", "orders", "details", order._id],
       });
       await queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
+      await queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] });
     },
   });
 }
@@ -533,6 +706,58 @@ export function useOwnerPayoutSummaryQuery(enabled = true) {
     queryFn: async () => {
       const response = await apiGet<OwnerPayoutSummary>("/owner/payouts/summary");
       return response.data;
+    },
+  });
+}
+
+export function useOwnerPayoutHistoryQuery(enabled = true, pageSize = 8) {
+  return useQuery({
+    queryKey: ["owner", "payouts", "history", { pageSize }],
+    enabled,
+    queryFn: async () => {
+      const response = await apiGet<OwnerListResponse<OwnerPayoutHistory>>(
+        `/owner/payouts/history?page=1&pageSize=${pageSize}`,
+      );
+      return response.data;
+    },
+  });
+}
+
+export function useRequestOwnerPayoutMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiPost<OwnerPayoutHistory>(
+        "/owner/payouts/request",
+        {},
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] });
+      await queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
+    },
+  });
+}
+
+export function useUpdateOwnerPayoutMethodMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: {
+      type: "bkash";
+      accountName: string;
+      accountNumber: string;
+    }) => {
+      const response = await apiPut<OwnerPayoutMethodResponse>(
+        "/owner/payout-method",
+        payload,
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] });
     },
   });
 }

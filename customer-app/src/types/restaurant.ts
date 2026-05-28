@@ -83,6 +83,8 @@ export type CustomerRestaurantMenuItem = {
 export type CustomerVoucherOffer = {
   _id: string;
   restaurantId?: string;
+  restaurantIds?: string[];
+  scopeType?: string;
   name: string;
   mode?: "auto" | "coupon";
   type?: "flat" | "percentage" | "free_delivery";

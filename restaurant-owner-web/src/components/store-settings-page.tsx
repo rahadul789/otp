@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Clock3,
   ImagePlus,
-  BellRing,
   LoaderCircle,
   Save,
   Settings2,
@@ -19,8 +18,11 @@ import { Link } from "react-router-dom"
 import { toast } from "sonner"
 
 import { useOpeningHours } from "@/components/hours/opening-hours-context"
+import { useMenuItems } from "@/components/menu/menu-items-context"
+import { usePromotions } from "@/components/promotions/promotions-context"
 import type { PayoutMethod } from "@/components/payouts/types"
 import { useRestaurantStatus } from "@/components/restaurant-status-context"
+import { StorefrontMobilePreview } from "@/components/storefront-mobile-preview"
 import {
   type StoreSettings,
   type StoreSettingsFormErrors,
@@ -35,7 +37,6 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Progress } from "@/components/ui/progress"
 import {
   Select,
   SelectContent,
@@ -45,7 +46,6 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
-import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { getStoreCoverSrc, getStoreLogoSrc } from "@/lib/store-profile"
 import { validateImageFile } from "@/lib/image-upload"
@@ -83,7 +83,6 @@ const PRESET_TAGS = [
 
 const PREPARATION_TIME_OPTIONS = [10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90]
 
-const DESCRIPTION_LIMIT = 220
 type UploadTarget = "logo" | "cover"
 
 type SectionHeaderProps = {
@@ -145,10 +144,6 @@ function validateStoreSettings(settings: StoreSettings): StoreSettingsFormErrors
     errors.preparationTimeMinutes = "Preparation time must be greater than 0."
   }
 
-  if (settings.description.length > DESCRIPTION_LIMIT) {
-    errors.description = `Keep description within ${DESCRIPTION_LIMIT} characters.`
-  }
-
   return errors
 }
 
@@ -197,6 +192,8 @@ export function StoreSettingsPage() {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const { isOnline, isUpdating } = useRestaurantStatus()
   const { openingHours } = useOpeningHours()
+  const { vouchers } = usePromotions()
+  const { items: menuItems } = useMenuItems()
 
   const [draft, setDraft] = React.useState(storeSettings)
   const [saved, setSaved] = React.useState(storeSettings)
@@ -279,8 +276,6 @@ export function StoreSettingsPage() {
   const payoutIsDirty =
     JSON.stringify(draftPayoutMethod) !== JSON.stringify(savedPayoutMethod)
   const isDirty = storeIsDirty || payoutIsDirty
-
-  const remainingCharacters = DESCRIPTION_LIMIT - draft.description.length
 
   const openingSummary = React.useMemo(() => {
     const activeDays = openingHours.weeklySchedule.filter((day) => day.isOpen).length
@@ -475,9 +470,6 @@ export function StoreSettingsPage() {
                   {draft.location.city}
                 </Badge>
               </div>
-              <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-                {draft.description}
-              </p>
               <div className="flex flex-wrap gap-2 pt-1">
                 {draft.tags.map((tag) => (
                   <Badge key={tag} variant="secondary" className="rounded-full">
@@ -509,7 +501,7 @@ export function StoreSettingsPage() {
         </CardContent>
       </Card>
 
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid items-start gap-5 xl:grid-cols-2">
         <div className="space-y-5">
         <Card className="rounded-[28px] border-border/70 shadow-sm">
           <SectionHeader
@@ -616,46 +608,6 @@ export function StoreSettingsPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <label className="text-sm font-medium">Description <span className="text-xs text-muted-foreground">(Optional)</span></label>
-                <span
-                  className={`text-xs font-medium ${
-                    remainingCharacters < 25 || !draft.description.trim()
-                      ? "text-amber-600"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  {remainingCharacters} characters left
-                </span>
-              </div>
-              <div className="rounded-3xl border bg-muted/15 p-4">
-                <Textarea
-                  value={draft.description}
-                  onChange={(event) =>
-                    update(
-                      "description",
-                      event.target.value.slice(0, DESCRIPTION_LIMIT)
-                    )
-                  }
-                  placeholder="Optional short overview for your storefront"
-                  className="min-h-32 border-0 bg-transparent p-0 text-sm leading-6 shadow-none focus-visible:ring-0"
-                />
-                <div className="mt-4 space-y-2">
-                  <Progress
-                    value={(draft.description.length / DESCRIPTION_LIMIT) * 100}
-                    className="h-2"
-                  />
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>Add it only if you want more storefront context.</span>
-                    <span>{draft.description.length}/{DESCRIPTION_LIMIT}</span>
-                  </div>
-                </div>
-              </div>
-              {errors.description ? (
-                <p className="text-sm text-destructive">{errors.description}</p>
-              ) : null}
-            </div>
           </CardContent>
         </Card>
 
@@ -692,17 +644,13 @@ export function StoreSettingsPage() {
               <div>
                 <div className="font-medium">Accept Orders Automatically</div>
                 <div className="text-sm text-muted-foreground">
-                  Turn off for manual review before accepting.
+                  Disabled by platform policy. Owners must manually accept each order.
                 </div>
               </div>
               <Switch
-                checked={draft.orderSettings.autoAcceptOrders}
-                onCheckedChange={(checked) =>
-                  update("orderSettings", {
-                    ...draft.orderSettings,
-                    autoAcceptOrders: checked,
-                  })
-                }
+                checked={false}
+                disabled
+                aria-label="Automatic order acceptance is disabled"
               />
             </div>
             <div className="space-y-2">
@@ -868,50 +816,20 @@ export function StoreSettingsPage() {
             ) : null}
 
             <div className="rounded-3xl border bg-muted/15 p-4 text-sm text-muted-foreground">
-              {draftPayoutMethod.type === "bkash" &&
-              sanitizeBangladeshPhoneInput(draftPayoutMethod.accountNumber) &&
-              sanitizeBangladeshPhoneInput(draftPayoutMethod.accountNumber) !==
-                ownerAccount.phone
-                ? "If this bKash number is different from your owner account phone, an OTP verification step will appear before activation."
-                : "A completed payout setup helps your store profile reach 100% and avoids settlement delays after approval."}
+              {payoutMethod.pendingVerificationStatus === "admin_pending"
+                ? `New bKash number ${payoutMethod.pendingAccountNumber} is OTP verified and waiting for admin approval.`
+                : payoutMethod.pendingVerificationStatus === "rejected"
+                  ? `Last payout number request was rejected${payoutMethod.pendingAdminNote ? `: ${payoutMethod.pendingAdminNote}` : "."}`
+                  : draftPayoutMethod.type === "bkash" &&
+                      sanitizeBangladeshPhoneInput(draftPayoutMethod.accountNumber) &&
+                      sanitizeBangladeshPhoneInput(draftPayoutMethod.accountNumber) !==
+                        ownerAccount.phone
+                    ? "A new bKash number needs OTP verification first, then admin approval before activation."
+                    : "A completed payout setup helps your store profile reach 100% and avoids settlement delays after approval."}
             </div>
           </CardContent>
         </Card>
 
-          <Card className="rounded-[28px] border-border/70 shadow-sm">
-            <SectionHeader
-              icon={BellRing}
-              title="Notifications"
-              description="Choose which operational alerts you want to receive in the dashboard."
-            />
-            <CardContent className="space-y-4 p-6">
-              <div className="space-y-3">
-                <div className="text-sm font-medium">Notifications</div>
-              {[
-                ["newOrder", "New order notifications"],
-                ["cancellation", "Order cancellation alerts"],
-              ].map(([key, label]) => (
-                <div
-                  key={key}
-                  className="flex items-center justify-between rounded-3xl border bg-muted/15 px-4 py-3"
-                >
-                  <span>{label}</span>
-                  <Switch
-                    checked={
-                      draft.notifications[key as keyof typeof draft.notifications]
-                    }
-                    onCheckedChange={(checked) =>
-                      update("notifications", {
-                        ...draft.notifications,
-                        [key]: checked,
-                      })
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
         </div>
 
         <div className="xl:sticky xl:top-20">
@@ -922,70 +840,18 @@ export function StoreSettingsPage() {
               description="See how your storefront information will look on a customer's phone."
             />
             <CardContent className="p-6">
-              <div className="mx-auto w-full max-w-[360px] rounded-[36px] border-[7px] border-slate-900 bg-slate-950 p-1.5 shadow-2xl">
-                <div className="overflow-hidden rounded-[30px] bg-background">
-                  <div className="relative h-36 bg-slate-100">
-                    <img
-                      src={getStoreCoverSrc(draft.coverImageUrl)}
-                      alt={draft.name}
-                      className="h-full w-full object-cover"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
-                    <div className="absolute top-3 left-1/2 h-1.5 w-20 -translate-x-1/2 rounded-full bg-white/85" />
-                    <div className="absolute right-3 bottom-3">
-                      <Badge className="rounded-full bg-white/90 text-slate-900 hover:bg-white/90">
-                        {isOnline ? "Open now" : "Closed"}
-                      </Badge>
-                    </div>
-                  </div>
-
-                  <div className="min-h-[540px] space-y-4 p-4">
-                    <div className="-mt-11 flex items-end gap-3">
-                      <div className="overflow-hidden rounded-2xl border-4 border-background bg-background shadow-md">
-                        <img
-                          src={getStoreLogoSrc(draft.logoUrl)}
-                          alt={draft.name}
-                          className="size-[72px] object-cover"
-                        />
-                      </div>
-                      <div className="min-w-0 flex-1 pb-1">
-                      <div className="truncate text-sm font-semibold">
-                        {draft.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {draft.cuisineType || "Restaurant"}
-                      </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border bg-muted/20 p-3">
-                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        About
-                      </div>
-                      <p className="line-clamp-3 text-sm leading-5 text-foreground/90">
-                        {draft.description || "Add a short description to preview your storefront."}
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                        Tags
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {draft.tags.slice(0, 5).map((tag) => (
-                          <Badge
-                            key={tag}
-                            variant="secondary"
-                            className="rounded-full"
-                          >
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <StorefrontMobilePreview
+                settings={{
+                  ...draft,
+                  orderSettings: {
+                    ...draft.orderSettings,
+                    autoAcceptOrders: false,
+                  },
+                }}
+                isOnline={isOnline}
+                vouchers={vouchers}
+                menuItems={menuItems}
+              />
             </CardContent>
           </Card>
         </div>
@@ -1042,10 +908,9 @@ export function StoreSettingsPage() {
                       {
                         name: draft.name.trim(),
                         phone: sanitizeBangladeshPhoneInput(draft.phone),
-                        description: draft.description.trim(),
                         preparationTimeMinutes:
                           draft.orderSettings.preparationTimeMinutes,
-                        autoAcceptOrders: draft.orderSettings.autoAcceptOrders,
+                        autoAcceptOrders: false,
                         cuisineTypes,
                         tags: draft.tags,
                         logo: { url: draft.logoUrl },
@@ -1054,10 +919,6 @@ export function StoreSettingsPage() {
                       city: draft.location.city.trim(),
                       latitude: draft.location.latitude,
                       longitude: draft.location.longitude,
-                      notifications: {
-                        newOrder: draft.notifications.newOrder,
-                        cancellation: draft.notifications.cancellation,
-                      },
                     },
                     {
                       onSuccess: (response) => {
@@ -1100,10 +961,15 @@ export function StoreSettingsPage() {
                     {
                       onSuccess: (response) => {
                         const payload = response as OwnerPayoutMethodResponse
-                        const nextMethod = mapOwnerPayoutMethod(
-                          payload.payoutMethod,
-                          draftPayoutMethod
-                        )
+                        const nextMethod = {
+                          ...mapOwnerPayoutMethod(
+                            payload.payoutMethod,
+                            savedPayoutMethod
+                          ),
+                          pendingAccountName: payload.verificationSessionId
+                            ? draftPayoutMethod.accountName.trim()
+                            : "",
+                        }
                         setPayoutMethod(nextMethod)
                         setSavedPayoutMethod(nextMethod)
 

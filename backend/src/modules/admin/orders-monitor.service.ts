@@ -2,6 +2,7 @@ import { StatusCodes } from "http-status-codes";
 import type { PipelineStage } from "mongoose";
 
 import { AppError } from "../../common/utils/app-error";
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
 import { decorateTrackingSnapshot } from "../../common/utils/tracking-freshness";
 import { AdminModel } from "./admin.model";
 import { OwnerModel, RiderModel, RestaurantModel } from "../auth/auth.model";
@@ -16,10 +17,16 @@ import {
   buildOrderPreparationTiming,
   buildPreparationMetaForStart,
 } from "../owner/preparation-timing";
-import { VoucherRedemptionModel } from "../customer/customer.model";
+import {
+  BkashPaymentAttemptModel,
+  CustomerModel,
+  VoucherRedemptionModel,
+} from "../customer/customer.model";
 import { emitSocketEvent } from "../../config/socket";
+import { reconcileBkashPaymentAttemptFromGateway } from "../customer/customer.service";
 import { revokeReferralRewardForOrder } from "../customer/referral.service";
 import { sendPushToCustomer } from "../customer/push.service";
+import { sendTransactionalSms } from "../auth/otp-sms.service";
 import { sendPushToRider } from "../rider/push.service";
 import {
   getRiderAvailabilitySummary,
@@ -33,9 +40,11 @@ import { DispatchDecisionLogModel } from "./dispatch-log.model";
 import { createAdminActivityLog } from "./activity-log.service";
 import { RiderPayrollCycleModel } from "./rider-payroll.model";
 import { createAdminOperationalAlert } from "./admin-alert.service";
+import { enqueueAdminOrderTerminalExceptionAlert } from "./order-exception-alerts";
 import { recordBusinessEvent } from "./business-event.service";
 
 const MAX_ORDER_HISTORY_ENTRIES = 100;
+const ADMIN_LIVE_MAP_ACTIVE_ORDER_WINDOW_HOURS = 12;
 
 type DispatchAlgorithm = "nearest_eligible_balanced" | "least_loaded_first";
 type DispatchMode = "fleet" | "primary_rider";
@@ -85,6 +94,22 @@ let adminDispatchSettingsCache:
 
 function invalidateAdminDispatchSettingsCache() {
   adminDispatchSettingsCache = null;
+}
+
+const adminOrdersMonitorCache = createInMemoryAsyncCache<any>({
+  ttlMs: 5_000,
+  staleWhileRevalidateMs: 15_000,
+  maxEntries: 8,
+});
+const adminLiveMapCache = createInMemoryAsyncCache<any>({
+  ttlMs: 5_000,
+  staleWhileRevalidateMs: 15_000,
+  maxEntries: 2,
+});
+
+export function invalidateAdminMonitoringCaches() {
+  adminOrdersMonitorCache.clear();
+  adminLiveMapCache.clear();
 }
 
 type RiderAssignmentCandidate = {
@@ -193,6 +218,30 @@ type AdminPaymentListParams = {
   pageSize?: number;
 };
 
+type AdminBkashPaymentAttemptListParams = {
+  search?: string;
+  preset?: string;
+  from?: string;
+  to?: string;
+  status?:
+    | "all"
+    | "initiated"
+    | "provider_created"
+    | "provider_create_failed"
+    | "callback_success"
+    | "customer_cancelled"
+    | "callback_failed"
+    | "execute_failed"
+    | "confirmed_paid"
+    | "order_finalized"
+    | "order_finalize_failed"
+    | "expired";
+  paymentStatus?: "all" | "unpaid" | "paid" | "cancelled" | "failed" | "expired";
+  orderState?: "all" | "finalized" | "missing" | "failed";
+  page?: number;
+  pageSize?: number;
+};
+
 type AdminRiderStatus = "active" | "suspended" | "locked";
 type AdminRiderVerificationStatus = "pending" | "approved" | "rejected";
 
@@ -231,7 +280,7 @@ const DEFAULT_DISPATCH_SETTINGS: DispatchSettings = {
   retryCooldownMinutes: 3,
   surgeReadyOrderThreshold: 4,
   surgeUnassignedOrderThreshold: 2,
-  autoCancelUnacceptedOrdersEnabled: false,
+  autoCancelUnacceptedOrdersEnabled: true,
   autoCancelAfterMinutes: 12,
   autoCancelNotifyBeforeMinutes: 3,
 };
@@ -253,7 +302,44 @@ const orderTimestampFieldByStatus: Partial<Record<string, string>> = {
   Cancelled: "cancelledAt",
 };
 
+function buildCleanCustomerOrderStatusMessage(nextStatus: string) {
+  switch (nextStatus) {
+    case "Accepted":
+      return {
+        title: "✅ Order accepted",
+        body: "Your order is confirmed. The kitchen will start soon.",
+      };
+    case "Preparing":
+      return {
+        title: "🍳 Food is preparing",
+        body: "Your food is being prepared now.",
+      };
+    case "ReadyForPickup":
+      return {
+        title: "📦 Ready for pickup",
+        body: "Your order is packed. A rider will pick it up soon.",
+      };
+    case "Rejected":
+      return {
+        title: "😕 Order not accepted",
+        body: "Your order could not be accepted. If you paid online, support will review the refund.",
+      };
+    case "Cancelled":
+      return {
+        title: "❌ Order cancelled",
+        body: "Your order was cancelled. If you paid online, support will review the refund.",
+      };
+    default:
+      return {
+        title: "🔔 Order update",
+        body: "There is a new update on your order.",
+      };
+  }
+}
+
 function getCustomerOrderStatusMessage(nextStatus: string) {
+  return buildCleanCustomerOrderStatusMessage(nextStatus);
+
   switch (nextStatus) {
     case "Accepted":
       return {
@@ -321,6 +407,7 @@ async function safeSendCustomerOrderStatusPush(params: {
         body: customerMessage.body,
         data: {
           type: "order_status",
+          status: params.nextStatus,
           orderId: params.orderId,
           path: `/orders/${params.orderId}/tracking`,
         },
@@ -373,6 +460,54 @@ function numberValue(value: unknown, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function displayOrderPaymentStatus(order: Record<string, any>): string {
+  const status = stringValue(order.status);
+  const paymentMethod = stringValue(order.paymentMethod, "Cash");
+  const paymentStatus = stringValue(order.paymentStatus, "pending");
+  if (
+    ["Cancelled", "Rejected"].includes(status) &&
+    paymentMethod === "Cash" &&
+    paymentStatus !== "paid"
+  ) {
+    return "cancelled";
+  }
+  return paymentStatus;
+}
+
+function getAppliedVoucherDiscountSplit(order: Record<string, any>) {
+  const vouchers = Array.isArray(order.appliedVouchers) ? order.appliedVouchers : [];
+
+  if (!vouchers.length) {
+    return null;
+  }
+
+  return vouchers.reduce(
+    (summary, voucher) => {
+      const discountAmount = numberValue(voucher?.discountAmount);
+      const fundedBy = stringValue(voucher?.fundedBy, "owner").toLowerCase();
+      const ownerSharePercent =
+        fundedBy === "platform"
+          ? 0
+          : fundedBy === "owner"
+            ? 100
+            : Math.min(100, Math.max(0, numberValue(voucher?.ownerSharePercent)));
+      const ownerDiscountCost = numberValue(
+        voucher?.ownerDiscountCost,
+        Math.round(discountAmount * (ownerSharePercent / 100)),
+      );
+      const platformDiscountCost = numberValue(
+        voucher?.platformDiscountCost,
+        Math.max(0, discountAmount - ownerDiscountCost),
+      );
+
+      summary.ownerDiscountCost += ownerDiscountCost;
+      summary.platformDiscountCost += platformDiscountCost;
+      return summary;
+    },
+    { ownerDiscountCost: 0, platformDiscountCost: 0 },
+  );
+}
+
 function currentPayrollMonth() {
   return new Date().toISOString().slice(0, 7);
 }
@@ -382,12 +517,45 @@ function normalizePayrollMonth(value?: string) {
   return month && /^\d{4}-\d{2}$/.test(month) ? month : currentPayrollMonth();
 }
 
-function getNextRiderPayoutDate(payoutDay: number, month = currentPayrollMonth()) {
-  const [yearText, monthText] = month.split("-");
-  const year = Number(yearText);
-  const monthIndex = Number(monthText) - 1;
-  const safeDay = Math.min(28, Math.max(1, Math.floor(payoutDay || 1)));
-  return new Date(Date.UTC(year, monthIndex + 1, safeDay, 0, 0, 0, 0));
+function addMonthsClamped(date: Date, months: number) {
+  const next = new Date(date);
+  const day = next.getDate();
+  next.setDate(1);
+  next.setMonth(next.getMonth() + months);
+  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(day, lastDay));
+  return next;
+}
+
+function getRiderSalaryAnchor(rider: Record<string, any>) {
+  const explicitStart = rider.payroll?.startedAt ? new Date(rider.payroll.startedAt) : null;
+  const createdAt = rider.createdAt ? new Date(rider.createdAt) : null;
+  const anchor =
+    explicitStart && !Number.isNaN(explicitStart.getTime())
+      ? explicitStart
+      : createdAt && !Number.isNaN(createdAt.getTime())
+        ? createdAt
+        : new Date();
+  anchor.setHours(0, 0, 0, 0);
+  return anchor;
+}
+
+function getNextRiderSalaryDueDate(rider: Record<string, any>, from = new Date()) {
+  const anchor = getRiderSalaryAnchor(rider);
+  const today = new Date(from);
+  today.setHours(0, 0, 0, 0);
+  if (today < anchor) return anchor;
+
+  const roughMonthDiff =
+    (today.getFullYear() - anchor.getFullYear()) * 12 +
+    (today.getMonth() - anchor.getMonth());
+  let cursorMonth = Math.max(0, roughMonthDiff);
+  let dueDate = addMonthsClamped(anchor, cursorMonth);
+  while (dueDate <= today) {
+    cursorMonth += 1;
+    dueDate = addMonthsClamped(anchor, cursorMonth);
+  }
+  return dueDate;
 }
 
 function monthKeysBetween(start: Date, end: Date) {
@@ -436,9 +604,7 @@ function summarizePayrollCycle(
     isPayrollEnabled: payroll.isPayrollEnabled !== false,
     monthlySalary: numberValue(payroll.monthlySalary),
     payoutDay: numberValue(payroll.payoutDay, 1),
-    nextPayoutDate: serializeDate(
-      getNextRiderPayoutDate(numberValue(payroll.payoutDay, 1), month),
-    ),
+    nextPayoutDate: serializeDate(getNextRiderSalaryDueDate(rider)),
     baseSalary,
     platformBonus,
     penalties,
@@ -1651,6 +1817,7 @@ async function assignOrderToRider(params: {
     riderId: rider.id,
     assignmentSource: params.assignmentSource,
   });
+  invalidateAdminMonitoringCaches();
 
   try {
     await sendPushToRider({
@@ -1666,7 +1833,7 @@ async function assignOrderToRider(params: {
         data: {
           type: "rider_assignment",
           orderId: order.id,
-          path: "/(app)/available",
+          path: `/orders/${order.id}`,
         },
       },
     });
@@ -1900,6 +2067,7 @@ export async function updateAdminDispatchSettings(params: {
   });
 
   invalidateAdminDispatchSettingsCache();
+  invalidateAdminMonitoringCaches();
   return getAdminDispatchSettings();
 }
 
@@ -2195,8 +2363,70 @@ async function buildAdminPaymentQuery(params: AdminPaymentListParams = {}) {
       { "customerSnapshot.phone": pattern },
       { "paymentSnapshot.transactionId": pattern },
       { "paymentSnapshot.trxID": pattern },
+      { "paymentSnapshot.walletNumber": pattern },
+      { "paymentSnapshot.payerReference": pattern },
+      { "paymentSnapshot.customerMsisdn": pattern },
       ...(restaurants.length
         ? [{ restaurantId: { $in: restaurants.map((restaurant) => restaurant._id) } }]
+        : []),
+    ];
+  }
+
+  return query;
+}
+
+async function buildAdminBkashAttemptQuery(
+  params: AdminBkashPaymentAttemptListParams = {},
+) {
+  const query: Record<string, any> = {};
+  const dateMatch = buildDateMatch(params);
+
+  if (dateMatch) query.createdAt = dateMatch;
+
+  if (params.status && params.status !== "all") {
+    query.status = params.status;
+  }
+
+  if (params.paymentStatus && params.paymentStatus !== "all") {
+    query.paymentStatus = params.paymentStatus;
+  }
+
+  if (params.orderState === "finalized") {
+    query.orderFinalizationStatus = "finalized";
+  }
+  if (params.orderState === "failed") {
+    query.orderFinalizationStatus = "failed";
+  }
+  if (params.orderState === "missing") {
+    query.paymentStatus = "paid";
+    query.orderFinalizationStatus = { $ne: "finalized" };
+  }
+
+  const search = params.search?.trim();
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), "i");
+    const [restaurants, customers] = await Promise.all([
+      RestaurantModel.find({ name: pattern }).select({ _id: 1 }).lean(),
+      CustomerModel.find({
+        $or: [{ fullName: pattern }, { phone: pattern }],
+      })
+        .select({ _id: 1 })
+        .lean(),
+    ]);
+    query.$or = [
+      { clientOrderId: pattern },
+      { paymentID: pattern },
+      { transactionId: pattern },
+      { walletNumber: pattern },
+      { walletNumberMasked: pattern },
+      { payerReference: pattern },
+      { customerMsisdn: pattern },
+      { voucherCode: pattern },
+      ...(restaurants.length
+        ? [{ restaurantId: { $in: restaurants.map((restaurant) => restaurant._id) } }]
+        : []),
+      ...(customers.length
+        ? [{ customerId: { $in: customers.map((customer) => customer._id) } }]
         : []),
     ];
   }
@@ -2212,6 +2442,11 @@ function mapAdminPaymentTransaction(
   const paymentMethod = stringValue(order.paymentMethod, "Cash");
   const paymentStatus = stringValue(order.paymentStatus, "pending");
   const paymentSnapshot = (order.paymentSnapshot ?? {}) as Record<string, any>;
+  const voucherCodes = Array.isArray(order.appliedVouchers)
+    ? order.appliedVouchers
+        .map((voucher: any) => stringValue(voucher?.code || voucher?.name))
+        .filter(Boolean)
+    : [];
 
   return {
     id: String(order._id ?? ""),
@@ -2228,6 +2463,11 @@ function mapAdminPaymentTransaction(
     paymentMethod,
     paymentStatus,
     provider: stringValue(paymentSnapshot.provider, paymentMethod),
+    bkashPayerPhone: stringValue(
+      paymentSnapshot.customerMsisdn ??
+        paymentSnapshot.walletNumber ??
+        paymentSnapshot.payerReference,
+    ),
     transactionId: stringValue(
       paymentSnapshot.transactionId ?? paymentSnapshot.trxID,
     ),
@@ -2242,6 +2482,7 @@ function mapAdminPaymentTransaction(
     refundNote: stringValue(paymentSnapshot.refundNote),
     refundRequestedAt: serializeDate(paymentSnapshot.refundRequestedAt),
     refundReviewedAt: serializeDate(paymentSnapshot.refundReviewedAt),
+    voucherCodes,
     createdAt: serializeDate(order.createdAt),
     updatedAt: serializeDate(order.updatedAt),
     deliveredAt: serializeDate(getOrderTimestamp(order, "Delivered")),
@@ -2253,6 +2494,295 @@ function mapAdminPaymentTransaction(
       ["Cancelled", "Rejected"].includes(status) &&
       paymentMethod === "Bkash" &&
       ["paid", "refund_pending"].includes(paymentStatus),
+    refundNotificationAudit: normalizeRefundNotificationAudit(
+      paymentSnapshot.refundNotificationAudit,
+    ),
+  };
+}
+
+type RefundNotificationChannelAudit = {
+  status: string;
+  attemptedAt: Date | null;
+  deliveredAt: Date | null;
+  provider?: string;
+  recipient?: string;
+  requestId?: string;
+  error?: string;
+  sent?: number;
+  inAppCreated?: number;
+  ticketIds?: string[];
+};
+
+function normalizeRefundNotificationChannel(
+  channel: Record<string, any> | null | undefined,
+) {
+  const ticketIds = Array.isArray(channel?.ticketIds) ? channel?.ticketIds : [];
+
+  return {
+    status: stringValue(channel?.status, "not_attempted"),
+    attemptedAt: serializeDate(channel?.attemptedAt),
+    deliveredAt: serializeDate(channel?.deliveredAt),
+    provider: stringValue(channel?.provider),
+    recipient: stringValue(channel?.recipient),
+    requestId: stringValue(channel?.requestId),
+    error: stringValue(channel?.error),
+    sent: numberValue(channel?.sent),
+    inAppCreated: numberValue(channel?.inAppCreated),
+    ticketIds: ticketIds
+      .map((ticketId: unknown) => stringValue(ticketId))
+      .filter(Boolean),
+  };
+}
+
+function normalizeRefundNotificationAudit(raw: unknown) {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const audit = raw as Record<string, any>;
+  return {
+    message: stringValue(audit.message),
+    updatedAt: serializeDate(audit.updatedAt),
+    push: normalizeRefundNotificationChannel(audit.push),
+    sms: normalizeRefundNotificationChannel(audit.sms),
+  };
+}
+
+function getRefundNotificationError(error: unknown) {
+  if (error instanceof AppError) {
+    return `${error.code}: ${error.message}`;
+  }
+  return error instanceof Error ? error.message : "Unknown delivery error";
+}
+
+function resolveRefundPhone(order: Record<string, any>) {
+  const snapshot = (order.paymentSnapshot ?? {}) as Record<string, any>;
+  return stringValue(
+    snapshot.customerMsisdn ??
+      snapshot.walletNumber ??
+      snapshot.payerReference ??
+      order.customerSnapshot?.phone,
+  );
+}
+
+function renderRefundSmsTemplate(
+  template: string,
+  replacements: Record<string, string>,
+) {
+  return Object.entries(replacements).reduce(
+    (message, [key, value]) => message.replaceAll(`{{${key}}}`, value),
+    template,
+  );
+}
+
+async function buildRefundCompletedMessage(order: Record<string, any>) {
+  const amount = numberValue(order.pricing?.total);
+  const amountLabel = `Tk ${Math.round(amount).toLocaleString("en-US")}`;
+  const orderNumber = stringValue(order.orderNumber, "your order");
+  const content = await getPlatformContent().catch(() => null);
+  const platformName = stringValue(content?.branding?.platformName, "Foodbela");
+  const paymentSnapshot = (order.paymentSnapshot ?? {}) as Record<string, any>;
+  const template =
+    content?.operations?.payments?.bkashRefundSmsTemplate?.trim() ||
+    "{{platformName}}: Refund completed for {{orderNumber}}. Amount {{amount}}. Ref {{refundReference}}.";
+  const refundReference = stringValue(
+    paymentSnapshot.refundProviderReference ??
+      paymentSnapshot.transactionId ??
+      paymentSnapshot.trxID,
+    "N/A",
+  );
+
+  return renderRefundSmsTemplate(template, {
+    platformName,
+    orderNumber,
+    amount: amountLabel,
+    refundReference,
+    transactionId: stringValue(
+      paymentSnapshot.transactionId ?? paymentSnapshot.trxID,
+      "N/A",
+    ),
+    customerName: stringValue(
+      order.customerSnapshot?.fullName ?? order.customerSnapshot?.name,
+      "Customer",
+    ),
+    customerPhone: stringValue(order.customerSnapshot?.phone, "N/A"),
+  }).slice(0, 480);
+}
+
+async function sendRefundCompletedNotifications(order: Record<string, any>) {
+  const now = new Date();
+  const orderId = String(order._id ?? order.id ?? "");
+  const orderNumber = stringValue(order.orderNumber);
+  const customerId = order.customerId ? String(order.customerId) : "";
+  const phone = resolveRefundPhone(order);
+  const message = await buildRefundCompletedMessage(order);
+  const audit: {
+    message: string;
+    updatedAt: Date;
+    push: RefundNotificationChannelAudit;
+    sms: RefundNotificationChannelAudit;
+  } = {
+    message,
+    updatedAt: now,
+    push: {
+      status: "not_attempted",
+      attemptedAt: null,
+      deliveredAt: null,
+    },
+    sms: {
+      status: "not_attempted",
+      attemptedAt: null,
+      deliveredAt: null,
+      recipient: phone,
+    },
+  };
+
+  if (customerId) {
+    audit.push.attemptedAt = new Date();
+    audit.push.provider = "expo";
+    try {
+      const result = await sendPushToCustomer({
+        customerId,
+        payload: {
+          title: "Refund completed",
+          body: message,
+          data: {
+            type: "refund_completed",
+            orderId,
+            orderNumber,
+            paymentStatus: "refunded",
+          },
+        },
+      });
+
+      audit.push.sent = result.sent;
+      audit.push.inAppCreated = result.inAppCreated;
+      audit.push.ticketIds = result.ticketIds;
+      audit.push.status =
+        result.sent > 0
+          ? "sent"
+          : result.inAppCreated > 0
+            ? "in_app_only"
+            : "skipped";
+      audit.push.deliveredAt = audit.push.status === "skipped" ? null : new Date();
+    } catch (error) {
+      audit.push.status = "failed";
+      audit.push.error = getRefundNotificationError(error);
+    }
+  } else {
+    audit.push.status = "skipped";
+    audit.push.error = "Customer id missing";
+  }
+
+  if (phone) {
+    audit.sms.attemptedAt = new Date();
+    try {
+      const content = await getPlatformContent().catch(() => null);
+      if (content?.operations?.payments?.bkashRefundSmsEnabled === false) {
+        audit.sms.status = "disabled";
+        audit.sms.error = "Refund SMS is disabled in admin settings";
+      } else {
+        const result = await sendTransactionalSms({
+          phone,
+          message,
+        });
+
+        audit.sms.provider = result.provider;
+        audit.sms.requestId =
+          "requestId" in result && result.requestId ? String(result.requestId) : "";
+        audit.sms.status = result.skipped ? "skipped" : "sent";
+        audit.sms.deliveredAt = result.skipped ? null : new Date();
+      }
+    } catch (error) {
+      audit.sms.status =
+        error instanceof AppError && error.code === "SMS_API_KEY_MISSING"
+          ? "not_configured"
+          : "failed";
+      audit.sms.error = getRefundNotificationError(error);
+    }
+  } else {
+    audit.sms.status = "skipped";
+    audit.sms.error = "Refund phone number missing";
+  }
+
+  return audit;
+}
+
+function mapAdminBkashPaymentAttempt(
+  attempt: Record<string, any>,
+  restaurant: Record<string, any> | undefined,
+  customer: Record<string, any> | undefined,
+) {
+  const events = Array.isArray(attempt.events) ? attempt.events : [];
+  const latestEvent = events[events.length - 1] ?? {};
+  const expiresAt = attempt.expiresAt ? new Date(attempt.expiresAt) : null;
+  const isExpiredUnpaid =
+    attempt.paymentStatus === "unpaid" &&
+    expiresAt &&
+    !Number.isNaN(expiresAt.getTime()) &&
+    expiresAt.getTime() < Date.now();
+  const effectiveStatus = isExpiredUnpaid ? "expired" : stringValue(attempt.status);
+  const effectivePaymentStatus = isExpiredUnpaid
+    ? "expired"
+    : stringValue(attempt.paymentStatus, "unpaid");
+
+  return {
+    id: String(attempt._id ?? ""),
+    customerId: String(attempt.customerId ?? ""),
+    customerName: stringValue(customer?.fullName, "Customer"),
+    customerPhone: stringValue(customer?.phone),
+    restaurantId: String(attempt.restaurantId ?? ""),
+    restaurantName: stringValue(restaurant?.name, "Restaurant"),
+    orderId: attempt.orderId ? String(attempt.orderId) : "",
+    sessionId: attempt.sessionId ? String(attempt.sessionId) : "",
+    clientOrderId: stringValue(attempt.clientOrderId),
+    walletNumber: stringValue(attempt.walletNumber),
+    walletNumberMasked: stringValue(attempt.walletNumberMasked),
+    payerReference: stringValue(attempt.payerReference),
+    customerMsisdn: stringValue(attempt.customerMsisdn),
+    payerPhone: stringValue(
+      attempt.customerMsisdn ?? attempt.walletNumber ?? attempt.payerReference,
+    ),
+    amount: numberValue(attempt.amount),
+    voucherCode: stringValue(attempt.voucherCode),
+    paymentID: stringValue(attempt.paymentID),
+    transactionId: stringValue(attempt.transactionId),
+    status: effectiveStatus,
+    rawStatus: stringValue(attempt.status),
+    paymentStatus: effectivePaymentStatus,
+    orderFinalizationStatus: stringValue(
+      attempt.orderFinalizationStatus,
+      "not_started",
+    ),
+    failureStage: stringValue(attempt.failureStage),
+    failureReason: stringValue(attempt.failureReason),
+    providerCode: stringValue(latestEvent.providerCode),
+    providerMessage: stringValue(latestEvent.providerMessage),
+    latestEvent: stringValue(latestEvent.event),
+    latestNote: stringValue(latestEvent.note || latestEvent.reason),
+    initiatedAt: serializeDate(attempt.initiatedAt),
+    providerCreatedAt: serializeDate(attempt.providerCreatedAt),
+    callbackAt: serializeDate(attempt.callbackAt),
+    executedAt: serializeDate(attempt.executedAt),
+    confirmedAt: serializeDate(attempt.confirmedAt),
+    orderFinalizedAt: serializeDate(attempt.orderFinalizedAt),
+    failedAt: serializeDate(attempt.failedAt),
+    expiresAt: serializeDate(attempt.expiresAt),
+    createdAt: serializeDate(attempt.createdAt),
+    updatedAt: serializeDate(attempt.updatedAt),
+    events: events
+      .slice(-6)
+      .reverse()
+      .map((event: Record<string, any>) => ({
+        event: stringValue(event.event),
+        status: stringValue(event.status),
+        paymentStatus: stringValue(event.paymentStatus),
+        note: stringValue(event.note),
+        reason: stringValue(event.reason),
+        providerCode: stringValue(event.providerCode),
+        providerMessage: stringValue(event.providerMessage),
+        occurredAt: serializeDate(event.occurredAt),
+      })),
   };
 }
 
@@ -2276,13 +2806,19 @@ function mapAdminOrderListItem(
   );
   const delayState = getAdminOrderDelayState(order, dispatchState, restaurant);
   const status = stringValue(order.status);
-  const paymentStatus = stringValue(order.paymentStatus);
+  const paymentStatus = displayOrderPaymentStatus(order);
   const preparationTiming = buildOrderPreparationTiming({
     order,
     restaurant,
     prepStartGraceMinutes: dispatchState.prepStartGraceMinutes,
     maxExtraMinutes: dispatchState.preparationMaxExtraMinutes,
   });
+  const operationalTiming = buildAdminOrderOperationalTiming(
+    order,
+    restaurant ?? null,
+    dispatchState,
+    riderTracking,
+  );
 
   return {
     id: String(order._id ?? ""),
@@ -2316,6 +2852,11 @@ function mapAdminOrderListItem(
     ownerAcceptanceState: getOwnerAcceptanceState(order, dispatchState),
     paymentMethod: stringValue(order.paymentMethod),
     paymentStatus,
+    voucherCodes: Array.isArray(order.appliedVouchers)
+      ? order.appliedVouchers
+          .map((voucher: any) => stringValue(voucher?.code || voucher?.name))
+          .filter(Boolean)
+      : [],
     total: numberValue(order.pricing?.total),
     subtotal: numberValue(order.pricing?.subtotal),
     deliveryFee: numberValue(order.pricing?.deliveryFee),
@@ -2342,6 +2883,8 @@ function mapAdminOrderListItem(
     lateReason: delayState?.label ?? "",
     lateMinutes: delayState?.minutes ?? 0,
     lateTone: delayState?.tone ?? "none",
+    autoCancel: buildOrderAutoCancelSnapshot(order, dispatchState),
+    operationalTiming,
     preparationTiming,
     riderTracking,
   };
@@ -2368,6 +2911,7 @@ export async function listAdminOrders(params: AdminOrderListParams = {}) {
         rejectionReason: 1,
         paymentMethod: 1,
         paymentStatus: 1,
+        appliedVouchers: 1,
         pricing: 1,
         customerSnapshot: 1,
         riderId: 1,
@@ -2971,20 +3515,241 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
   };
 }
 
+export async function listAdminBkashPaymentAttempts(
+  params: AdminBkashPaymentAttemptListParams = {},
+) {
+  const page = clampPage(params.page);
+  const pageSize =
+    params.pageSize && params.pageSize > 100
+      ? Math.min(5000, Math.max(100, Math.floor(params.pageSize)))
+      : clampPageSize(params.pageSize);
+  const query = await buildAdminBkashAttemptQuery(params);
+  const now = new Date();
+
+  const [attempts, total, summaryRows] = await Promise.all([
+    BkashPaymentAttemptModel.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean(),
+    BkashPaymentAttemptModel.countDocuments(query),
+    BkashPaymentAttemptModel.aggregate<{
+      _id: null;
+      attemptCount: number;
+      paidCount: number;
+      paidAmount: number;
+      unpaidCount: number;
+      cancelledCount: number;
+      failedCount: number;
+      expiredCount: number;
+      staleUnpaidCount: number;
+      orderFinalizedCount: number;
+      orderFinalizeFailedCount: number;
+      paidWithoutOrderCount: number;
+      paidWithoutOrderAmount: number;
+    }>([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          attemptCount: { $sum: 1 },
+          paidCount: { $sum: { $cond: [{ $eq: ["$paymentStatus", "paid"] }, 1, 0] } },
+          paidAmount: {
+            $sum: {
+              $cond: [
+                { $eq: ["$paymentStatus", "paid"] },
+                { $ifNull: ["$amount", 0] },
+                0,
+              ],
+            },
+          },
+          unpaidCount: {
+            $sum: { $cond: [{ $eq: ["$paymentStatus", "unpaid"] }, 1, 0] },
+          },
+          cancelledCount: {
+            $sum: { $cond: [{ $eq: ["$paymentStatus", "cancelled"] }, 1, 0] },
+          },
+          failedCount: {
+            $sum: { $cond: [{ $eq: ["$paymentStatus", "failed"] }, 1, 0] },
+          },
+          expiredCount: {
+            $sum: { $cond: [{ $eq: ["$paymentStatus", "expired"] }, 1, 0] },
+          },
+          staleUnpaidCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$paymentStatus", "unpaid"] },
+                    { $lt: ["$expiresAt", now] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+          orderFinalizedCount: {
+            $sum: {
+              $cond: [{ $eq: ["$orderFinalizationStatus", "finalized"] }, 1, 0],
+            },
+          },
+          orderFinalizeFailedCount: {
+            $sum: {
+              $cond: [{ $eq: ["$orderFinalizationStatus", "failed"] }, 1, 0],
+            },
+          },
+          paidWithoutOrderCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$paymentStatus", "paid"] },
+                    { $ne: ["$orderFinalizationStatus", "finalized"] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+          paidWithoutOrderAmount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$paymentStatus", "paid"] },
+                    { $ne: ["$orderFinalizationStatus", "finalized"] },
+                  ],
+                },
+                { $ifNull: ["$amount", 0] },
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]),
+  ]);
+
+  const restaurantIds = [
+    ...new Set(
+      attempts.map((attempt) => String(attempt.restaurantId ?? "")).filter(Boolean),
+    ),
+  ];
+  const customerIds = [
+    ...new Set(attempts.map((attempt) => String(attempt.customerId ?? "")).filter(Boolean)),
+  ];
+  const [restaurants, customers] = await Promise.all([
+    restaurantIds.length
+      ? RestaurantModel.find({ _id: { $in: restaurantIds } }).select("name").lean()
+      : [],
+    customerIds.length
+      ? CustomerModel.find({ _id: { $in: customerIds } }).select("fullName phone").lean()
+      : [],
+  ]);
+  const restaurantMap = new Map(
+    restaurants.map((restaurant) => [restaurant._id.toString(), restaurant]),
+  );
+  const customerMap = new Map(
+    customers.map((customer) => [customer._id.toString(), customer]),
+  );
+
+  return {
+    items: attempts.map((attempt) =>
+      mapAdminBkashPaymentAttempt(
+        attempt,
+        restaurantMap.get(String(attempt.restaurantId ?? "")),
+        customerMap.get(String(attempt.customerId ?? "")),
+      ),
+    ),
+    total,
+    page,
+    pageSize,
+    pageCount: Math.max(1, Math.ceil(total / pageSize)),
+    summary: summaryRows[0] ?? {
+      attemptCount: 0,
+      paidCount: 0,
+      paidAmount: 0,
+      unpaidCount: 0,
+      cancelledCount: 0,
+      failedCount: 0,
+      expiredCount: 0,
+      staleUnpaidCount: 0,
+      orderFinalizedCount: 0,
+      orderFinalizeFailedCount: 0,
+      paidWithoutOrderCount: 0,
+      paidWithoutOrderAmount: 0,
+    },
+  };
+}
+
+export async function reconcileAdminBkashPaymentAttempt(params: {
+  attemptId: string;
+  adminId?: string;
+  note?: string;
+}) {
+  if (!params.attemptId || !params.attemptId.trim()) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "BKASH_ATTEMPT_ID_REQUIRED",
+      "bKash payment attempt ID is required",
+    );
+  }
+
+  const result = await reconcileBkashPaymentAttemptFromGateway({
+    attemptId: params.attemptId,
+    adminId: params.adminId,
+    note: params.note,
+  });
+
+  await createAdminActivityLog({
+    action: "payment.bkash.reconciled",
+    entityType: "bkash_payment_attempt",
+    entityId: params.attemptId,
+    title: "bKash payment reconciled",
+    description: `Gateway reconciliation completed with status ${result.status}.`,
+    adminId: params.adminId ?? "",
+    metadata: {
+      status: result.status,
+      paymentID: result.paymentID,
+      transactionId: result.transactionId,
+      orderId: result.orderId,
+    },
+  });
+
+  return result;
+}
+
 export async function listAdminOrdersMonitor(params?: {
   scope?: "all" | "live" | "stale";
 }) {
   const scope = params?.scope ?? "all";
-  const dispatchState = await getAdminDispatchSettings();
+  return adminOrdersMonitorCache.getOrSet(`orders-monitor:${scope}`, async () => {
+    const dispatchState = await getAdminDispatchSettings();
 
-  const orders = await OrderModel.find({
-    status: {
-      $in: ["New", "ReadyForPickup", "PickedUp", "Delivered", "Cancelled"],
-    },
-  })
-    .sort({ updatedAt: -1 })
-    .limit(60)
-    .lean();
+    const orders = await OrderModel.find({
+      status: {
+        $in: ["New", "ReadyForPickup", "PickedUp", "Delivered", "Cancelled"],
+      },
+    })
+      .sort({ updatedAt: -1 })
+      .limit(60)
+      .select({
+        _id: 1,
+        orderNumber: 1,
+        status: 1,
+        restaurantId: 1,
+        customerSnapshot: 1,
+        riderId: 1,
+        riderSnapshot: 1,
+        riderTracking: 1,
+        dispatchMeta: 1,
+        timestamps: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .lean();
 
   const restaurantIds = [
     ...new Set(
@@ -2992,7 +3757,9 @@ export async function listAdminOrdersMonitor(params?: {
     ),
   ];
   const restaurants = restaurantIds.length
-    ? await RestaurantModel.find({ _id: { $in: restaurantIds } }).lean()
+    ? await RestaurantModel.find({ _id: { $in: restaurantIds } })
+        .select({ _id: 1, name: 1 })
+        .lean()
     : [];
   const restaurantMap = new Map(
     restaurants.map((restaurant) => [restaurant._id.toString(), restaurant]),
@@ -3091,6 +3858,7 @@ export async function listAdminOrdersMonitor(params?: {
     dispatch: dispatchState,
     items,
   };
+  });
 }
 
 export async function getAdminOrderMonitorDetails(orderId: string) {
@@ -3126,6 +3894,11 @@ export async function getAdminOrderMonitorDetails(orderId: string) {
     prepStartGraceMinutes: dispatchSettings.prepStartGraceMinutes,
     maxExtraMinutes: dispatchSettings.preparationMaxExtraMinutes,
   });
+  const voucherDiscountSplit = getAppliedVoucherDiscountSplit(order);
+  const discountAmount = numberValue(
+    order.pricing?.discountAmount,
+    numberValue(order.pricing?.discount),
+  );
 
   return {
     id: String(order._id ?? ""),
@@ -3149,7 +3922,7 @@ export async function getAdminOrderMonitorDetails(orderId: string) {
     rejectionReason: order.rejectionReason ?? "",
     deliveryAddress: order.customerSnapshot?.deliveryAddress?.addressLine ?? "",
     paymentMethod: order.paymentMethod ?? "",
-    paymentStatus: order.paymentStatus ?? "",
+    paymentStatus: displayOrderPaymentStatus(order),
     paymentSnapshot:
       order.paymentSnapshot && typeof order.paymentSnapshot === "object"
         ? order.paymentSnapshot
@@ -3157,9 +3930,30 @@ export async function getAdminOrderMonitorDetails(orderId: string) {
     pricing: {
       subtotal: order.pricing?.subtotal ?? 0,
       deliveryFee: order.pricing?.deliveryFee ?? 0,
-      discount: order.pricing?.discount ?? 0,
+      discount: discountAmount,
+      ownerDiscountCost: numberValue(
+        order.pricing?.ownerDiscountCost,
+        voucherDiscountSplit?.ownerDiscountCost ?? discountAmount,
+      ),
+      platformDiscountCost: numberValue(
+        order.pricing?.platformDiscountCost,
+        voucherDiscountSplit?.platformDiscountCost ?? 0,
+      ),
       total: order.pricing?.total ?? 0,
     },
+    appliedVouchers: Array.isArray(order.appliedVouchers)
+      ? order.appliedVouchers.map((voucher: Record<string, any>) => ({
+          id: String(voucher.id ?? voucher.voucherId ?? ""),
+          code: String(voucher.code ?? ""),
+          name: String(voucher.name ?? "Voucher"),
+          type: String(voucher.type ?? ""),
+          mode: String(voucher.mode ?? ""),
+          fundedBy: String(voucher.fundedBy ?? ""),
+          ownerSharePercent: numberValue(voucher.ownerSharePercent),
+          platformSharePercent: numberValue(voucher.platformSharePercent),
+          discountAmount: numberValue(voucher.discountAmount),
+        }))
+      : [],
     items: Array.isArray(order.itemsSnapshot)
       ? order.itemsSnapshot.map((item: Record<string, any>, index: number) => ({
           id: String(item.id ?? item.menuItemId ?? index),
@@ -3563,11 +4357,16 @@ export async function createAdminRider(params: {
     riderId: rider.id,
   });
 
+  invalidateAdminMonitoringCaches();
   return mapAdminRiderSummary(rider.toObject(), emptyRiderStats());
 }
 
 export async function getAdminLiveMap() {
+  return adminLiveMapCache.getOrSet("admin-live-map", async () => {
   const liveRestaurantOrderStatuses = ["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"];
+  const activeOrderUpdatedAfter = new Date(
+    Date.now() - ADMIN_LIVE_MAP_ACTIVE_ORDER_WINDOW_HOURS * 60 * 60 * 1000,
+  );
   const dispatchSettings = getDispatchSettingsFromContent(await getPlatformContent());
   const [activeRidersCount, availableRidersCount, riders, allRestaurants, restaurantLiveOrders] =
     await Promise.all([
@@ -3580,14 +4379,57 @@ export async function getAdminLiveMap() {
       RiderModel.find({ status: "active" })
         .sort({ "lastKnownLocation.updatedAt": -1, lastLoginAt: -1 })
         .limit(100)
+        .select({
+          _id: 1,
+          fullName: 1,
+          phone: 1,
+          status: 1,
+          vehicleType: 1,
+          isAvailableForAssignments: 1,
+          activeTrackingOrderId: 1,
+          lastLoginAt: 1,
+          lastKnownLocation: 1,
+        })
         .lean(),
       RestaurantModel.find({})
         .sort({ "runtime.isOnline": -1, name: 1 })
         .limit(250)
+        .select({
+          _id: 1,
+          name: 1,
+          location: 1,
+          address: 1,
+          contact: 1,
+          runtime: 1,
+          preparationTimeMinutes: 1,
+        })
         .lean(),
-      OrderModel.find({ status: { $in: liveRestaurantOrderStatuses } })
+      OrderModel.find({
+        status: { $in: liveRestaurantOrderStatuses },
+        $or: [
+          { updatedAt: { $gte: activeOrderUpdatedAfter } },
+          { createdAt: { $gte: activeOrderUpdatedAfter } },
+        ],
+      })
         .sort({ updatedAt: -1 })
         .limit(500)
+        .select({
+          _id: 1,
+          orderNumber: 1,
+          status: 1,
+          restaurantId: 1,
+          riderId: 1,
+          customerId: 1,
+          customerSnapshot: 1,
+          paymentMethod: 1,
+          pricing: 1,
+          timestamps: 1,
+          dispatchMeta: 1,
+          preparationMeta: 1,
+          riderTracking: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        })
         .lean(),
     ]);
   const orders = restaurantLiveOrders.slice(0, 100);
@@ -3611,9 +4453,33 @@ export async function getAdminLiveMap() {
 
   const [restaurants, assignedRiders] = await Promise.all([
     restaurantIds.length
-      ? RestaurantModel.find({ _id: { $in: restaurantIds } }).lean()
+      ? RestaurantModel.find({ _id: { $in: restaurantIds } })
+          .select({
+            _id: 1,
+            name: 1,
+            location: 1,
+            address: 1,
+            contact: 1,
+            runtime: 1,
+            preparationTimeMinutes: 1,
+          })
+          .lean()
       : [],
-    riderIds.length ? RiderModel.find({ _id: { $in: riderIds } }).lean() : [],
+    riderIds.length
+      ? RiderModel.find({ _id: { $in: riderIds } })
+          .select({
+            _id: 1,
+            fullName: 1,
+            phone: 1,
+            status: 1,
+            vehicleType: 1,
+            isAvailableForAssignments: 1,
+            activeTrackingOrderId: 1,
+            lastLoginAt: 1,
+            lastKnownLocation: 1,
+          })
+          .lean()
+      : [],
   ]);
 
   const restaurantMap = new Map(
@@ -3622,16 +4488,57 @@ export async function getAdminLiveMap() {
   const riderMap = new Map(
     assignedRiders.map((rider) => [String(rider._id ?? ""), rider]),
   );
+  const activeOrdersByRiderId = new Map<
+    string,
+    {
+      count: number;
+      readyForPickup: number;
+      pickedUp: number;
+      orders: Array<{
+        id: string;
+        orderNumber: string;
+        status: string;
+        updatedAt: string | null;
+      }>;
+    }
+  >();
+
+  restaurantLiveOrders.forEach((order) => {
+    const riderId = String(order.riderId ?? "");
+    const status = stringValue(order.status, "New");
+    if (!riderId || !["ReadyForPickup", "PickedUp"].includes(status)) return;
+
+    const current = activeOrdersByRiderId.get(riderId) ?? {
+      count: 0,
+      readyForPickup: 0,
+      pickedUp: 0,
+      orders: [],
+    };
+    current.count += 1;
+    if (status === "ReadyForPickup") current.readyForPickup += 1;
+    if (status === "PickedUp") current.pickedUp += 1;
+    current.orders.push({
+      id: String(order._id ?? ""),
+      orderNumber: stringValue(order.orderNumber),
+      status,
+      updatedAt: serializeDate(order.updatedAt ?? order.createdAt),
+    });
+    activeOrdersByRiderId.set(riderId, current);
+  });
+
   const liveOrderByRiderId = new Map(
-    orders
-      .filter((order) => order.status === "PickedUp" && order.riderId)
-      .map((order) => [
-        String(order.riderId ?? ""),
+    Array.from(activeOrdersByRiderId.entries()).map(([riderId, summary]) => {
+      const activeOrder =
+        summary.orders.find((order) => order.status === "PickedUp") ??
+        summary.orders[0];
+      return [
+        riderId,
         {
-          id: String(order._id ?? ""),
-          orderNumber: stringValue(order.orderNumber),
+          id: activeOrder?.id ?? "",
+          orderNumber: activeOrder?.orderNumber ?? "",
         },
-      ]),
+      ];
+    }),
   );
   const restaurantLiveStats = new Map<
     string,
@@ -3687,6 +4594,9 @@ export async function getAdminLiveMap() {
     const readyAt = getOrderTimestamp(order, "ReadyForPickup");
     const pickedUpAt = getOrderTimestamp(order, "PickedUp");
     const now = new Date();
+    const riderActiveOrderSummary = rider
+      ? activeOrdersByRiderId.get(String(rider._id ?? ""))
+      : null;
 
     return {
       id: String(order._id ?? ""),
@@ -3722,6 +4632,14 @@ export async function getAdminLiveMap() {
               rider.isAvailableForAssignments !== false,
             activeTrackingOrderId: stringValue(rider.activeTrackingOrderId),
             lastLoginAt: serializeDate(rider.lastLoginAt),
+            activeOrderCount: riderActiveOrderSummary?.count ?? 0,
+            readyOrderCount: riderActiveOrderSummary?.readyForPickup ?? 0,
+            pickedUpOrderCount: riderActiveOrderSummary?.pickedUp ?? 0,
+            activeOrderNumbers:
+              riderActiveOrderSummary?.orders
+                .map((activeOrder) => activeOrder.orderNumber)
+                .filter(Boolean)
+                .slice(0, 8) ?? [],
             location: serializeRiderLocation(rider.lastKnownLocation),
           }
         : null,
@@ -3770,10 +4688,12 @@ export async function getAdminLiveMap() {
   });
 
   const liveRiders = riders.map((rider) => {
-    const liveOrder = liveOrderByRiderId.get(String(rider._id ?? ""));
+    const riderId = String(rider._id ?? "");
+    const liveOrder = liveOrderByRiderId.get(riderId);
+    const activeOrderSummary = activeOrdersByRiderId.get(riderId);
 
     return {
-      id: String(rider._id ?? ""),
+      id: riderId,
       fullName: stringValue(rider.fullName),
       phone: stringValue(rider.phone),
       status: stringValue(rider.status, "active"),
@@ -3783,6 +4703,14 @@ export async function getAdminLiveMap() {
       lastLoginAt: serializeDate(rider.lastLoginAt),
       liveOrderId: liveOrder?.id ?? "",
       liveOrderNumber: liveOrder?.orderNumber ?? "",
+      activeOrderCount: activeOrderSummary?.count ?? 0,
+      readyOrderCount: activeOrderSummary?.readyForPickup ?? 0,
+      pickedUpOrderCount: activeOrderSummary?.pickedUp ?? 0,
+      activeOrderNumbers:
+        activeOrderSummary?.orders
+          .map((activeOrder) => activeOrder.orderNumber)
+          .filter(Boolean)
+          .slice(0, 8) ?? [],
       currentLocation: serializeRiderLocation(rider.lastKnownLocation),
     };
   });
@@ -3852,6 +4780,7 @@ export async function getAdminLiveMap() {
     restaurants: restaurantLayer,
     lastUpdatedAt: new Date().toISOString(),
   };
+  });
 }
 
 export async function getAdminRiderDetails(riderId: string) {
@@ -4032,53 +4961,29 @@ export async function listAdminRiderPayroll(params: { month?: string } = {}) {
 
 async function getRiderPayrollFinanceSummary(months: string[]) {
   const safeMonths = months.length ? months : [currentPayrollMonth()];
-  const [riders, cycles] = await Promise.all([
-    RiderModel.find({
-      $or: [
-        { "payroll.isPayrollEnabled": { $ne: false } },
-        { payroll: { $exists: false } },
-      ],
-    }).lean(),
-    RiderPayrollCycleModel.find({ month: { $in: safeMonths } }).lean(),
-  ]);
-  const cycleMap = new Map(
-    cycles.map((cycle) => [`${String(cycle.riderId ?? "")}:${cycle.month}`, cycle]),
-  );
+  const cycles = await RiderPayrollCycleModel.find({
+    month: { $in: safeMonths },
+    status: "paid",
+  }).lean();
 
-  return safeMonths.reduce(
-    (total, month) => {
-      const monthEnd = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0, 23, 59, 59, 999);
-      const monthTotal = riders.reduce(
-        (riderTotal, rider) => {
-          const createdAt = rider.createdAt ? new Date(rider.createdAt) : null;
-          if (createdAt && createdAt > monthEnd) return riderTotal;
-          const payroll = summarizePayrollCycle(
-            rider,
-            cycleMap.get(`${String(rider._id ?? "")}:${month}`),
-            month,
-          );
-          return {
-            baseSalary: riderTotal.baseSalary + payroll.baseSalary,
-            platformBonus: riderTotal.platformBonus + payroll.platformBonus,
-            penalties: riderTotal.penalties + payroll.penalties,
-            netPayable: riderTotal.netPayable + payroll.netPayable,
-            pending: riderTotal.pending + payroll.pendingAmount,
-            paid: riderTotal.paid + payroll.paidAmount,
-          };
-        },
-        { baseSalary: 0, platformBonus: 0, penalties: 0, netPayable: 0, pending: 0, paid: 0 },
+  return cycles.reduce(
+    (total, cycle) => {
+      const payroll = summarizePayrollCycle(
+        { payroll: { monthlySalary: numberValue(cycle.baseSalary) } },
+        cycle,
+        stringValue(cycle.month, currentPayrollMonth()),
       );
       return {
-        months: total.months + 1,
-        baseSalary: total.baseSalary + monthTotal.baseSalary,
-        platformBonus: total.platformBonus + monthTotal.platformBonus,
-        penalties: total.penalties + monthTotal.penalties,
-        netPayable: total.netPayable + monthTotal.netPayable,
-        pending: total.pending + monthTotal.pending,
-        paid: total.paid + monthTotal.paid,
+        months: safeMonths.length,
+        baseSalary: total.baseSalary + payroll.baseSalary,
+        platformBonus: total.platformBonus + payroll.platformBonus,
+        penalties: total.penalties + payroll.penalties,
+        netPayable: total.netPayable + payroll.netPayable,
+        pending: 0,
+        paid: total.paid + payroll.netPayable,
       };
     },
-    { months: 0, baseSalary: 0, platformBonus: 0, penalties: 0, netPayable: 0, pending: 0, paid: 0 },
+    { months: safeMonths.length, baseSalary: 0, platformBonus: 0, penalties: 0, netPayable: 0, pending: 0, paid: 0 },
   );
 }
 
@@ -4305,6 +5210,7 @@ export async function updateAdminRiderAvailability(params: {
     riderId: rider.id,
   });
 
+  invalidateAdminMonitoringCaches();
   return {
     id: rider.id,
     isAvailableForAssignments: rider.isAvailableForAssignments,
@@ -4393,6 +5299,7 @@ export async function updateAdminRiderStatus(params: {
     riderId: updatedRider.id,
   });
 
+  invalidateAdminMonitoringCaches();
   return {
     id: updatedRider.id,
     previousStatus: currentRider.status,
@@ -4504,6 +5411,7 @@ export async function updateAdminRiderVerification(params: {
     status: params.status,
   });
 
+  invalidateAdminMonitoringCaches();
   return mapAdminRiderSummary(updatedRider.toObject(), emptyRiderStats());
 }
 
@@ -4750,6 +5658,13 @@ export async function updateAdminOrderStatus(params: {
     setPayload["paymentSnapshot.refundStatus"] = "pending";
     setPayload["paymentSnapshot.refundRequestedAt"] = now;
   }
+  if (
+    ["Rejected", "Cancelled"].includes(params.nextStatus) &&
+    currentOrder.paymentMethod === "Cash" &&
+    currentOrder.paymentStatus !== "paid"
+  ) {
+    setPayload.paymentStatus = "cancelled";
+  }
 
   const updatedOrder = await OrderModel.findOneAndUpdate(
     { _id: currentOrder._id, status: currentOrder.status },
@@ -4801,6 +5716,20 @@ export async function updateAdminOrderStatus(params: {
 
   const updatedOrderObject = updatedOrder.toObject();
   await emitOrderRealtimeUpdates(updatedOrderObject);
+  if (
+    ["Rejected", "Cancelled"].includes(params.nextStatus) &&
+    updatedOrder.paymentMethod === "Bkash"
+  ) {
+    enqueueAdminOrderTerminalExceptionAlert({
+      order: updatedOrderObject,
+      actor: "admin",
+      nextStatus: params.nextStatus as "Rejected" | "Cancelled",
+      previousStatus: currentOrder.status,
+      reason: params.note,
+      occurredAt: now,
+      refundOnly: true,
+    });
+  }
   try {
     await createOwnerSystemNotification({
       restaurantId: String(updatedOrder.restaurantId ?? ""),
@@ -4819,6 +5748,7 @@ export async function updateAdminOrderStatus(params: {
     orderId: updatedOrder.id,
     status: updatedOrder.status,
   });
+  invalidateAdminMonitoringCaches();
 
   await safeSendCustomerOrderStatusPush({
     customerId: updatedOrder.customerId,
@@ -4867,6 +5797,8 @@ export async function updateAdminOrderRefundStatus(params: {
   expectedPaymentStatus?: string;
   paymentStatus: AdminOrderRefundStatus;
   note?: string;
+  providerReference?: string;
+  proofUrl?: string;
   adminId?: string;
 }) {
   const currentOrder = await OrderModel.findById(params.orderId).lean();
@@ -4916,6 +5848,8 @@ export async function updateAdminOrderRefundStatus(params: {
         "paymentSnapshot.refundReviewedAt": now,
         "paymentSnapshot.refundReviewedByAdminId": params.adminId ?? "",
         "paymentSnapshot.refundNote": params.note?.trim() ?? "",
+        "paymentSnapshot.refundProviderReference": params.providerReference?.trim() ?? "",
+        "paymentSnapshot.refundProofUrl": params.proofUrl?.trim() ?? "",
       },
       $push: {
         history: {
@@ -4947,12 +5881,32 @@ export async function updateAdminOrderRefundStatus(params: {
       reason: params.note?.trim() || "Order was marked refunded by admin",
     }).catch(() => undefined);
   }
-  await emitOrderRealtimeUpdates(updatedOrder.toObject());
+
+  const realtimeOrder = updatedOrder.toObject();
+  if (params.paymentStatus === "refunded") {
+    const refundNotificationAudit =
+      await sendRefundCompletedNotifications(realtimeOrder);
+    realtimeOrder.paymentSnapshot = {
+      ...(realtimeOrder.paymentSnapshot ?? {}),
+      refundNotificationAudit,
+    };
+    await OrderModel.updateOne(
+      { _id: updatedOrder._id },
+      {
+        $set: {
+          "paymentSnapshot.refundNotificationAudit": refundNotificationAudit,
+        },
+      },
+    );
+  }
+
+  await emitOrderRealtimeUpdates(realtimeOrder);
   emitSocketEvent("admin:live-map", "admin.live-map.updated", {
     type: "order.refund",
     orderId: updatedOrder.id,
     paymentStatus: updatedOrder.paymentStatus,
   });
+  invalidateAdminMonitoringCaches();
 
   return {
     id: updatedOrder.id,
@@ -5049,6 +6003,7 @@ export async function updateAdminOrderCodCollection(params: {
     orderId: updatedOrder.id,
     paymentStatus: updatedOrder.paymentStatus,
   });
+  invalidateAdminMonitoringCaches();
 
   return {
     id: updatedOrder.id,
@@ -5061,10 +6016,10 @@ export async function updateAdminOrderCodCollection(params: {
   };
 }
 
-function orderAgeMinutes(order: Record<string, any>) {
+function orderAgeSeconds(order: Record<string, any>) {
   const createdAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;
   if (!createdAt || Number.isNaN(createdAt)) return 0;
-  return Math.max(0, Math.floor((Date.now() - createdAt) / 60000));
+  return Math.max(0, Math.floor((Date.now() - createdAt) / 1000));
 }
 
 function minutesSince(value: Date | string | null | undefined) {
@@ -5072,6 +6027,14 @@ function minutesSince(value: Date | string | null | undefined) {
   const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
   if (!timestamp || Number.isNaN(timestamp)) return 0;
   return Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+}
+
+function formatSecondsLabel(value: number) {
+  const seconds = Math.max(0, Math.ceil(value));
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes > 0) return `${minutes} min ${remainingSeconds} sec`;
+  return `${remainingSeconds} sec`;
 }
 
 function getRestaurantPrepMinutes(restaurant?: Record<string, any> | null) {
@@ -5107,15 +6070,21 @@ function buildAdminOrderOperationalTiming(
     secondaryLabel: "No live timing is available yet.",
     lateByMinutes: 0,
     remainingMinutes: null as number | null,
+    remainingSeconds: null as number | null,
     targetMinutes: null as number | null,
     targetAt: null as string | null,
   };
 
   if (status === "New") {
-    const orderAgeMinutes = minutesSince(createdAt);
-    const remainingMinutes = settings.autoCancelUnacceptedOrdersEnabled
-      ? Math.max(0, settings.autoCancelAfterMinutes - orderAgeMinutes)
+    const orderAgeSeconds = createdAt
+      ? Math.max(0, Math.floor((Date.now() - createdAt.getTime()) / 1000))
+      : 0;
+    const orderAgeMinutes = Math.floor(orderAgeSeconds / 60);
+    const remainingSeconds = settings.autoCancelUnacceptedOrdersEnabled
+      ? Math.max(0, settings.autoCancelAfterMinutes * 60 - orderAgeSeconds)
       : null;
+    const remainingMinutes =
+      typeof remainingSeconds === "number" ? Math.ceil(remainingSeconds / 60) : null;
     return {
       ...base,
       currentPhaseLabel: "Awaiting restaurant response",
@@ -5124,10 +6093,11 @@ function buildAdminOrderOperationalTiming(
           ? `${orderAgeMinutes} min since order placed`
           : "Placed just now",
       secondaryLabel:
-        remainingMinutes !== null
-          ? `${remainingMinutes} min until auto-cancel`
+        remainingSeconds !== null
+          ? `${formatSecondsLabel(remainingSeconds)} until auto-cancel`
           : "Waiting for restaurant acceptance.",
       remainingMinutes,
+      remainingSeconds,
       targetMinutes: settings.autoCancelAfterMinutes,
       targetAt:
         createdAt && settings.autoCancelUnacceptedOrdersEnabled
@@ -5292,8 +6262,20 @@ async function emitOrderRealtimeUpdates(order: Record<string, any>) {
   const owner = restaurantId
     ? await OwnerModel.findOne({ activeRestaurantId: restaurantId }, { _id: 1 }).lean()
     : null;
+  const content = await getPlatformContent();
+  const showCustomerPhone =
+    content.operations?.ownerApp?.showCustomerPhoneNumbers !== false;
+  const ownerFacingOrder = showCustomerPhone
+    ? order
+    : {
+        ...order,
+        customerSnapshot: {
+          ...(order.customerSnapshot ?? {}),
+          phone: "",
+        },
+      };
 
-  if (owner?._id) emitSocketEvent(`owner:${owner._id.toString()}`, "order.updated", order);
+  if (owner?._id) emitSocketEvent(`owner:${owner._id.toString()}`, "order.updated", ownerFacingOrder);
   if (restaurantId) emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", order);
   if (order.customerId) emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", order);
   if (order.riderId) emitSocketEvent(`rider:${order.riderId}`, "rider.order.updated", order);
@@ -5357,24 +6339,26 @@ export async function processAdminOperationalAlerts() {
   const restaurantById = new Map(
     restaurants.map((restaurant) => [String(restaurant._id ?? ""), restaurant]),
   );
+  let didMutateOrders = false;
 
   for (const order of liveOrders) {
     const orderId = String(order._id ?? "");
     const orderNumber = String(order.orderNumber ?? "Order");
-    const ageMinutes = orderAgeMinutes(order);
+    const ageSeconds = orderAgeSeconds(order);
+    const ageMinutes = Math.floor(ageSeconds / 60);
     const restaurant = restaurantById.get(String(order.restaurantId ?? ""));
     const restaurantName = String(restaurant?.name ?? "Restaurant");
     const path = `/orders?orderId=${orderId}`;
 
     if (order.status === "New") {
-      const notifyAt = Math.max(
+      const notifyAtSeconds = Math.max(
         1,
         settings.autoCancelAfterMinutes - settings.autoCancelNotifyBeforeMinutes,
-      );
+      ) * 60;
 
       if (
         settings.autoCancelUnacceptedOrdersEnabled &&
-        ageMinutes >= settings.autoCancelAfterMinutes
+        ageSeconds >= settings.autoCancelAfterMinutes * 60
       ) {
         const cancelledAt = new Date();
         const result = await OrderModel.updateOne(
@@ -5384,6 +6368,17 @@ export async function processAdminOperationalAlerts() {
               status: "Cancelled",
               cancelledBy: "system",
               terminalReason: "system_auto_cancel_unaccepted",
+                  ...(order.paymentMethod === "Bkash" && order.paymentStatus === "paid"
+                    ? {
+                        paymentStatus: "refund_pending",
+                        "paymentSnapshot.refundStatus": "pending",
+                        "paymentSnapshot.refundRequestedAt": cancelledAt,
+                      }
+                    : order.paymentMethod === "Cash" && order.paymentStatus !== "paid"
+                      ? {
+                          paymentStatus: "cancelled",
+                        }
+                    : {}),
               timestamps: applyOrderStatusTimestamp(
                 order.timestamps as Record<string, unknown> | undefined,
                 "Cancelled",
@@ -5402,8 +6397,26 @@ export async function processAdminOperationalAlerts() {
         );
 
         if (result.modifiedCount > 0) {
+          didMutateOrders = true;
           const cancelledOrder = await OrderModel.findById(order._id).lean();
           if (cancelledOrder) {
+            await Promise.all([
+              syncOrderLedgerForFinalStatus({
+                restaurantId: String(cancelledOrder.restaurantId ?? ""),
+                orderId,
+                nextStatus: "Cancelled",
+                finalizedAt: cancelledAt,
+              }),
+              VoucherRedemptionModel.updateMany(
+                { orderId: cancelledOrder._id, releasedAt: null },
+                {
+                  $set: {
+                    releasedAt: cancelledAt,
+                    releaseReason: "system_auto_cancel_unaccepted",
+                  },
+                },
+              ),
+            ]);
             await emitOrderRealtimeUpdates(cancelledOrder);
             try {
               await createOwnerSystemNotification({
@@ -5438,6 +6451,17 @@ export async function processAdminOperationalAlerts() {
             dedupeKey: `order:${orderId}:auto_cancelled`,
             metadata: { orderId, orderNumber, ageMinutes },
           });
+          if (cancelledOrder) {
+            enqueueAdminOrderTerminalExceptionAlert({
+              order: cancelledOrder,
+              actor: "system",
+              nextStatus: "Cancelled",
+              previousStatus: "New",
+              reason: "system_auto_cancel_unaccepted",
+              occurredAt: cancelledAt,
+              refundOnly: true,
+            });
+          }
           await recordBusinessEvent({
             event: "order.auto_cancelled",
             category: "orders",
@@ -5452,13 +6476,14 @@ export async function processAdminOperationalAlerts() {
               customerId: String(order.customerId ?? ""),
               ageMinutes,
               autoCancelAfterMinutes: settings.autoCancelAfterMinutes,
+              ageSeconds,
             },
           });
         }
         continue;
       }
 
-      if (settings.autoCancelUnacceptedOrdersEnabled && ageMinutes >= notifyAt) {
+      if (settings.autoCancelUnacceptedOrdersEnabled && ageSeconds >= notifyAtSeconds) {
         await createAdminOperationalAlert({
           alertType: "order_auto_cancel_warning",
           severity: "critical",
@@ -5525,6 +6550,7 @@ export async function processAdminOperationalAlerts() {
         );
 
         if (result.modifiedCount > 0) {
+          didMutateOrders = true;
           const updatedOrder = await OrderModel.findById(order._id).lean();
           if (updatedOrder) {
             await emitOrderRealtimeUpdates(updatedOrder);
@@ -5830,5 +6856,9 @@ export async function processAdminOperationalAlerts() {
         });
       }
     }
+  }
+
+  if (didMutateOrders) {
+    invalidateAdminMonitoringCaches();
   }
 }

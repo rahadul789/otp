@@ -155,6 +155,7 @@ const orderSchema = new Schema(
     riderTracking: { type: Schema.Types.Mixed, default: {} },
     dispatchMeta: { type: Schema.Types.Mixed, default: {} },
     preparationMeta: { type: Schema.Types.Mixed, default: {} },
+    appliedVouchers: { type: [Schema.Types.Mixed], default: [] },
     itemsSnapshot: { type: [orderItemSnapshotSchema], default: [] },
     timestamps: { type: Schema.Types.Mixed, default: {} },
     history: { type: [orderHistoryEntrySchema], default: [] }
@@ -169,11 +170,15 @@ orderSchema.index({ status: 1, createdAt: -1 })
 orderSchema.index({ status: 1, updatedAt: -1 })
 orderSchema.index({ paymentMethod: 1, paymentStatus: 1, createdAt: -1 })
 orderSchema.index({ customerId: 1, createdAt: -1 })
+orderSchema.index({ customerId: 1, status: 1, createdAt: -1 })
+orderSchema.index({ customerId: 1, status: 1, updatedAt: -1, createdAt: -1 })
 orderSchema.index(
   { customerId: 1, clientOrderId: 1 },
   { unique: true, partialFilterExpression: { clientOrderId: { $type: "string", $ne: "" } } }
 )
 orderSchema.index({ riderId: 1, status: 1, createdAt: -1 })
+orderSchema.index({ riderId: 1, status: 1, updatedAt: -1, createdAt: -1 })
+orderSchema.index({ riderId: 1, status: 1, "timestamps.PickedUp": 1, createdAt: 1 })
 orderSchema.index({ status: 1, "itemsSnapshot.categoryId": 1, createdAt: -1 })
 orderSchema.index({ status: 1, "itemsSnapshot.itemId": 1, createdAt: -1 })
 orderSchema.index({ status: 1, "timestamps.Delivered": -1 })

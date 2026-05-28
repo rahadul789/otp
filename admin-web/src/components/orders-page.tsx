@@ -45,6 +45,7 @@ import {
   type AdminRestaurantOrderDateFilterPreset,
   type AdminRiderAssignmentOption,
 } from "@/lib/admin-api"
+import { printTableReport } from "@/lib/export-utils"
 import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -206,6 +207,24 @@ function formatDurationFromSeconds(value?: number | null) {
   return `${remainingSeconds}s`
 }
 
+function getAutoCancelRemainingSeconds(
+  order: Pick<AdminOrderListItem, "status" | "autoCancel">,
+  nowMs = Date.now()
+) {
+  if (order.status !== "New" || !order.autoCancel?.applies) return null
+  const autoCancelAt = order.autoCancel.autoCancelAt
+    ? new Date(order.autoCancel.autoCancelAt).getTime()
+    : 0
+
+  if (autoCancelAt > 0 && !Number.isNaN(autoCancelAt)) {
+    return Math.max(0, Math.ceil((autoCancelAt - nowMs) / 1000))
+  }
+
+  return typeof order.autoCancel.remainingSeconds === "number"
+    ? Math.max(0, order.autoCancel.remainingSeconds)
+    : null
+}
+
 function formatMinutesLabel(value?: number | null, suffix = "min") {
   if (typeof value !== "number" || !Number.isFinite(value)) return "N/A"
   const safe = Math.max(0, Math.round(value))
@@ -230,6 +249,12 @@ function getPaymentBadgeClass(status: string) {
   if (status === "refund_pending")
     return "border-amber-200 bg-amber-50 text-amber-700"
   return ""
+}
+
+function getVoucherFundingBadgeClass(fundedBy: string) {
+  if (fundedBy === "platform") return "border-sky-200 bg-sky-50 text-sky-700"
+  if (fundedBy === "owner") return "border-amber-200 bg-amber-50 text-amber-700"
+  return "border-violet-200 bg-violet-50 text-violet-700"
 }
 
 function getLateBadgeClass(order: Pick<AdminOrderListItem, "lateTone">) {
@@ -826,12 +851,28 @@ function OrderDetailsSheet({
                     >
                       {details.status}
                     </Badge>
+                    <Badge variant="secondary">
+                      {details.paymentMethod || "N/A"}
+                    </Badge>
                     <Badge
                       variant="outline"
                       className={getPaymentBadgeClass(details.paymentStatus)}
                     >
                       {details.paymentStatus}
                     </Badge>
+                    {details.appliedVouchers?.map((voucher, index) => (
+                      <Badge
+                        key={`${voucher.id || voucher.code || voucher.name}-${index}`}
+                        variant="outline"
+                        className={getVoucherFundingBadgeClass(voucher.fundedBy)}
+                      >
+                        {voucher.fundedBy === "platform"
+                          ? "Platform voucher"
+                          : voucher.fundedBy === "owner"
+                            ? "Owner voucher"
+                            : "Shared voucher"}
+                      </Badge>
+                    ))}
                   </div>
                   <h2 className="mt-2 text-xl font-semibold">
                     {details.restaurantName}
@@ -977,7 +1018,9 @@ function OrderDetailsSheet({
                 </Card>
                 <Card className="border-violet-100 bg-violet-50/50">
                   <CardContent className="flex items-center gap-3 p-4">
-                    <Phone className="size-5 text-violet-700" />
+                    {details.restaurantOwnerPhone ? (
+                      <Phone className="size-5 text-violet-700" />
+                    ) : null}
                     <div>
                       <div className="text-xs font-medium uppercase text-muted-foreground">
                         Restaurant owner
@@ -1070,7 +1113,7 @@ function OrderDetailsSheet({
                 <StatCard
                   label="Discount"
                   value={formatCurrency(details.pricing.discount)}
-                  helper="Applied discount"
+                  helper={`Owner ${formatCurrency(details.pricing.ownerDiscountCost ?? 0)} / Platform ${formatCurrency(details.pricing.platformDiscountCost ?? 0)}`}
                 />
               </div>
 
@@ -1269,6 +1312,56 @@ function OrderDetailsSheet({
                       />
                     </CardContent>
                   </Card>
+                  {details.appliedVouchers?.length ? (
+                    <Card className="mt-4">
+                      <CardHeader>
+                        <CardTitle>Applied vouchers</CardTitle>
+                        <CardDescription>
+                          Voucher source and discount split for this order.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="overflow-hidden rounded-lg border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Voucher</TableHead>
+                                <TableHead>Funding</TableHead>
+                                <TableHead>Split</TableHead>
+                                <TableHead className="text-right">Discount</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {details.appliedVouchers.map((voucher, index) => (
+                                <TableRow key={`${voucher.id || voucher.code || voucher.name}-${index}`}>
+                                  <TableCell>
+                                    <div className="font-medium">{voucher.name || "Voucher"}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {voucher.code || "Auto applied"}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant="outline"
+                                      className={getVoucherFundingBadgeClass(voucher.fundedBy)}
+                                    >
+                                      {voucher.fundedBy || "N/A"}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>
+                                    {voucher.ownerSharePercent}% owner / {voucher.platformSharePercent}% platform
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    {formatCurrency(voucher.discountAmount)}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ) : null}
                 </TabsContent>
               </Tabs>
             </div>
@@ -1317,6 +1410,7 @@ export function OrdersPage() {
   const [columnVisibility, setColumnVisibility] = React.useState(
     defaultColumnVisibility
   )
+  const [nowMs, setNowMs] = React.useState(() => Date.now())
   const debouncedSearch = useDebouncedValue(search, 350)
   const ordersQuery = useQuery({
     queryKey: [
@@ -1358,6 +1452,23 @@ export function OrdersPage() {
     () => ordersQuery.data?.items ?? [],
     [ordersQuery.data?.items]
   )
+  const hasActiveAutoCancelCountdown = React.useMemo(
+    () =>
+      orders.some(
+        (order) => order.status === "New" && order.autoCancel?.applies
+      ),
+    [orders]
+  )
+
+  React.useEffect(() => {
+    setNowMs(Date.now())
+    const timer = window.setInterval(
+      () => setNowMs(Date.now()),
+      hasActiveAutoCancelCountdown ? 1000 : 60000
+    )
+    return () => window.clearInterval(timer)
+  }, [hasActiveAutoCancelCountdown])
+
   const summary = ordersQuery.data?.summary ?? {}
   const delayedRiderOrders = React.useMemo(
     () => orders.filter(isRiderDelayedOrder),
@@ -1479,6 +1590,39 @@ export function OrdersPage() {
     URL.revokeObjectURL(url)
   }
 
+  function exportOrdersPdf() {
+    const ok = printTableReport({
+      title: "Foodbela orders report",
+      subtitle: `Generated ${format(new Date(), "PPP p")} from current admin filters.`,
+      metrics: [
+        { label: "Filtered orders", value: summary.total ?? totalOrders },
+        { label: "Live orders", value: summary.liveOrders ?? 0 },
+        { label: "Refund queue", value: summary.refundPending ?? 0 },
+      ],
+      headers: [
+        "Order",
+        "Status",
+        "Restaurant",
+        "Customer",
+        "Payment",
+        "Total",
+        "Rider",
+        "Created",
+      ],
+      rows: orders.map((order) => [
+        order.orderNumber,
+        order.status,
+        order.restaurantName,
+        `${order.customerName} ${order.customerPhone ? `(${order.customerPhone})` : ""}`,
+        `${order.paymentMethod || "N/A"} / ${order.paymentStatus || "N/A"}`,
+        formatCurrency(order.total),
+        order.riderName || "Not assigned",
+        formatDate(order.createdAt),
+      ]),
+    })
+    if (!ok) toast.error("Allow popups to export the PDF report.")
+  }
+
   return (
     <>
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -1566,6 +1710,16 @@ export function OrdersPage() {
               >
                 <Download className="size-4" />
                 Export CSV
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={orders.length === 0}
+                onClick={exportOrdersPdf}
+                className="w-full sm:w-auto"
+              >
+                <Download className="size-4" />
+                Export PDF
               </Button>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1747,9 +1901,12 @@ export function OrdersPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {orders.map((order) => (
-                  <TableRow
-                    key={order.id}
+              {orders.map((order) => {
+                const autoCancelSeconds = getAutoCancelRemainingSeconds(order, nowMs)
+
+                return (
+                <TableRow
+                  key={order.id}
                     className={
                       order.isLate
                         ? order.lateTone === "critical"
@@ -1771,6 +1928,14 @@ export function OrdersPage() {
                           <span className="block text-xs text-muted-foreground">
                             {formatDate(order.createdAt)}
                           </span>
+                          {order.voucherCodes?.length ? (
+                            <Badge
+                              variant="outline"
+                              className="mt-1 border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+                            >
+                              Voucher applied
+                            </Badge>
+                          ) : null}
                         </button>
                       </TableCell>
                     ) : null}
@@ -1783,14 +1948,29 @@ export function OrdersPage() {
                           >
                             {order.status}
                           </Badge>
-                          {order.isLate ? (
+                        {order.isLate ? (
                             <Badge
                               variant="outline"
                               className={getLateBadgeClass(order)}
                             >
                               {order.lateReason}
                             </Badge>
-                          ) : null}
+                        ) : null}
+                        {autoCancelSeconds !== null ? (
+                          <Badge
+                            variant="outline"
+                            className={
+                              autoCancelSeconds <= 60
+                                ? "border-rose-200 bg-rose-50 text-rose-700"
+                                : "border-amber-200 bg-amber-50 text-amber-700"
+                            }
+                          >
+                            <Clock className="mr-1 size-3" />
+                            {autoCancelSeconds === 0
+                              ? "Auto-cancel due"
+                              : `Accept in ${formatDurationFromSeconds(autoCancelSeconds)}`}
+                          </Badge>
+                        ) : null}
                         </div>
                       </TableCell>
                     ) : null}
@@ -1845,7 +2025,11 @@ export function OrdersPage() {
                                 : formatDate(order.updatedAt)}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {order.riderTracking?.freshness?.state ?? "N/A"}
+                          {autoCancelSeconds !== null
+                            ? autoCancelSeconds === 0
+                              ? "Waiting for backend auto-cancel"
+                              : `${formatDurationFromSeconds(autoCancelSeconds)} to accept`
+                            : order.riderTracking?.freshness?.state ?? "N/A"}
                         </div>
                       </TableCell>
                     ) : null}
@@ -1881,7 +2065,8 @@ export function OrdersPage() {
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                )
+              })}
                 {ordersQuery.isPending ? (
                   <TableRow>
                     <TableCell

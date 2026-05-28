@@ -2,7 +2,10 @@ import mongoose from "mongoose";
 import { StatusCodes } from "http-status-codes";
 
 import { AppError } from "../../common/utils/app-error";
-import { CustomerModel } from "../customer/customer.model";
+import {
+  CustomerModel,
+  CustomerRefreshTokenSessionModel,
+} from "../customer/customer.model";
 import { sendPushToCustomer } from "../customer/push.service";
 import { RestaurantModel } from "../auth/auth.model";
 import { ReviewModel } from "../owner/experience.model";
@@ -1083,6 +1086,22 @@ export async function updateAdminCustomerStatus(params: {
   const previousStatus = customer.status;
   customer.status = params.status;
   await customer.save();
+  let revokedSessions = 0;
+
+  if (params.status !== "active" && params.status !== previousStatus) {
+    const result = await CustomerRefreshTokenSessionModel.updateMany(
+      {
+        customerId: customer._id,
+        revokedAt: null,
+      },
+      {
+        $set: {
+          revokedAt: new Date(),
+        },
+      }
+    );
+    revokedSessions = result.modifiedCount ?? result.matchedCount ?? 0;
+  }
 
   await createAdminAuditLog({
     adminId: params.adminId,
@@ -1094,6 +1113,7 @@ export async function updateAdminCustomerStatus(params: {
       previousStatus,
       status: params.status,
       note: params.note?.trim() ?? "",
+      revokedSessions,
     },
   });
 

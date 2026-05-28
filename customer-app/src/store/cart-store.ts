@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { secureStateStorage } from "@/src/lib/secure-storage";
+import { appStateStorage } from "@/src/lib/app-storage";
 
 type SelectedOption = {
   groupName: string;
@@ -165,7 +165,7 @@ export const useCartStore = create<CartStore>()(
     }),
     {
       name: "customer-cart-state",
-      storage: createJSONStorage(() => secureStateStorage),
+      storage: createJSONStorage(() => appStateStorage),
       partialize: (state) => ({
         restaurant: state.restaurant,
         items: state.items,

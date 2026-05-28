@@ -186,8 +186,11 @@ const bkashSandboxPaymentSessionSchema = new Schema(
     customerId: { type: Schema.Types.ObjectId, ref: "Customer", required: true },
     restaurantId: { type: Schema.Types.ObjectId, ref: "Restaurant", default: null },
     sandboxPaymentId: { type: String },
+    paymentAttemptId: { type: Schema.Types.ObjectId, ref: "BkashPaymentAttempt", default: null },
     otpCodeHash: { type: String },
     walletNumber: { type: String, required: true },
+    payerReference: { type: String, default: "", trim: true },
+    customerMsisdn: { type: String, default: "", trim: true },
     amount: { type: Number, required: true },
     voucherCode: { type: String, default: "" },
     status: {
@@ -205,6 +208,82 @@ const bkashSandboxPaymentSessionSchema = new Schema(
   { timestamps: true }
 )
 
+const bkashPaymentAttemptEventSchema = new Schema(
+  {
+    event: { type: String, required: true, trim: true },
+    status: { type: String, default: "", trim: true },
+    paymentStatus: { type: String, default: "", trim: true },
+    note: { type: String, default: "", trim: true },
+    reason: { type: String, default: "", trim: true },
+    providerStatus: { type: String, default: "", trim: true },
+    providerCode: { type: String, default: "", trim: true },
+    providerMessage: { type: String, default: "", trim: true },
+    metadata: { type: Schema.Types.Mixed, default: {} },
+    occurredAt: { type: Date, default: Date.now }
+  },
+  { _id: false }
+)
+
+const bkashPaymentAttemptSchema = new Schema(
+  {
+    customerId: { type: Schema.Types.ObjectId, ref: "Customer", required: true },
+    restaurantId: { type: Schema.Types.ObjectId, ref: "Restaurant", default: null },
+    orderId: { type: Schema.Types.ObjectId, ref: "Order", default: null },
+    sessionId: { type: Schema.Types.ObjectId, ref: "BkashSandboxPaymentSession", default: null },
+    clientOrderId: { type: String, default: "", trim: true },
+    provider: { type: String, default: "Bkash", trim: true },
+    walletNumber: { type: String, default: "", trim: true },
+    walletNumberMasked: { type: String, default: "", trim: true },
+    payerReference: { type: String, default: "", trim: true },
+    customerMsisdn: { type: String, default: "", trim: true },
+    amount: { type: Number, required: true },
+    voucherCode: { type: String, default: "", trim: true },
+    paymentID: { type: String, default: "", trim: true },
+    transactionId: { type: String, default: "", trim: true },
+    status: {
+      type: String,
+      enum: [
+        "initiated",
+        "provider_created",
+        "provider_create_failed",
+        "callback_success",
+        "customer_cancelled",
+        "callback_failed",
+        "execute_failed",
+        "confirmed_paid",
+        "order_finalized",
+        "order_finalize_failed",
+        "expired"
+      ],
+      default: "initiated"
+    },
+    paymentStatus: {
+      type: String,
+      enum: ["unpaid", "paid", "cancelled", "failed", "expired"],
+      default: "unpaid"
+    },
+    orderFinalizationStatus: {
+      type: String,
+      enum: ["not_started", "finalized", "failed", "not_applicable"],
+      default: "not_started"
+    },
+    failureStage: { type: String, default: "", trim: true },
+    failureReason: { type: String, default: "", trim: true },
+    providerResponse: { type: Schema.Types.Mixed, default: {} },
+    checkoutSnapshot: { type: Schema.Types.Mixed, default: {} },
+    events: { type: [bkashPaymentAttemptEventSchema], default: [] },
+    initiatedAt: { type: Date, default: Date.now },
+    providerCreatedAt: { type: Date, default: null },
+    callbackAt: { type: Date, default: null },
+    executedAt: { type: Date, default: null },
+    confirmedAt: { type: Date, default: null },
+    orderFinalizedAt: { type: Date, default: null },
+    failedAt: { type: Date, default: null },
+    expiresAt: { type: Date, default: null }
+  },
+  { timestamps: true }
+)
+
 customerRefreshTokenSessionSchema.index(
   { expiresAt: 1 },
   { expireAfterSeconds: 60 * 60 * 24 * 45 }
@@ -217,6 +296,32 @@ bkashSandboxPaymentSessionSchema.index(
     unique: true,
     partialFilterExpression: {
       sandboxPaymentId: { $exists: true, $type: "string" }
+    }
+  }
+)
+bkashSandboxPaymentSessionSchema.index({ paymentAttemptId: 1 })
+
+bkashPaymentAttemptSchema.index({ createdAt: -1 })
+bkashPaymentAttemptSchema.index({ status: 1, createdAt: -1 })
+bkashPaymentAttemptSchema.index({ paymentStatus: 1, createdAt: -1 })
+bkashPaymentAttemptSchema.index({ customerId: 1, createdAt: -1 })
+bkashPaymentAttemptSchema.index({ restaurantId: 1, createdAt: -1 })
+bkashPaymentAttemptSchema.index({ orderId: 1 })
+bkashPaymentAttemptSchema.index({ sessionId: 1 })
+bkashPaymentAttemptSchema.index(
+  { paymentID: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      paymentID: { $exists: true, $type: "string", $gt: "" }
+    }
+  }
+)
+bkashPaymentAttemptSchema.index(
+  { transactionId: 1 },
+  {
+    partialFilterExpression: {
+      transactionId: { $exists: true, $type: "string", $gt: "" }
     }
   }
 )
@@ -338,7 +443,7 @@ const voucherSchema = new Schema(
 
 voucherSchema.index(
   { restaurantId: 1, code: 1 },
-  { unique: true, partialFilterExpression: { code: { $type: "string", $ne: "" } } }
+  { unique: true, partialFilterExpression: { code: { $type: "string", $gt: "" } } }
 )
 voucherSchema.index({ status: 1, archivedAt: 1, startsAt: 1, endsAt: 1, restaurantId: 1 })
 voucherSchema.index({ status: 1, archivedAt: 1, startsAt: 1, endsAt: 1, scopeType: 1 })
@@ -412,6 +517,10 @@ export const CustomerRefreshTokenSessionModel = mongoose.model(
 export const BkashSandboxPaymentSessionModel = mongoose.model(
   "BkashSandboxPaymentSession",
   bkashSandboxPaymentSessionSchema
+)
+export const BkashPaymentAttemptModel = mongoose.model(
+  "BkashPaymentAttempt",
+  bkashPaymentAttemptSchema
 )
 export const VoucherModel = mongoose.model("Voucher", voucherSchema)
 export const VoucherAuditModel = mongoose.model("VoucherAudit", voucherAuditSchema)

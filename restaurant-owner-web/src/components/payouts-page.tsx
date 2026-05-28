@@ -2,9 +2,7 @@ import * as React from "react"
 
 import { endOfDay, format, subDays } from "date-fns"
 import {
-  Banknote,
   CalendarClock,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Columns3,
@@ -63,22 +61,14 @@ import {
 import { resolveOtpResendSeconds } from "@/lib/otp-timing"
 import {
   useOwnerPayoutHistoryQuery,
-  useOwnerPayoutRequestMutation,
   useOwnerPayoutSummaryQuery,
   useOwnerPayoutTransactionsQuery,
+  useRequestOwnerPayoutMutation,
   useUpdateOwnerPayoutMethodMutation,
 } from "@/hooks/use-owner-api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -131,7 +121,6 @@ type TransactionColumnKey =
   | "gross"
   | "commission"
   | "discount"
-  | "delivery"
   | "net"
   | "settlement"
   | "created"
@@ -153,7 +142,6 @@ const transactionColumnLabels: Record<TransactionColumnKey, string> = {
   gross: "Food Sales",
   commission: "Commission",
   discount: "Owner Discount",
-  delivery: "Delivery Cost",
   net: "Owner Earning",
   settlement: "Settlement",
   created: "Created",
@@ -259,10 +247,6 @@ export function PayoutsPage() {
   const [transactionPageSize, setTransactionPageSize] = React.useState(10)
   const [payoutPageIndex, setPayoutPageIndex] = React.useState(0)
   const [transactionPageIndex, setTransactionPageIndex] = React.useState(0)
-  const [isRequestOpen, setIsRequestOpen] = React.useState(false)
-  const [requestAmount, setRequestAmount] = React.useState("")
-  const [requestError, setRequestError] = React.useState("")
-  const [requestSuccess, setRequestSuccess] = React.useState("")
   const [viewingPayout, setViewingPayout] = React.useState<Payout | null>(null)
   const [viewingTransaction, setViewingTransaction] = React.useState<EarningTransaction | null>(null)
   const [awaitingPayoutVerification, setAwaitingPayoutVerification] =
@@ -282,7 +266,6 @@ export function PayoutsPage() {
     gross: true,
     commission: true,
     discount: true,
-    delivery: true,
     net: true,
     settlement: true,
     created: true,
@@ -306,8 +289,8 @@ export function PayoutsPage() {
     page: transactionPageIndex + 1,
     pageSize: transactionPageSize,
   })
-  const payoutRequestMutation = useOwnerPayoutRequestMutation()
   const updatePayoutMethodMutation = useUpdateOwnerPayoutMethodMutation()
+  const requestPayoutMutation = useRequestOwnerPayoutMutation()
   const hasPayoutData =
     Boolean(payoutSummaryQuery.data) ||
     Boolean(payoutHistoryQuery.data) ||
@@ -339,15 +322,8 @@ export function PayoutsPage() {
         net: payoutSummaryQuery.data.lifetimeNetEarnings,
         commission: payoutSummaryQuery.data.lifetimeCommission,
         discountCost: payoutSummaryQuery.data.lifetimeDiscountCost,
-        deliveryCost: payoutSummaryQuery.data.lifetimeDeliveryCost,
         settlementDelayDays:
           payoutSummaryQuery.data.settlementDelayDays ?? fallbackSettlementDelayDays,
-        minimumPayoutAmount:
-          payoutSummaryQuery.data.minimumPayoutAmountTaka ?? 500,
-        oneActivePayoutRequest:
-          payoutSummaryQuery.data.oneActivePayoutRequest ?? true,
-        hasActivePayoutRequest:
-          payoutSummaryQuery.data.hasActivePayoutRequest ?? false,
       }
     : null
   const summaryLastPayout = payoutSummaryQuery.data?.lastPayout
@@ -369,7 +345,6 @@ export function PayoutsPage() {
   const requestedPayoutBalance = summaryBalances?.requested ?? 0
   const settlementDelayDays =
     summaryBalances?.settlementDelayDays ?? fallbackSettlementDelayDays
-  const minimumPayoutAmount = summaryBalances?.minimumPayoutAmount ?? 500
 
   const lastCompletedPayout = React.useMemo(
     () =>
@@ -400,13 +375,6 @@ export function PayoutsPage() {
       payoutHistoryQuery.data as OwnerListResponse<OwnerPayoutHistoryResponse>
     ).items.map((entry) => mapOwnerPayout(entry, payoutMethod.type))
   }, [payoutHistoryQuery.data, payoutMethod.type, payouts])
-
-  const hasActivePayoutRequest =
-    (summaryBalances?.oneActivePayoutRequest ?? true) &&
-    (summaryBalances?.hasActivePayoutRequest ??
-      filteredPayouts.some((payout) =>
-        payout.status === "pending" || payout.status === "processing"
-      ))
 
   const filteredTransactions = React.useMemo(() => {
     if (!payoutTransactionsQuery.data) return payoutTransactions
@@ -558,6 +526,19 @@ export function PayoutsPage() {
     statusFilter === "all" &&
     typeFilter === "all" &&
     sortBy === "latest"
+  const hasVerifiedPayoutMethod =
+    payoutMethod.isVerified === true && Boolean(payoutMethod.accountNumber?.trim())
+  const hasActivePayoutRequest =
+    payoutSummaryQuery.data?.hasActivePayoutRequest === true ||
+    requestedPayoutBalance > 0
+  const minimumPayoutAmount =
+    payoutSummaryQuery.data?.minimumPayoutAmountTaka ?? 0
+  const canRequestPayout =
+    availableBalance > 0 &&
+    availableBalance >= minimumPayoutAmount &&
+    hasVerifiedPayoutMethod &&
+    !hasActivePayoutRequest &&
+    !requestPayoutMutation.isPending
 
   function resetFilters() {
     setSearch("")
@@ -567,45 +548,19 @@ export function PayoutsPage() {
     setSortBy("latest")
   }
 
-  function handleRequestPayout() {
-    const amount = Number(requestAmount)
-    if (!requestAmount.trim() || Number.isNaN(amount) || !Number.isInteger(amount)) {
-      setRequestError("Enter a valid whole-number payout amount.")
-      return
+  async function handleRequestPayout() {
+    if (!canRequestPayout) return
+    try {
+      await requestPayoutMutation.mutateAsync()
+      toast.success("Payout request sent to admin.", {
+        description: `${formatPayoutMoney(availableBalance)} full available balance has been reserved for review.`,
+      })
+    } catch (error) {
+      toast.error("Unable to request payout.", {
+        description:
+          error instanceof Error ? error.message : "Please try again.",
+      })
     }
-    if (amount < minimumPayoutAmount) {
-      setRequestError(`Minimum payout request is ${minimumPayoutAmount}tk.`)
-      return
-    }
-    if (hasActivePayoutRequest) {
-      setRequestError("You already have a payout request pending or processing.")
-      return
-    }
-    if (amount > availableBalance) {
-      setRequestError("Requested amount exceeds available balance.")
-      return
-    }
-    payoutRequestMutation.mutate(
-      { amount },
-      {
-        onSuccess: () => {
-          void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
-          void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
-          setRequestAmount("")
-          setRequestError("")
-          setRequestSuccess(
-            `Payout request for ${formatPayoutMoney(amount)} submitted successfully.`
-          )
-          setIsRequestOpen(false)
-          toast.success("Payout request submitted.")
-        },
-        onError: (error) => {
-          setRequestError(
-            error instanceof Error ? error.message : "Unable to submit payout request."
-          )
-        },
-      }
-    )
   }
 
   function handleDownloadReport() {
@@ -617,7 +572,6 @@ export function PayoutsPage() {
         "grossAmount",
         "commission",
         "discountCost",
-        "deliveryCost",
         "netAmount",
         "status",
         "createdAt",
@@ -630,7 +584,6 @@ export function PayoutsPage() {
           transaction.grossAmount,
           transaction.commission,
           transaction.discountCost,
-          transaction.deliveryCost,
           transaction.netAmount,
           transaction.status,
           transaction.createdAt,
@@ -789,10 +742,78 @@ export function PayoutsPage() {
         </thead>
         <tbody>${transactionRows}</tbody>
       </table>
-      <p class="muted">Generated ${escapeHtml(format(new Date(), "dd MMM yyyy, hh:mm a"))}. Settlement rule: T+${settlementDelayDays} days. Minimum payout: ${escapeHtml(formatPayoutMoney(minimumPayoutAmount))}.</p>
+      <p class="muted">Generated ${escapeHtml(format(new Date(), "dd MMM yyyy, hh:mm a"))}. Settlement rule: T+${settlementDelayDays} days. Admin sends payout when eligible balance is available.</p>
     `
 
     openPrintableStatement(`Payout ${payout.id}`, body)
+  }
+
+  function handlePrintCurrentReport() {
+    const isHistory = activeTab === "history"
+    const rows = isHistory
+      ? filteredPayouts
+          .map(
+            (payout) => `
+              <tr>
+                <td>${escapeHtml(payout.id)}</td>
+                <td>${escapeHtml(getPayoutStatusLabel(payout.status))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(payout.amount))}</td>
+                <td>${escapeHtml(payout.method === "bank" ? "Bank" : "bKash")}</td>
+                <td>${escapeHtml(format(new Date(payout.createdAt), "dd MMM yyyy"))}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : filteredTransactions
+          .map(
+            (transaction) => `
+              <tr>
+                <td>${escapeHtml(transaction.orderNumber)}</td>
+                <td>${escapeHtml(transaction.type)}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.grossAmount))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.commission))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.discountCost))}</td>
+                <td class="right">${escapeHtml(formatPayoutMoney(transaction.netAmount))}</td>
+              </tr>
+            `
+          )
+          .join("")
+    const body = `
+      <div class="header">
+        <div>
+          <div class="muted">Foodbela Restaurant Finance</div>
+          <h1>${escapeHtml(isHistory ? "Payout history" : "Transaction breakdown")}</h1>
+          <div class="muted">${escapeHtml(storeSettings.name || "Restaurant")} | ${escapeHtml(ownerAccount.ownerName || "Owner")}</div>
+        </div>
+        <div>
+          <div class="muted">Available balance</div>
+          <div class="amount">${escapeHtml(formatPayoutMoney(availableBalance))}</div>
+        </div>
+      </div>
+      <h2>Summary</h2>
+      <div class="grid">
+        <div class="box"><div class="muted">Pending settlement</div><strong>${escapeHtml(formatPayoutMoney(pendingBalance))}</strong></div>
+        <div class="box"><div class="muted">In payout</div><strong>${escapeHtml(formatPayoutMoney(requestedPayoutBalance))}</strong></div>
+        <div class="box"><div class="muted">Paid out</div><strong>${escapeHtml(formatPayoutMoney(paidOutBalance))}</strong></div>
+        <div class="box"><div class="muted">Lifetime net</div><strong>${escapeHtml(formatPayoutMoney(lifetimeEarnings))}</strong></div>
+      </div>
+      <h2>${escapeHtml(isHistory ? "Payout rows" : "Transaction rows")}</h2>
+      <table>
+        <thead>
+          ${isHistory
+            ? "<tr><th>Payout ID</th><th>Status</th><th class=\"right\">Amount</th><th>Method</th><th>Date</th></tr>"
+            : "<tr><th>Order</th><th>Type</th><th class=\"right\">Food sales</th><th class=\"right\">Commission</th><th class=\"right\">Owner discount</th><th class=\"right\">Owner earning</th></tr>"
+          }
+        </thead>
+        <tbody>${rows || `<tr><td colspan="${isHistory ? 5 : 6}" class="muted">No rows in current filter.</td></tr>`}</tbody>
+      </table>
+      <p class="muted">Generated ${escapeHtml(format(new Date(), "dd MMM yyyy, hh:mm a"))}. Use browser print dialog to save as PDF.</p>
+    `
+
+    openPrintableStatement(
+      isHistory ? "Payout history PDF" : "Payout transactions PDF",
+      body
+    )
   }
 
   if (initialLoading) {
@@ -840,7 +861,12 @@ export function PayoutsPage() {
                     branchName: method.branchName?.trim() ?? "",
                   }
             )
-            const nextMethod = mapOwnerPayoutMethod(response.payoutMethod, method)
+            const nextMethod = {
+              ...mapOwnerPayoutMethod(response.payoutMethod, payoutMethod),
+              pendingAccountName: response.verificationSessionId
+                ? method.accountName
+                : "",
+            }
             setPayoutMethod(nextMethod)
             void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
             void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
@@ -892,66 +918,6 @@ export function PayoutsPage() {
         }}
       />
 
-      <Dialog open={isRequestOpen} onOpenChange={setIsRequestOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Request Payout</DialogTitle>
-            <DialogDescription>
-              Available balance is {formatPayoutMoney(availableBalance)}. Manual
-              requests start from {formatPayoutMoney(minimumPayoutAmount)} and are processed on approval.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <Input
-              value={requestAmount}
-              onChange={(event) => {
-                setRequestAmount(event.target.value)
-                setRequestError("")
-              }}
-              placeholder="Enter payout amount"
-              inputMode="numeric"
-            />
-            {requestError ? (
-              <p className="text-sm text-destructive">{requestError}</p>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsRequestOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleRequestPayout} disabled={payoutRequestMutation.isPending}>
-              {payoutRequestMutation.isPending ? (
-                <LoaderCircle className="size-4 animate-spin" />
-              ) : null}
-              {payoutRequestMutation.isPending ? "Submitting..." : "Request Payout"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {requestSuccess ? (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/80 p-4 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="inline-flex size-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
-                <CheckCircle2 className="size-5" />
-              </div>
-              <div>
-                <div className="font-medium text-emerald-900">
-                  Payout request submitted
-                </div>
-                <div className="mt-1 text-sm text-emerald-800">
-                  {requestSuccess}
-                </div>
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => setRequestSuccess("")}>
-              Dismiss
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
       {isRefreshing ? (
         <div className="inline-flex w-fit items-center gap-2 rounded-full border bg-background/90 px-3 py-1.5 text-sm text-muted-foreground shadow-sm">
           <LoaderCircle className="size-4 animate-spin text-primary" />
@@ -980,11 +946,11 @@ export function PayoutsPage() {
         </Card>
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted-foreground">Requested Payout</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">In Payout</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-semibold text-slate-700">{formatPayoutMoney(requestedPayoutBalance)}</div>
-            <div className="mt-2 text-sm text-muted-foreground">Reserved for manual/admin processing</div>
+            <div className="mt-2 text-sm text-muted-foreground">Reserved for admin processing</div>
           </CardContent>
         </Card>
         <Card className="rounded-2xl shadow-sm">
@@ -1117,9 +1083,22 @@ export function PayoutsPage() {
               <div className="mt-3 grid gap-2 text-muted-foreground sm:grid-cols-2">
                 <div>Last payout: {lastCompletedPayout ? formatPayoutMoney(lastCompletedPayout.amount) : "--"}</div>
                 <div>Next settlement: {nextPayoutDate}</div>
-                <div>Minimum request: {formatPayoutMoney(minimumPayoutAmount)}</div>
-                <div>Active request lock: {summaryBalances?.oneActivePayoutRequest === false ? "Off" : "On"}</div>
+                <div>Owner request: full available balance only</div>
+                <div>Admin action: approve, process, or fail payout</div>
               </div>
+              {!hasVerifiedPayoutMethod ? (
+                <p className="mt-3 text-xs font-medium text-amber-700">
+                  Verify your payout method before requesting payout.
+                </p>
+              ) : hasActivePayoutRequest ? (
+                <p className="mt-3 text-xs font-medium text-sky-700">
+                  A payout request is already pending or processing.
+                </p>
+              ) : availableBalance > 0 && availableBalance < minimumPayoutAmount ? (
+                <p className="mt-3 text-xs font-medium text-amber-700">
+                  Minimum payout is {formatPayoutMoney(minimumPayoutAmount)}.
+                </p>
+              ) : null}
             </div>
 
             {summaryBalances ? (
@@ -1138,21 +1117,22 @@ export function PayoutsPage() {
                     <div className="text-xs text-muted-foreground">Owner discounts</div>
                     <div className="font-semibold text-rose-700">-{formatPayoutMoney(summaryBalances.discountCost)}</div>
                   </div>
-                  <div>
-                    <div className="text-xs text-muted-foreground">Delivery fees tracked</div>
-                    <div className="font-semibold">{formatPayoutMoney(summaryBalances.deliveryCost)}</div>
-                  </div>
                 </div>
               </div>
             ) : null}
 
             <div className="flex flex-wrap gap-2">
               <Button
-                onClick={() => setIsRequestOpen(true)}
-                disabled={availableBalance < minimumPayoutAmount || hasActivePayoutRequest}
+                onClick={handleRequestPayout}
+                disabled={!canRequestPayout}
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
               >
-                <Banknote className="size-4" />
-                Request Payout
+                {requestPayoutMutation.isPending ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : (
+                  <WalletCards className="size-4" />
+                )}
+                Request full payout
               </Button>
               <Button
                 variant="outline"
@@ -1165,16 +1145,14 @@ export function PayoutsPage() {
                 <Download className="size-4" />
                 {activeTab === "history" ? "Export History" : "Download Report"}
               </Button>
+              <Button variant="outline" onClick={handlePrintCurrentReport}>
+                <ReceiptText className="size-4" />
+                PDF / Print
+              </Button>
             </div>
-            {hasActivePayoutRequest ? (
-              <p className="text-xs text-muted-foreground">
-                A payout is already pending or processing. Create a new request after admin completes or fails it.
-              </p>
-            ) : availableBalance < minimumPayoutAmount ? (
-              <p className="text-xs text-muted-foreground">
-                You can request payout once available balance reaches {formatPayoutMoney(minimumPayoutAmount)}.
-              </p>
-            ) : null}
+            <p className="text-xs text-muted-foreground">
+              Owner request reserves the full available balance, then admin finance completes the payout.
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -1424,6 +1402,14 @@ export function PayoutsPage() {
                 <Download className="size-4" />
                 Export History
               </Button>
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={handlePrintCurrentReport}
+              >
+                <ReceiptText className="size-4" />
+                PDF / Print
+              </Button>
               <Select
                 value={`${payoutPageSize}`}
                 onValueChange={(value) => setPayoutPageSize(Number(value))}
@@ -1479,7 +1465,6 @@ export function PayoutsPage() {
                     {transactionColumnVisibility.gross ? <TableHead>Food Sales</TableHead> : null}
                     {transactionColumnVisibility.commission ? <TableHead>Commission</TableHead> : null}
                     {transactionColumnVisibility.discount ? <TableHead>Owner Discount</TableHead> : null}
-                    {transactionColumnVisibility.delivery ? <TableHead>Delivery Cost</TableHead> : null}
                     {transactionColumnVisibility.net ? <TableHead>Owner Earning</TableHead> : null}
                     {transactionColumnVisibility.settlement ? <TableHead>Settlement</TableHead> : null}
                     {transactionColumnVisibility.created ? <TableHead>Created</TableHead> : null}
@@ -1508,9 +1493,6 @@ export function PayoutsPage() {
                         ) : null}
                         {transactionColumnVisibility.discount ? (
                           <TableCell>-{formatPayoutMoney(transaction.discountCost)}</TableCell>
-                        ) : null}
-                        {transactionColumnVisibility.delivery ? (
-                          <TableCell>-{formatPayoutMoney(transaction.deliveryCost)}</TableCell>
                         ) : null}
                         {transactionColumnVisibility.net ? (
                           <TableCell
@@ -1587,6 +1569,14 @@ export function PayoutsPage() {
               >
                 <Download className="size-4" />
                 Export Transactions
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={handlePrintCurrentReport}
+              >
+                <ReceiptText className="size-4" />
+                PDF / Print
               </Button>
               <Select
                 value={`${transactionPageSize}`}

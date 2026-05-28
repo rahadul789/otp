@@ -296,6 +296,41 @@ export const styles = StyleSheet.create({
   offlineNoticeWrap: {
     marginHorizontal: 18,
   },
+  refundNoticeCard: {
+    marginHorizontal: 18,
+    padding: 14,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#F8C6DA",
+    backgroundColor: "#FFF3F8",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  refundNoticeIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFE2EF",
+  },
+  refundNoticeCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  refundNoticeTitle: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  refundNoticeText: {
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "600",
+    color: palette.mutedForeground,
+  },
   trackingCard: {
     marginHorizontal: 18,
     borderRadius: 28,
@@ -1291,6 +1326,13 @@ export const styles = StyleSheet.create({
     fontWeight: "800",
     color: palette.background,
   },
+  trackingSkeletonWrap: {
+    gap: 14,
+  },
+  trackingSkeletonMap: {
+    height: 280,
+    borderRadius: 30,
+  },
   detailsSheet: {
     maxHeight: "82%",
     borderTopLeftRadius: 28,
@@ -1349,7 +1391,12 @@ export const styles = StyleSheet.create({
     borderColor: palette.border,
   },
   detailsList: {
+    flex: 1,
     maxHeight: 520,
+  },
+  detailsBottomSheetContent: {
+    flex: 1,
+    paddingBottom: 0,
   },
   detailsTimelineCard: {
     borderRadius: 20,

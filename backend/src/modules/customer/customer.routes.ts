@@ -1,6 +1,7 @@
 import { Router } from "express"
 import {
   createOrderActionLimiter,
+  createOrderPlaceLimiter,
   createOtpSendIpLimiter,
   createOtpSendLimiter,
   createOtpVerifyLimiter,
@@ -9,7 +10,8 @@ import {
   createRefreshLimiter,
   createSigninLimiter,
   createSupportWriteLimiter,
-  createAnalyticsEventLimiter
+  createAnalyticsEventLimiter,
+  createCartQuoteLimiter
 } from "../../common/middleware/rate-limit"
 
 import { requireAuth, requireRole } from "../../common/middleware/auth"
@@ -23,7 +25,6 @@ import {
   getCustomerLocations,
   getCustomerNotifications,
   getCustomerNotificationCampaign,
-  deleteCustomerAccountRequest,
   deleteCustomerPushToken,
   getCustomerDiscovery,
   getCustomerDiscoveryHomePage,
@@ -51,7 +52,6 @@ import {
   postCustomerLocation,
   postCustomerPushToken,
   postCustomerCartQuote,
-  postCustomerAccountRequest,
   postCustomerOrder,
   postCustomerOrderCancel,
   postCustomerReview,
@@ -80,6 +80,8 @@ const customerSupportWriteLimiter = createSupportWriteLimiter()
 const customerPaymentLimiter = createPaymentLimiter()
 const customerOrderActionLimiter = createOrderActionLimiter()
 const customerAnalyticsEventLimiter = createAnalyticsEventLimiter()
+const customerCartQuoteLimiter = createCartQuoteLimiter()
+const customerOrderPlaceLimiter = createOrderPlaceLimiter()
 
 customerRouter.post("/analytics/events", customerAnalyticsEventLimiter, postCustomerAnalyticsEvent)
 customerRouter.post("/auth/phone/start", customerAuthStartIpLimiter, customerAuthStartLimiter, startCustomerPhoneAuth)
@@ -115,13 +117,6 @@ customerRouter.get("/referrals/summary", requireAuth, requireRole("customer"), g
 customerRouter.post("/referrals/apply", requireAuth, requireRole("customer"), postCustomerReferralApplyController)
 customerRouter.patch("/profile", requireAuth, requireRole("customer"), patchCustomerProfile)
 customerRouter.patch("/profile/password", requireAuth, requireRole("customer"), patchCustomerPassword)
-customerRouter.post("/account-request", requireAuth, requireRole("customer"), postCustomerAccountRequest)
-customerRouter.delete(
-  "/account-request",
-  requireAuth,
-  requireRole("customer"),
-  deleteCustomerAccountRequest
-)
 customerRouter.get(
   "/support-cases/latest",
   requireAuth,
@@ -136,16 +131,16 @@ customerRouter.get(
 )
 customerRouter.post(
   "/support-cases",
-  customerSupportWriteLimiter,
   requireAuth,
   requireRole("customer"),
+  customerSupportWriteLimiter,
   postCustomerSupportCaseController
 )
 customerRouter.post(
   "/support-cases/:supportCaseId/messages",
-  customerSupportWriteLimiter,
   requireAuth,
   requireRole("customer"),
+  customerSupportWriteLimiter,
   postCustomerSupportCaseMessageController
 )
 customerRouter.post("/auth/refresh", customerRefreshLimiter, refreshCustomerAuth)
@@ -155,14 +150,14 @@ customerRouter.post("/vouchers/display-event", postCustomerVoucherDisplayEvent)
 customerRouter.post("/push-events/open", requireAuth, requireRole("customer"), postCustomerPushOpenEvent)
 customerRouter.get("/restaurants", getCustomerDiscovery)
 customerRouter.get("/restaurants/:restaurantId", getCustomerRestaurant)
-customerRouter.post("/cart/quote", postCustomerCartQuote)
+customerRouter.post("/cart/quote", customerCartQuoteLimiter, postCustomerCartQuote)
 customerRouter.get("/payments/bkash/callback", getBkashCallback)
 customerRouter.get("/payments/bkash/return", getBkashReturnPage)
 customerRouter.post(
   "/payments/bkash/initiate",
-  customerPaymentLimiter,
   requireAuth,
   requireRole("customer"),
+  customerPaymentLimiter,
   postBkashInitiate
 )
 customerRouter.get(
@@ -237,18 +232,24 @@ customerRouter.delete(
 )
 customerRouter.get("/orders", requireAuth, requireRole("customer"), getCustomerOrders)
 customerRouter.get("/orders/:orderId", requireAuth, requireRole("customer"), getCustomerOrder)
-customerRouter.post("/orders", requireAuth, requireRole("customer"), postCustomerOrder)
 customerRouter.post(
-  "/orders/:orderId/cancel",
-  customerOrderActionLimiter,
+  "/orders",
   requireAuth,
   requireRole("customer"),
+  customerOrderPlaceLimiter,
+  postCustomerOrder
+)
+customerRouter.post(
+  "/orders/:orderId/cancel",
+  requireAuth,
+  requireRole("customer"),
+  customerOrderActionLimiter,
   postCustomerOrderCancel
 )
 customerRouter.post(
   "/orders/:orderId/review",
-  customerOrderActionLimiter,
   requireAuth,
   requireRole("customer"),
+  customerOrderActionLimiter,
   postCustomerReview
 )

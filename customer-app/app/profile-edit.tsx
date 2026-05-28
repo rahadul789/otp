@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -42,6 +42,7 @@ export default function ProfileEditScreen() {
   const isOnline = useIsOnline();
   const updateMutation = useCustomerProfileUpdateMutation();
   const uploadSignatureMutation = useCustomerMediaUploadSignatureMutation();
+  const fullNameInputRef = useRef<TextInput | null>(null);
   const [fullName, setFullName] = useState(customer?.fullName ?? "");
   const [profileImage, setProfileImage] = useState<ProfileImageValue>(
     customer?.profileImage ?? {}
@@ -91,6 +92,14 @@ export default function ProfileEditScreen() {
 
     return formatDeliveryAddress(selectedLocation, "Pinned on map");
   }, [selectedLocation]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fullNameInputRef.current?.focus();
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, []);
 
   async function handlePickImage() {
     if (!isOnline) {
@@ -320,6 +329,7 @@ export default function ProfileEditScreen() {
                   />
                 </View>
                 <TextInput
+                  ref={fullNameInputRef}
                   value={fullName}
                   onChangeText={(value) => {
                     setFullName(value);
@@ -327,6 +337,7 @@ export default function ProfileEditScreen() {
                   }}
                   placeholder="Your full name"
                   placeholderTextColor={palette.placeholder}
+                  selectionColor={palette.secondary}
                   textContentType="name"
                   autoCapitalize="words"
                   returnKeyType="done"

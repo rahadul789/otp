@@ -146,8 +146,24 @@ export type OwnerOrderResponse = {
     subtotal?: number
     deliveryFee?: number
     discountAmount?: number
+    ownerDiscountCost?: number
+    platformDiscountCost?: number
+    restaurantSubtotal?: number
+    restaurantNetSales?: number
+    customerPaidTotal?: number
+    ownerVisibleDiscount?: number
     total?: number
   }
+  appliedVouchers?: Array<{
+    id?: string
+    code?: string
+    name?: string
+    type?: string
+    fundedBy?: string
+    discountAmount?: number
+    totalDiscountAmount?: number
+    ownerDiscountCost?: number
+  }>
   customerSnapshot?: {
     fullName?: string
     phone?: string
@@ -291,6 +307,10 @@ export type OwnerPayoutMethodResponse = {
     branchName?: string
     isVerified?: boolean
     pendingAccountNumber?: string | null
+    pendingAccountName?: string | null
+    pendingVerificationStatus?: "otp_pending" | "admin_pending" | "rejected" | null
+    pendingVerifiedAt?: string | null
+    pendingAdminNote?: string | null
     verificationSource?: string | null
     verifiedAt?: string | null
   }
@@ -404,6 +424,36 @@ export type OwnerDashboardSummaryResponse = {
     uniqueCustomers: number
     nextEstimatedPayoutAt: string | null
   }
+  salesTrend?: Array<{
+    date: string
+    label: string
+    orders: number
+    revenue: number
+    placedValue?: number
+    deliveredValue?: number
+    netEarnings?: number
+    activeOrders?: number
+    failedOrders?: number
+    failedValue?: number
+    cancelledOrders?: number
+    rejectedOrders?: number
+  }>
+  topItems?: Array<{ id: string; name: string; quantity: number; revenue: number }>
+  liveOrders?: Array<{
+    id: string
+    orderNumber: string
+    customerName: string
+    status: string
+    placedAt: string
+    value: number
+  }>
+  recentReviews?: Array<{
+    id: string
+    customerName: string
+    rating: number
+    comment: string
+    createdAt: string
+  }>
 }
 
 export type OwnerAnalyticsOverviewResponse = {
@@ -807,7 +857,6 @@ export function mapOwnerStoreSettings(
 ): StoreSettings {
   const cuisineTypes = response.cuisineTypes?.filter(Boolean) ?? []
   const notificationSettings = response.settings?.notifications ?? {}
-  const orderSettings = response.settings?.orderSettings ?? {}
 
   return {
     ...current,
@@ -833,10 +882,11 @@ export function mapOwnerStoreSettings(
     },
     orderSettings: {
       ...current.orderSettings,
-      autoAcceptOrders:
-        orderSettings.autoAcceptOrders ?? current.orderSettings.autoAcceptOrders,
+      autoAcceptOrders: false,
       preparationTimeMinutes:
-        response.preparationTimeMinutes ?? current.orderSettings.preparationTimeMinutes,
+        response.preparationTimeMinutes ??
+        current.orderSettings.preparationTimeMinutes ??
+        20,
     },
     notifications: {
       ...current.notifications,
@@ -946,15 +996,16 @@ export function mapOwnerPayoutMethod(
     id: response._id,
     type: response.type,
     accountName: response.accountName,
-    accountNumber: response.accountNumber,
+    accountNumber: response.accountNumber || current.accountNumber,
     bankName: response.bankName ?? "",
     branchName: response.branchName ?? "",
     isVerified: response.isVerified ?? false,
     verifiedAt: response.verifiedAt ?? null,
     pendingAccountNumber: response.pendingAccountNumber ?? "",
-    pendingAccountName: response.pendingAccountNumber
-      ? response.accountName
-      : "",
+    pendingAccountName: response.pendingAccountName ?? "",
+    pendingVerificationStatus: response.pendingVerificationStatus ?? null,
+    pendingVerifiedAt: response.pendingVerifiedAt ?? null,
+    pendingAdminNote: response.pendingAdminNote ?? "",
     verificationSource: nextSource,
   }
 }
@@ -1294,10 +1345,21 @@ function mapHistory(history?: OwnerOrderResponse["history"]): OrderStatusHistory
 
 export function mapOwnerOrder(order: OwnerOrderResponse): Order {
   const pricing = order.pricing ?? {}
-  const subtotal = pricing.subtotal ?? 0
   const deliveryFee = pricing.deliveryFee ?? 0
-  const discount = pricing.discountAmount ?? 0
-  const total = pricing.total ?? Math.max(subtotal + deliveryFee - discount, 0)
+  const rawCustomerTotal = pricing.total ?? 0
+  const discountAmount = pricing.discountAmount ?? pricing.ownerDiscountCost ?? 0
+  const subtotal =
+    pricing.subtotal ??
+    pricing.restaurantSubtotal ??
+    Math.max(rawCustomerTotal - deliveryFee + discountAmount, 0)
+  const ownerDiscountCost = pricing.ownerDiscountCost ?? pricing.ownerVisibleDiscount ?? pricing.discountAmount ?? 0
+  const platformDiscountCost = pricing.platformDiscountCost ?? 0
+  const restaurantSubtotal = pricing.restaurantSubtotal ?? subtotal
+  const restaurantNetSales = pricing.restaurantNetSales ?? Math.max(restaurantSubtotal - ownerDiscountCost, 0)
+  const customerPaidTotal =
+    pricing.customerPaidTotal ??
+    pricing.total ??
+    Math.max(subtotal + deliveryFee - discountAmount, 0)
 
   return {
     id: order._id,
@@ -1329,8 +1391,13 @@ export function mapOwnerOrder(order: OwnerOrderResponse): Order {
       })) ?? [],
     subtotal,
     deliveryFee,
-    discount,
-    total,
+    discount: ownerDiscountCost,
+    total: restaurantNetSales,
+    restaurantSubtotal,
+    ownerDiscountCost,
+    platformDiscountCost,
+    restaurantNetSales,
+    customerPaidTotal,
     paymentMethod: order.paymentMethod?.toLowerCase() === "bkash" ? "Bkash" : "Cash",
     currentStatus: order.status,
     cancelledBy: order.cancelledBy,
@@ -1338,6 +1405,7 @@ export function mapOwnerOrder(order: OwnerOrderResponse): Order {
     kitchenNote: "",
     timestamps: buildOrderTimestamps(order.timestamps),
     autoCancel: order.autoCancel,
+    appliedVouchers: order.appliedVouchers ?? [],
     history: mapHistory(order.history),
   }
 }

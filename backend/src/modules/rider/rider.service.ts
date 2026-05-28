@@ -4,6 +4,7 @@ import { StatusCodes } from "http-status-codes"
 
 import { AppError } from "../../common/utils/app-error"
 import { decorateTrackingSnapshot } from "../../common/utils/tracking-freshness"
+import { logger } from "../../config/logger"
 import { emitSocketEvent } from "../../config/socket"
 import { runAutoDispatchForReadyOrders } from "../admin/orders-monitor.service"
 import {
@@ -28,7 +29,12 @@ import {
   verifyRefreshToken
 } from "../auth/auth.utils"
 import { OrderModel } from "../owner/operational.model"
-import { transitionOrderBySystem, updateOrderRiderLocation } from "../owner/operational.service"
+import { buildOrderPreparationTiming } from "../owner/preparation-timing"
+import {
+  emitOrderRealtimeUpdate,
+  transitionOrderBySystem,
+  updateOrderRiderLocation
+} from "../owner/operational.service"
 import { getPlatformContent } from "../public/content.service"
 import { syncRiderAvailabilitySession } from "./availability-session.service"
 
@@ -38,6 +44,78 @@ const DEFAULT_RIDER_ORDER_PAGE_SIZE = 80
 const MAX_RIDER_ORDER_PAGE_SIZE = 100
 const MAX_RIDER_PUSH_TOKENS = 5
 const DISABLED_RIDER_PUSH_TOKEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
+const RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS = 10 * 1000
+const RIDER_ORDER_LOCATION_QUEUE_IDLE_MS = 30 * 60 * 1000
+const RIDER_ORDER_LOCATION_QUEUE_PRUNE_SIZE = 500
+const RIDER_LIST_PROFILE_SELECT = "_id status verification isAvailableForAssignments activeTrackingOrderId"
+const RIDER_LIVE_MAP_PROFILE_SELECT = `${RIDER_LIST_PROFILE_SELECT} fullName phone vehicleType lastKnownLocation`
+const RIDER_ORDER_LIST_SELECT = [
+  "_id",
+  "restaurantId",
+  "customerId",
+  "riderId",
+  "orderNumber",
+  "status",
+  "paymentMethod",
+  "paymentStatus",
+  "pricing",
+  "customerSnapshot.name",
+  "customerSnapshot.fullName",
+  "customerSnapshot.phone",
+  "customerSnapshot.deliveryAddress",
+  "riderSnapshot",
+  "riderTracking",
+  "timestamps",
+  "createdAt",
+  "updatedAt"
+].join(" ")
+const RIDER_ORDER_RESTAURANT_SELECT =
+  "_id name contact.phone address.address address.city location.latitude location.longitude preparationTimeMinutes"
+const RIDER_LIVE_MAP_ORDER_SELECT = [
+  "_id",
+  "restaurantId",
+  "customerId",
+  "riderId",
+  "orderNumber",
+  "status",
+  "pricing",
+  "customerSnapshot.name",
+  "customerSnapshot.fullName",
+  "customerSnapshot.deliveryAddress",
+  "riderTracking",
+  "preparationMeta",
+  "timestamps",
+  "createdAt",
+  "updatedAt"
+].join(" ")
+const recentRiderOrderLocationUpdates = new Map<
+  string,
+  {
+    savedAtMs: number
+    order: Record<string, any>
+  }
+>()
+
+type QueuedRiderOrderLocationUpdate = {
+  orderId: string
+  riderId: string
+  riderName: string
+  riderPhone: string
+  latitude: number
+  longitude: number
+  heading?: number
+  accuracyMeters?: number
+  speedKmph?: number
+}
+
+type RiderOrderLocationQueueEntry = {
+  latest: QueuedRiderOrderLocationUpdate | null
+  timer: ReturnType<typeof setTimeout> | null
+  inFlight: boolean
+  lastSavedAtMs: number
+}
+
+const riderOrderLocationQueue = new Map<string, RiderOrderLocationQueueEntry>()
 
 function normalizeRiderPageBounds(params?: { page?: number; pageSize?: number }) {
   const page = Math.max(1, Math.floor(Number(params?.page ?? 1)) || 1)
@@ -279,9 +357,13 @@ async function enrichRiderOrders(
 
   const restaurants = restaurantIds.length
     ? await RestaurantModel.find({ _id: { $in: restaurantIds } })
+        .select(RIDER_ORDER_RESTAURANT_SELECT)
+        .lean()
     : []
 
-  const restaurantMap = new Map(restaurants.map((restaurant) => [restaurant.id, restaurant.toObject()]))
+  const restaurantMap = new Map(
+    restaurants.map((restaurant) => [String(restaurant._id ?? ""), restaurant])
+  )
 
   return orders.map((order) =>
     mapRiderOrder(
@@ -291,6 +373,113 @@ async function enrichRiderOrders(
       activeTrackingOrderId
     )
   )
+}
+
+function numberOrNull(value: unknown) {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) ? numberValue : null
+}
+
+function isoStringOrNull(value: unknown) {
+  if (!value) return null
+  const date = value instanceof Date ? value : new Date(String(value))
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function coordinateOrNull(latitude: unknown, longitude: unknown) {
+  const lat = numberOrNull(latitude)
+  const lng = numberOrNull(longitude)
+
+  if (lat === null || lng === null) return null
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null
+
+  return { latitude: lat, longitude: lng }
+}
+
+function getLiveMapAssignmentState(order: Record<string, any>, riderId: string) {
+  const assignedRiderId = typeof order.riderId === "string" ? order.riderId : ""
+
+  if (!assignedRiderId) return "unassigned"
+  return assignedRiderId === riderId ? "assigned_to_you" : "assigned_to_other"
+}
+
+function getLiveMapOrderPriority(order: Record<string, any>, preparationTiming: Record<string, any>) {
+  const status = String(order.status ?? "")
+  const remainingSeconds =
+    typeof preparationTiming.remainingSeconds === "number"
+      ? preparationTiming.remainingSeconds
+      : null
+  const lateBySeconds =
+    typeof preparationTiming.lateBySeconds === "number" ? preparationTiming.lateBySeconds : 0
+
+  if (status === "ReadyForPickup") return 100 + Math.min(30, Math.floor(lateBySeconds / 60))
+  if (status === "PickedUp") return 90
+  if (status === "Preparing") {
+    if (remainingSeconds === null) return 65
+    if (remainingSeconds === 0) return 95 + Math.min(20, Math.floor(lateBySeconds / 60))
+    if (remainingSeconds <= 5 * 60) return 85
+    if (remainingSeconds <= 10 * 60) return 75
+    return 60
+  }
+  if (status === "Accepted") return 45
+  return 20
+}
+
+function mapLiveMapOrder(
+  order: Record<string, any>,
+  restaurant: Record<string, any> | null,
+  riderId: string
+) {
+  const preparationTiming = buildOrderPreparationTiming({ order, restaurant })
+  const customerAddress = order.customerSnapshot?.deliveryAddress ?? {}
+
+  return {
+    id: String(order._id ?? order.id ?? ""),
+    orderNumber: order.orderNumber ?? "",
+    status: order.status ?? "",
+    assignmentState: getLiveMapAssignmentState(order, riderId),
+    createdAt: isoStringOrNull(order.createdAt),
+    updatedAt: isoStringOrNull(order.updatedAt),
+    preparation: {
+      phase: preparationTiming.phase,
+      label: preparationTiming.label,
+      baseMinutes: preparationTiming.baseMinutes,
+      extraMinutes: preparationTiming.extraMinutes,
+      totalMinutes: preparationTiming.totalMinutes,
+      targetStartAt: preparationTiming.targetStartAt,
+      targetReadyAt: preparationTiming.targetReadyAt,
+      remainingSeconds: preparationTiming.remainingSeconds,
+      lateBySeconds: preparationTiming.lateBySeconds
+    },
+    priority: getLiveMapOrderPriority(order, preparationTiming),
+    pricing: {
+      total: numberOrNull(order.pricing?.total) ?? 0,
+      foodSubtotal: numberOrNull(order.pricing?.foodSubtotal) ?? 0
+    },
+    customer: {
+      id: String(order.customerId ?? ""),
+      name: order.customerSnapshot?.name ?? order.customerSnapshot?.fullName ?? "",
+      addressLabel: customerAddress.label ?? "",
+      addressLine: customerAddress.addressLine ?? "",
+      addressDetails: customerAddress.addressDetails ?? "",
+      location: coordinateOrNull(customerAddress.latitude, customerAddress.longitude)
+    },
+    tracking: decorateTrackingSnapshot(order.riderTracking ?? {}, order.status ?? "")
+  }
+}
+
+function getLiveMapRestaurantPriority(orders: Array<Record<string, any>>) {
+  return orders.reduce((highest, order) => Math.max(highest, Number(order.priority ?? 0)), 0)
+}
+
+function getNextReadyAt(orders: Array<Record<string, any>>) {
+  const futureReadyDates = orders
+    .map((order) => order.preparation?.targetReadyAt)
+    .map((value) => (value ? new Date(String(value)) : null))
+    .filter((date): date is Date => date instanceof Date && !Number.isNaN(date.getTime()))
+    .sort((left, right) => left.getTime() - right.getTime())
+
+  return futureReadyDates[0]?.toISOString() ?? null
 }
 
 async function setActiveTrackingOrder(params: { riderId: string; orderId: string }) {
@@ -720,11 +909,14 @@ export async function refreshRiderSession(params: {
   })
 }
 
-export async function logoutRiderSession(refreshToken: string) {
+export async function logoutRiderSession(params: {
+  refreshToken: string
+  expoPushToken?: string
+}) {
   let payload: ReturnType<typeof verifyRefreshToken>
 
   try {
-    payload = verifyRefreshToken(refreshToken)
+    payload = verifyRefreshToken(params.refreshToken)
   } catch {
     return { revoked: true }
   }
@@ -737,6 +929,18 @@ export async function logoutRiderSession(refreshToken: string) {
     { riderId: payload.sub, tokenId: payload.tokenId, revokedAt: null },
     { $set: { revokedAt: new Date() } }
   )
+
+  if (params.expoPushToken) {
+    await RiderModel.updateOne(
+      { _id: payload.sub, "pushTokens.expoPushToken": params.expoPushToken },
+      {
+        $set: {
+          "pushTokens.$.disabledAt": new Date(),
+          "pushTokens.$.lastSeenAt": new Date()
+        }
+      }
+    )
+  }
 
   return { revoked: true }
 }
@@ -751,6 +955,125 @@ export async function getRiderProfile(riderId: string) {
   assertRiderAccessible(rider)
 
   return mapRiderProfile(rider)
+}
+
+function getStartOfDhakaDay(daysAgo = 0) {
+  const dhakaOffsetMs = 6 * 60 * 60 * 1000
+  const dhakaDate = new Date(Date.now() + dhakaOffsetMs)
+  dhakaDate.setUTCDate(dhakaDate.getUTCDate() - daysAgo)
+  dhakaDate.setUTCHours(0, 0, 0, 0)
+  return new Date(dhakaDate.getTime() - dhakaOffsetMs)
+}
+
+export async function getRiderPerformanceSummary(params: { riderId: string }) {
+  const rider = await RiderModel.findById(params.riderId).select(RIDER_LIST_PROFILE_SELECT)
+
+  if (!rider) {
+    throw new AppError(StatusCodes.NOT_FOUND, "RIDER_NOT_FOUND", "Rider not found")
+  }
+
+  assertRiderAccessible(rider)
+
+  const riderId = String(rider._id ?? params.riderId)
+  const todayStart = getStartOfDhakaDay(0)
+  const last7Start = getStartOfDhakaDay(6)
+  const dhakaOffsetMs = 6 * 60 * 60 * 1000
+  const monthStartInDhaka = new Date(Date.now() + dhakaOffsetMs)
+  monthStartInDhaka.setUTCDate(1)
+  monthStartInDhaka.setUTCHours(0, 0, 0, 0)
+  const monthStart = new Date(monthStartInDhaka.getTime() - dhakaOffsetMs)
+
+  const [summaryRow, activeAssignedOrders] = await Promise.all([
+    OrderModel.aggregate<{
+      deliveredToday: number
+      deliveredLast7Days: number
+      deliveredThisMonth: number
+      deliveredTotal: number
+      cancelledTotal: number
+    }>([
+      {
+        $match: {
+          riderId,
+          status: { $in: ["Delivered", "Cancelled", "Rejected"] }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          deliveredToday: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$status", "Delivered"] },
+                    { $gte: ["$updatedAt", todayStart] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
+          deliveredLast7Days: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$status", "Delivered"] },
+                    { $gte: ["$updatedAt", last7Start] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
+          deliveredThisMonth: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$status", "Delivered"] },
+                    { $gte: ["$updatedAt", monthStart] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          },
+          deliveredTotal: {
+            $sum: { $cond: [{ $eq: ["$status", "Delivered"] }, 1, 0] }
+          },
+          cancelledTotal: {
+            $sum: {
+              $cond: [
+                { $in: ["$status", ["Cancelled", "Rejected"]] },
+                1,
+                0
+              ]
+            }
+          }
+        }
+      },
+      { $project: { _id: 0 } }
+    ]),
+    OrderModel.countDocuments({
+      riderId,
+      status: { $in: ["ReadyForPickup", "PickedUp"] }
+    })
+  ])
+
+  const summary = summaryRow[0]
+
+  return {
+    deliveredToday: summary?.deliveredToday ?? 0,
+    deliveredLast7Days: summary?.deliveredLast7Days ?? 0,
+    deliveredThisMonth: summary?.deliveredThisMonth ?? 0,
+    deliveredTotal: summary?.deliveredTotal ?? 0,
+    cancelledTotal: summary?.cancelledTotal ?? 0,
+    activeAssignedOrders
+  }
 }
 
 export async function updateRiderAvailability(params: {
@@ -908,18 +1231,21 @@ export async function updateRiderLastKnownLocation(params: {
 
   const pickedUpOrderIds = pickedUpOrders.map((order) => order.id)
   const currentFocusedOrderId = rider.activeTrackingOrderId ?? ""
+  let nextFocusedOrderId = currentFocusedOrderId
   if (pickedUpOrderIds.length === 0) {
-    rider.activeTrackingOrderId = ""
+    nextFocusedOrderId = ""
   } else if (!pickedUpOrderIds.includes(currentFocusedOrderId)) {
-    rider.activeTrackingOrderId = pickedUpOrderIds[0] ?? ""
+    nextFocusedOrderId = pickedUpOrderIds[0] ?? ""
   }
+  const hasFocusChanged = nextFocusedOrderId !== currentFocusedOrderId
+  rider.activeTrackingOrderId = nextFocusedOrderId
 
   await rider.save()
 
   const profile = mapRiderProfile(rider)
   emitSocketEvent(`rider:${rider.id}`, "rider.profile.updated", profile)
 
-  if (pickedUpOrderIds.length > 0) {
+  if (pickedUpOrderIds.length > 0 && hasFocusChanged) {
     await OrderModel.updateMany(
       { riderId: rider.id, status: "PickedUp" },
       {
@@ -941,21 +1267,20 @@ export async function updateRiderLastKnownLocation(params: {
     }
   }
 
-  await Promise.allSettled(
-    pickedUpOrderIds.map((orderId) =>
-      updateOrderRiderLocation({
-        orderId,
-        actor: "rider",
-        latitude: params.latitude,
-        longitude: params.longitude,
-        heading: params.heading,
-        accuracyMeters: params.accuracyMeters,
-        speedKmph: params.speedKmph,
-        riderName: rider.fullName,
-        riderPhone: rider.phone
-      })
-    )
-  )
+  const focusedOrderId = rider.activeTrackingOrderId ?? ""
+  if (focusedOrderId) {
+    enqueueRiderOrderLocationUpdate({
+      orderId: focusedOrderId,
+      riderId: rider.id,
+      latitude: params.latitude,
+      longitude: params.longitude,
+      heading: params.heading,
+      accuracyMeters: params.accuracyMeters,
+      speedKmph: params.speedKmph,
+      riderName: rider.fullName,
+      riderPhone: rider.phone
+    })
+  }
 
   return profile
 }
@@ -967,12 +1292,15 @@ export async function listRiderOrders(params: {
   pageSize?: number
 }) {
   const rider = await RiderModel.findById(params.riderId)
+    .select(RIDER_LIST_PROFILE_SELECT)
+    .lean()
 
   if (!rider) {
     throw new AppError(StatusCodes.NOT_FOUND, "RIDER_NOT_FOUND", "Rider not found")
   }
 
   assertRiderAccessible(rider)
+  const riderId = String(rider._id ?? params.riderId)
 
   const scope = params.scope ?? "active"
 
@@ -984,17 +1312,150 @@ export async function listRiderOrders(params: {
     scope === "available"
       ? { status: "ReadyForPickup", $or: [{ riderId: "" }, { riderId: { $exists: false } }] }
       : scope === "history"
-        ? { riderId: rider.id, status: { $in: ["Delivered", "Cancelled"] } }
-        : { riderId: rider.id, status: { $in: ["ReadyForPickup", "PickedUp"] } }
+        ? { riderId, status: { $in: ["Delivered", "Cancelled", "Rejected"] } }
+        : { riderId, status: { $in: ["ReadyForPickup", "PickedUp"] } }
   const { page, pageSize } = normalizeRiderPageBounds(params)
 
   const orders = await OrderModel.find(query)
+    .select(RIDER_ORDER_LIST_SELECT)
     .sort({ createdAt: scope === "history" ? -1 : 1 })
     .skip((page - 1) * pageSize)
     .limit(pageSize)
     .lean()
 
-  return enrichRiderOrders(orders, rider.id, rider.activeTrackingOrderId ?? "")
+  return enrichRiderOrders(orders, riderId, String(rider.activeTrackingOrderId ?? ""))
+}
+
+export async function getRiderLiveMap(params: { riderId: string }) {
+  const rider = await RiderModel.findById(params.riderId)
+    .select(RIDER_LIVE_MAP_PROFILE_SELECT)
+    .lean()
+
+  if (!rider) {
+    throw new AppError(StatusCodes.NOT_FOUND, "RIDER_NOT_FOUND", "Rider not found")
+  }
+
+  assertRiderAccessible(rider)
+  const riderId = String(rider._id ?? params.riderId)
+
+  const orders = await OrderModel.find({
+    $or: [
+      {
+        status: { $in: ["Accepted", "Preparing"] },
+        $or: [{ riderId: "" }, { riderId }, { riderId: { $exists: false } }]
+      },
+      {
+        status: "ReadyForPickup",
+        $or: [{ riderId: "" }, { riderId: riderId }, { riderId: { $exists: false } }]
+      },
+      { status: "PickedUp", riderId }
+    ]
+  })
+    .select(RIDER_LIVE_MAP_ORDER_SELECT)
+    .sort({ updatedAt: 1, createdAt: 1 })
+    .limit(150)
+    .lean()
+
+  const restaurantIds = [
+    ...new Set(orders.map((order) => String(order.restaurantId ?? "")).filter(Boolean))
+  ]
+  const restaurants = restaurantIds.length
+    ? await RestaurantModel.find({ _id: { $in: restaurantIds } })
+        .select(RIDER_ORDER_RESTAURANT_SELECT)
+        .lean()
+    : []
+  const restaurantMap = new Map(
+    restaurants.map((restaurant) => [String(restaurant._id ?? ""), restaurant])
+  )
+  const restaurantGroups = new Map<string, Record<string, any>>()
+
+  for (const order of orders) {
+    const restaurantId = String(order.restaurantId ?? "")
+    const restaurant = restaurantMap.get(restaurantId) ?? null
+    const mappedOrder = mapLiveMapOrder(order, restaurant, riderId)
+    const existingGroup = restaurantGroups.get(restaurantId)
+
+    if (existingGroup) {
+      existingGroup.orders.push(mappedOrder)
+      continue
+    }
+
+    restaurantGroups.set(restaurantId, {
+      id: restaurantId,
+      name: restaurant?.name ?? "Restaurant",
+      phone: restaurant?.contact?.phone ?? "",
+      address: restaurant?.address?.address ?? "",
+      city: restaurant?.address?.city ?? "",
+      preparationTimeMinutes: restaurant?.preparationTimeMinutes ?? null,
+      location: coordinateOrNull(
+        restaurant?.location?.latitude,
+        restaurant?.location?.longitude
+      ),
+      orders: [mappedOrder]
+    })
+  }
+
+  const riderLocation = coordinateOrNull(
+    rider.lastKnownLocation?.latitude,
+    rider.lastKnownLocation?.longitude
+  )
+
+  const liveRestaurants = Array.from(restaurantGroups.values())
+    .map((restaurant) => {
+      const ordersForRestaurant = [...restaurant.orders].sort(
+        (left, right) =>
+          Number(right.priority ?? 0) - Number(left.priority ?? 0) ||
+          new Date(String(left.updatedAt ?? left.createdAt ?? 0)).getTime() -
+            new Date(String(right.updatedAt ?? right.createdAt ?? 0)).getTime()
+      )
+      const remainingValues = ordersForRestaurant
+        .map((order) => order.preparation?.remainingSeconds)
+        .filter((value): value is number => typeof value === "number")
+        .sort((left, right) => left - right)
+
+      return {
+        ...restaurant,
+        orderCount: ordersForRestaurant.length,
+        readyCount: ordersForRestaurant.filter((order) => order.status === "ReadyForPickup").length,
+        preparingCount: ordersForRestaurant.filter((order) => order.status === "Preparing").length,
+        acceptedCount: ordersForRestaurant.filter((order) => order.status === "Accepted").length,
+        pickedUpCount: ordersForRestaurant.filter((order) => order.status === "PickedUp").length,
+        lateCount: ordersForRestaurant.filter(
+          (order) => Number(order.preparation?.lateBySeconds ?? 0) > 0
+        ).length,
+        earliestRemainingSeconds: remainingValues[0] ?? null,
+        nextReadyAt: getNextReadyAt(ordersForRestaurant),
+        priority: getLiveMapRestaurantPriority(ordersForRestaurant),
+        orders: ordersForRestaurant
+      }
+    })
+    .sort(
+      (left, right) =>
+        Number(right.priority ?? 0) - Number(left.priority ?? 0) ||
+        Number(left.earliestRemainingSeconds ?? Number.MAX_SAFE_INTEGER) -
+          Number(right.earliestRemainingSeconds ?? Number.MAX_SAFE_INTEGER)
+    )
+
+  return {
+    generatedAt: new Date().toISOString(),
+    rider: {
+      id: riderId,
+      fullName: rider.fullName ?? "",
+      phone: rider.phone ?? "",
+      vehicleType: rider.vehicleType ?? "cycle",
+      activeTrackingOrderId: rider.activeTrackingOrderId ?? "",
+      location: riderLocation
+        ? {
+            ...riderLocation,
+            heading: rider.lastKnownLocation?.heading ?? null,
+            accuracyMeters: rider.lastKnownLocation?.accuracyMeters ?? null,
+            speedKmph: rider.lastKnownLocation?.speedKmph ?? null,
+            updatedAt: isoStringOrNull(rider.lastKnownLocation?.updatedAt)
+          }
+        : null
+    },
+    restaurants: liveRestaurants
+  }
 }
 
 export async function getRiderOrderDetails(params: { riderId: string; orderId: string }) {
@@ -1092,7 +1553,12 @@ export async function acceptRiderOrder(params: { riderId: string; orderId: strin
   })
   await order.save()
 
-  emitSocketEvent(`rider:${rider.id}`, "rider.order.updated", order.toObject())
+  const orderObject = order.toObject()
+  await emitOrderRealtimeUpdate(orderObject, {
+    type: "rider.assignment",
+    riderId: rider.id,
+    assignmentAction: "self_accepted"
+  })
 
   return getRiderOrderDetails({
     riderId: rider.id,
@@ -1253,6 +1719,166 @@ export async function activateRiderTrackingOrder(params: { riderId: string; orde
   })
 }
 
+function scheduleRiderOrderLocationFlush(orderId: string, delayMs = 0) {
+  const entry = riderOrderLocationQueue.get(orderId)
+  if (!entry || entry.timer) return
+
+  entry.timer = setTimeout(() => {
+    entry.timer = null
+    void flushRiderOrderLocation(orderId)
+  }, Math.max(0, delayMs))
+}
+
+async function flushRiderOrderLocation(orderId: string) {
+  const entry = riderOrderLocationQueue.get(orderId)
+  if (!entry || entry.inFlight || !entry.latest) return
+
+  const elapsedMs = entry.lastSavedAtMs ? Date.now() - entry.lastSavedAtMs : Number.POSITIVE_INFINITY
+  if (elapsedMs < RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS) {
+    scheduleRiderOrderLocationFlush(orderId, RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS - elapsedMs)
+    return
+  }
+
+  const update = entry.latest
+  entry.latest = null
+  entry.inFlight = true
+
+  try {
+    const [updatedOrder] = await Promise.all([
+      updateOrderRiderLocation({
+        orderId: update.orderId,
+        actor: "rider",
+        latitude: update.latitude,
+        longitude: update.longitude,
+        heading: update.heading,
+        accuracyMeters: update.accuracyMeters,
+        speedKmph: update.speedKmph,
+        riderName: update.riderName,
+        riderPhone: update.riderPhone
+      }),
+      RiderModel.updateOne(
+        { _id: update.riderId },
+        {
+          $set: {
+            lastKnownLocation: {
+              latitude: update.latitude,
+              longitude: update.longitude,
+              heading: update.heading ?? null,
+              accuracyMeters: update.accuracyMeters ?? null,
+              speedKmph: update.speedKmph ?? null,
+              updatedAt: new Date()
+            }
+          }
+        }
+      )
+    ])
+    const updatedOrderObject =
+      typeof updatedOrder.toObject === "function" ? updatedOrder.toObject() : updatedOrder
+    entry.lastSavedAtMs = Date.now()
+    recentRiderOrderLocationUpdates.set(orderId, {
+      savedAtMs: entry.lastSavedAtMs,
+      order: updatedOrderObject
+    })
+  } catch (error) {
+    logger.warn(
+      {
+        error,
+        orderId,
+        riderId: update.riderId
+      },
+      "Queued rider order location update failed"
+    )
+  } finally {
+    entry.inFlight = false
+    if (entry.latest) {
+      scheduleRiderOrderLocationFlush(orderId, RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS)
+    }
+  }
+}
+
+function enqueueRiderOrderLocationUpdate(update: QueuedRiderOrderLocationUpdate) {
+  if (riderOrderLocationQueue.size > RIDER_ORDER_LOCATION_QUEUE_PRUNE_SIZE) {
+    pruneIdleRiderOrderLocationQueue()
+  }
+
+  const existing = riderOrderLocationQueue.get(update.orderId)
+  const entry =
+    existing ??
+    {
+      latest: null,
+      timer: null,
+      inFlight: false,
+      lastSavedAtMs: recentRiderOrderLocationUpdates.get(update.orderId)?.savedAtMs ?? 0
+    }
+
+  entry.latest = update
+  riderOrderLocationQueue.set(update.orderId, entry)
+
+  if (!entry.inFlight && !entry.timer) {
+    const elapsedMs = entry.lastSavedAtMs ? Date.now() - entry.lastSavedAtMs : Number.POSITIVE_INFINITY
+    scheduleRiderOrderLocationFlush(
+      update.orderId,
+      elapsedMs < RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS
+        ? RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS - elapsedMs
+        : 0
+    )
+  }
+}
+
+function pruneIdleRiderOrderLocationQueue(now = Date.now()) {
+  for (const [orderId, entry] of riderOrderLocationQueue) {
+    if (
+      !entry.latest &&
+      !entry.timer &&
+      !entry.inFlight &&
+      entry.lastSavedAtMs &&
+      now - entry.lastSavedAtMs > RIDER_ORDER_LOCATION_QUEUE_IDLE_MS
+    ) {
+      riderOrderLocationQueue.delete(orderId)
+      recentRiderOrderLocationUpdates.delete(orderId)
+    }
+  }
+}
+
+function buildAcceptedRiderLocationOrder(params: {
+  orderId: string
+  activeTrackingOrderId?: string
+  latitude: number
+  longitude: number
+  heading?: number
+  accuracyMeters?: number
+  speedKmph?: number
+}) {
+  const now = new Date()
+  const isFocusedLiveTrip =
+    Boolean(params.activeTrackingOrderId) && params.activeTrackingOrderId === params.orderId
+
+  return {
+    id: params.orderId,
+    _id: params.orderId,
+    status: "PickedUp",
+    assignmentState: "assigned_to_you",
+    isTrackingActiveForRider: true,
+    isFocusedLiveTrip,
+    updatedAt: now.toISOString(),
+    riderTracking: decorateTrackingSnapshot(
+      {
+        isActive: true,
+        isFocused: isFocusedLiveTrip,
+        lastUpdatedAt: now,
+        currentLocation: {
+          latitude: params.latitude,
+          longitude: params.longitude,
+          heading: params.heading ?? null,
+          accuracyMeters: params.accuracyMeters ?? null
+        },
+        speedKmph: params.speedKmph ?? null
+      },
+      "PickedUp"
+    )
+  }
+}
+
 export async function postRiderLocation(params: {
   riderId: string
   orderId: string
@@ -1262,7 +1888,14 @@ export async function postRiderLocation(params: {
   accuracyMeters?: number
   speedKmph?: number
 }) {
-  const rider = await RiderModel.findById(params.riderId)
+  const [rider, order] = (await Promise.all([
+    RiderModel.findById(params.riderId)
+      .select("_id fullName phone status verification activeTrackingOrderId")
+      .lean(),
+    OrderModel.findOne({ _id: params.orderId, riderId: params.riderId })
+      .select("_id riderId status")
+      .lean()
+  ])) as [Record<string, any> | null, Record<string, any> | null]
 
   if (!rider) {
     throw new AppError(StatusCodes.NOT_FOUND, "RIDER_NOT_FOUND", "Rider not found")
@@ -1270,9 +1903,7 @@ export async function postRiderLocation(params: {
 
   assertRiderAccessible(rider)
 
-  const order = await OrderModel.findById(params.orderId)
-
-  if (!order || order.riderId !== rider.id) {
+  if (!order) {
     throw new AppError(StatusCodes.NOT_FOUND, "ORDER_NOT_FOUND", "Order not found")
   }
 
@@ -1284,17 +1915,31 @@ export async function postRiderLocation(params: {
     )
   }
 
-  await updateRiderLastKnownLocation({
-    riderId: rider.id,
+  const orderId = String(order._id ?? params.orderId)
+  const riderId = String(rider._id ?? params.riderId)
+  const activeTrackingOrderId = String(rider.activeTrackingOrderId ?? "")
+
+  if (activeTrackingOrderId === orderId) {
+    enqueueRiderOrderLocationUpdate({
+      orderId,
+      riderId,
+      riderName: rider.fullName ?? "",
+      riderPhone: rider.phone ?? "",
+      latitude: params.latitude,
+      longitude: params.longitude,
+      heading: params.heading,
+      accuracyMeters: params.accuracyMeters,
+      speedKmph: params.speedKmph
+    })
+  }
+
+  return buildAcceptedRiderLocationOrder({
+    orderId,
+    activeTrackingOrderId,
     latitude: params.latitude,
     longitude: params.longitude,
     heading: params.heading,
     accuracyMeters: params.accuracyMeters,
     speedKmph: params.speedKmph
-  })
-
-  return getRiderOrderDetails({
-    riderId: rider.id,
-    orderId: order.id
   })
 }

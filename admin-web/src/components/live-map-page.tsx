@@ -243,9 +243,16 @@ function markerIcon(params: {
   size?: number
   active?: boolean
   warning?: "warning" | "critical"
+  count?: number
 }) {
   const size = params.size ?? 34
   const warningColor = params.warning === "critical" ? "#e11d48" : "#f59e0b"
+  const countLabel =
+    typeof params.count === "number" && params.count > 0
+      ? params.count > 99
+        ? "99+"
+        : String(params.count)
+      : ""
   return L.divIcon({
     className: "",
     iconSize: [size, size],
@@ -280,6 +287,27 @@ function markerIcon(params: {
               border:2px solid #ffffff;
               box-shadow:0 0 0 3px rgba(34,197,94,.18);
             "></span>`
+          : ""
+      }
+      ${
+        countLabel
+          ? `<span style="
+              position:absolute;
+              right:-7px;
+              top:-7px;
+              min-width:18px;
+              height:18px;
+              padding:0 5px;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              border-radius:999px;
+              background:#0f172a;
+              color:#ffffff;
+              border:2px solid #ffffff;
+              box-shadow:0 8px 18px rgba(15,23,42,.28);
+              font:900 10px/1 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            ">${countLabel}</span>`
           : ""
       }
       ${
@@ -321,12 +349,6 @@ const activeRiderIcon = markerIcon({
   size: 38,
   active: true,
 })
-const busyRiderIcon = markerIcon({
-  icon: "rider",
-  background: "#fb3f8a",
-  size: 38,
-  active: true,
-})
 const staleRiderIcon = markerIcon({
   icon: "rider",
   background: "#f59e0b",
@@ -339,12 +361,6 @@ const restaurantIcon = markerIcon({
   border: "#111827",
   size: 34,
 })
-const activeRestaurantIcon = markerIcon({
-  icon: "restaurant",
-  background: "#fb3f8a",
-  size: 38,
-  active: true,
-})
 const onlineRestaurantIcon = markerIcon({
   icon: "restaurant",
   background: "#22c55e",
@@ -355,20 +371,6 @@ const customerIcon = markerIcon({
   icon: "customer",
   background: "#10b981",
   size: 34,
-})
-const activeRestaurantWarningIcon = markerIcon({
-  icon: "restaurant",
-  background: "#fb3f8a",
-  size: 38,
-  active: true,
-  warning: "warning",
-})
-const activeRestaurantCriticalIcon = markerIcon({
-  icon: "restaurant",
-  background: "#fb3f8a",
-  size: 38,
-  active: true,
-  warning: "critical",
 })
 const onlineRestaurantWarningIcon = markerIcon({
   icon: "restaurant",
@@ -624,7 +626,13 @@ function deliverySearchText(delivery: AdminLiveMapDelivery) {
 }
 
 function riderSearchText(rider: AdminLiveMapRider) {
-  return [rider.fullName, rider.phone, rider.liveOrderNumber, rider.status]
+  return [
+    rider.fullName,
+    rider.phone,
+    rider.liveOrderNumber,
+    ...(rider.activeOrderNumbers ?? []),
+    rider.status,
+  ]
     .filter(Boolean)
     .join(" ")
 }
@@ -757,16 +765,18 @@ function getNearbyRiders(
       if (!Number.isFinite(candidate.distanceKm)) return false
       if (candidate.rider.status !== "active") return false
       return (
-        candidate.rider.isAvailableForAssignments || candidate.rider.liveOrderId
+        candidate.rider.isAvailableForAssignments ||
+        (candidate.rider.activeOrderCount ?? 0) > 0
       )
     })
     .sort((left, right) => {
       if (left.freshness !== right.freshness)
         return left.freshness === "live" ? -1 : 1
       if (
-        Boolean(left.rider.liveOrderId) !== Boolean(right.rider.liveOrderId)
+        (left.rider.activeOrderCount ?? 0) !==
+          (right.rider.activeOrderCount ?? 0)
       ) {
-        return left.rider.liveOrderId ? 1 : -1
+        return (left.rider.activeOrderCount ?? 0) > 0 ? 1 : -1
       }
       return left.distanceKm - right.distanceKm
     })
@@ -818,6 +828,8 @@ function getDeliveryStatusBadgeClass(status: AdminLiveMapDelivery["status"]) {
 }
 
 const liveOrderDrawerStatuses: AdminLiveMapDelivery["status"][] = [
+  "New",
+  "Accepted",
   "Preparing",
   "ReadyForPickup",
   "PickedUp",
@@ -825,6 +837,20 @@ const liveOrderDrawerStatuses: AdminLiveMapDelivery["status"][] = [
 
 function isLiveOrderDrawerDelivery(delivery: AdminLiveMapDelivery) {
   return liveOrderDrawerStatuses.includes(delivery.status)
+}
+
+function isRouteActionDelivery(delivery: AdminLiveMapDelivery) {
+  return delivery.status === "ReadyForPickup" || delivery.status === "PickedUp"
+}
+
+function getPaymentMethodLabel(method: string) {
+  return method.toLowerCase() === "bkash" ? "bKash" : "COD"
+}
+
+function getPaymentMethodBadgeClass(method: string) {
+  return method.toLowerCase() === "bkash"
+    ? "border-pink-200 bg-pink-50 text-pink-700"
+    : "border-emerald-200 bg-emerald-50 text-emerald-700"
 }
 
 function getDeliveryReasonBadgeClass(delivery: AdminLiveMapDelivery) {
@@ -900,11 +926,21 @@ function getRestaurantMarkerIcon(
 ) {
   const hasCriticalDelay = delaySeverity === "critical"
   const hasWarningDelay = delaySeverity === "warning"
+  const warning = hasCriticalDelay
+    ? "critical"
+    : hasWarningDelay
+      ? "warning"
+      : undefined
 
   if (restaurant.activeOrders > 0 || isSelected) {
-    if (hasCriticalDelay) return activeRestaurantCriticalIcon
-    if (hasWarningDelay) return activeRestaurantWarningIcon
-    return activeRestaurantIcon
+    return markerIcon({
+      icon: "restaurant",
+      background: "#fb3f8a",
+      size: isSelected ? 42 : 38,
+      active: true,
+      warning,
+      count: restaurant.activeOrders,
+    })
   }
   if (restaurant.isOnline) {
     if (hasCriticalDelay) return onlineRestaurantCriticalIcon
@@ -917,7 +953,17 @@ function getRestaurantMarkerIcon(
 }
 
 function getRiderMarkerIcon(rider: AdminLiveMapRider, isSelected: boolean) {
-  if (isSelected || rider.liveOrderId) return busyRiderIcon
+  const activeOrderCount =
+    rider.activeOrderCount ?? (rider.liveOrderId ? 1 : 0)
+  if (isSelected || activeOrderCount > 0) {
+    return markerIcon({
+      icon: "rider",
+      background: "#fb3f8a",
+      size: isSelected ? 40 : 38,
+      active: true,
+      count: activeOrderCount,
+    })
+  }
   if (riderFreshness(rider) === "stale") return staleRiderIcon
   if (rider.isAvailableForAssignments) return activeRiderIcon
   return idleRiderIcon
@@ -934,7 +980,7 @@ function isPriorityDelivery(delivery: AdminLiveMapDelivery) {
 }
 
 function isPriorityRider(rider: AdminLiveMapRider) {
-  return riderFreshness(rider) === "stale" || Boolean(rider.liveOrderId)
+  return riderFreshness(rider) === "stale" || (rider.activeOrderCount ?? 0) > 0
 }
 
 function isPriorityRestaurant(restaurant: AdminLiveMapRestaurant) {
@@ -1208,7 +1254,10 @@ export function LiveMapPage() {
     joinAdminSocketScope("live-map")
     setConnectionState(socket.connected ? "live" : "connecting")
 
-    const handleConnect = () => setConnectionState("live")
+    const handleConnect = () => {
+      setConnectionState("live")
+      requestLiveMapRefresh()
+    }
     const handleDisconnect = () => setConnectionState("offline")
     const handleConnectError = () => setConnectionState("offline")
 
@@ -1362,7 +1411,7 @@ export function LiveMapPage() {
         ) {
           return true
         }
-        return Boolean(rider.liveOrderId) || riderFreshness(rider) === "stale"
+        return (rider.activeOrderCount ?? 0) > 0 || riderFreshness(rider) === "stale"
       }),
     [camera, hasActiveSearch, isDetailedZoom, layer, riders, selectedRiderId]
   )
@@ -1442,8 +1491,11 @@ export function LiveMapPage() {
     deliveries.length + riders.length + restaurants.length
   const issues = React.useMemo<LiveMapIssue[]>(() => {
     const items: LiveMapIssue[] = []
+    const allDeliveries = snapshot?.deliveries ?? []
+    const allRiders = snapshot?.riders ?? []
+    const allRestaurants = snapshot?.restaurants ?? []
 
-    deliveries.forEach((delivery) => {
+    allDeliveries.forEach((delivery) => {
       if (delivery.isDelayed || delivery.delaySeverity !== "none") {
         items.push({
           id: `delivery-delay-${delivery.id}`,
@@ -1477,21 +1529,21 @@ export function LiveMapPage() {
       }
     })
 
-    riders.forEach((rider) => {
+    allRiders.forEach((rider) => {
       if (riderFreshness(rider) === "stale" && rider.currentLocation) {
         items.push({
           id: `rider-stale-${rider.id}`,
-          severity: rider.liveOrderId ? "critical" : "warning",
+          severity: (rider.activeOrderCount ?? 0) > 0 ? "critical" : "warning",
           title: `${rider.fullName} location is stale`,
-          description: rider.liveOrderNumber
-            ? `Assigned to ${rider.liveOrderNumber}.`
+          description: (rider.activeOrderNumbers ?? []).length
+            ? `Assigned to ${rider.activeOrderNumbers.join(", ")}.`
             : "No recent location update.",
           selected: { type: "rider", item: rider },
         })
       }
     })
 
-    restaurants.forEach((restaurant) => {
+    allRestaurants.forEach((restaurant) => {
       if (restaurant.delayedOrders > 0) {
         items.push({
           id: `restaurant-delay-${restaurant.id}`,
@@ -1509,7 +1561,7 @@ export function LiveMapPage() {
         return weight[right.severity] - weight[left.severity]
       })
       .slice(0, 10)
-  }, [deliveries, restaurants, riders])
+  }, [snapshot?.deliveries, snapshot?.restaurants, snapshot?.riders])
 
   const liveOrderDeliveries = React.useMemo(
     () =>
@@ -1539,6 +1591,12 @@ export function LiveMapPage() {
 
     return {
       total: liveOrderDeliveries.length,
+      routeOrders: liveOrderDeliveries.filter(isRouteActionDelivery).length,
+      liveTrips: liveOrderDeliveries.filter(
+        (delivery) =>
+          delivery.status === "PickedUp" &&
+          getActiveRoutePoints(delivery).length >= 2
+      ).length,
       totalValue: liveOrderDeliveries.reduce(
         (sum, delivery) => sum + delivery.total,
         0
@@ -1630,31 +1688,38 @@ export function LiveMapPage() {
   }, [deliveries, restaurants, riders])
 
   const selectedNearbyRiders = React.useMemo(() => {
+    const allRiders = snapshot?.riders ?? []
+    const allDeliveries = snapshot?.deliveries ?? []
+
     if (!selected) return []
     if (selected.type === "delivery") {
-      return getNearbyRiders(riders, getDeliveryTargetPoint(selected.item), 4)
+      return getNearbyRiders(allRiders, getDeliveryTargetPoint(selected.item), 4)
     }
     if (selected.type === "restaurant") {
-      return getNearbyRiders(riders, getPoint(selected.item), 4)
+      return getNearbyRiders(allRiders, getPoint(selected.item), 4)
     }
-    if (!selected.item.liveOrderId) return []
-    const activeDelivery = deliveries.find(
-      (delivery) => delivery.id === selected.item.liveOrderId
+    const activeDelivery = allDeliveries.find(
+      (delivery) => delivery.rider?.id === selected.item.id
     )
     return activeDelivery
-      ? getNearbyRiders(riders, getDeliveryTargetPoint(activeDelivery), 4)
+      ? getNearbyRiders(allRiders, getDeliveryTargetPoint(activeDelivery), 4)
       : []
-  }, [deliveries, riders, selected])
+  }, [selected, snapshot?.deliveries, snapshot?.riders])
 
   const fleetPulse = React.useMemo(() => {
-    const staleRiders = riders.filter(
+    const allRiders = snapshot?.riders ?? []
+    const allDeliveries = snapshot?.deliveries ?? []
+    const allRestaurants = snapshot?.restaurants ?? []
+    const staleRiders = allRiders.filter(
       (rider) => riderFreshness(rider) === "stale"
     ).length
-    const busyRiders = riders.filter((rider) => rider.liveOrderId).length
-    const readyWithoutRider = deliveries.filter(
+    const busyRiders = allRiders.filter(
+      (rider) => (rider.activeOrderCount ?? 0) > 0
+    ).length
+    const readyWithoutRider = allDeliveries.filter(
       (delivery) => delivery.status === "ReadyForPickup" && !delivery.rider
     ).length
-    const activeStores = restaurants.filter(
+    const activeStores = allRestaurants.filter(
       (restaurant) => restaurant.activeOrders > 0
     ).length
 
@@ -1664,7 +1729,7 @@ export function LiveMapPage() {
       readyWithoutRider,
       activeStores,
     }
-  }, [deliveries, restaurants, riders])
+  }, [snapshot?.deliveries, snapshot?.restaurants, snapshot?.riders])
 
   const shouldClusterMarkers = camera.zoom < 12 && !selected && !hasActiveSearch
   const selectDeliveryFromDrawer = React.useCallback(
@@ -2034,6 +2099,12 @@ export function LiveMapPage() {
               tone="bg-pink-100 text-pink-700"
             />
             <StatCard
+              label="Preparing"
+              value={liveOrderMetrics.statusCounts.Preparing ?? 0}
+              icon={Clock}
+              tone="bg-amber-100 text-amber-700"
+            />
+            <StatCard
               label="Riders"
               value={summary?.availableRiders ?? 0}
               icon={Bike}
@@ -2065,14 +2136,21 @@ export function LiveMapPage() {
         <Button
           type="button"
           size="icon-lg"
-          className="pointer-events-auto rounded-2xl bg-slate-950 text-white shadow-[0_18px_60px_rgba(15,23,42,.25)] hover:bg-slate-800"
+          variant="outline"
+          className="pointer-events-auto rounded-2xl border-white/80 bg-white text-slate-950 shadow-[0_18px_60px_rgba(15,23,42,.18)] hover:bg-slate-50"
           onClick={() => setLiveOrdersDrawerOpen(true)}
-          aria-label="Open live orders"
+          aria-label={
+            liveOrderMetrics.total > 0
+              ? `Open active orders, ${liveOrderMetrics.total} active orders`
+              : "Open active order queue"
+          }
         >
           <ListChecks className="size-4" />
-          <Badge className="absolute -top-2 -right-2 rounded-full bg-pink-500 px-1.5 text-[10px] text-white">
-            {liveOrderMetrics.total}
-          </Badge>
+          {liveOrderMetrics.total > 0 ? (
+            <Badge className="absolute -top-2 -right-2 rounded-full bg-pink-500 px-1.5 text-[10px] text-white">
+              {liveOrderMetrics.total}
+            </Badge>
+          ) : null}
         </Button>
         <Button
           type="button"
@@ -2129,9 +2207,20 @@ export function LiveMapPage() {
           </div>
           <p>Last synced {formatDateTime(snapshot?.lastUpdatedAt)}</p>
           <p className="mt-1 font-semibold text-slate-700">
-            Rendering {visibleMarkerCount}/{totalFilteredMarkerCount} markers -
+            Queue: {liveOrderMetrics.total} active,{" "}
+            {liveOrderMetrics.statusCounts.Preparing} preparing,{" "}
+            {liveOrderMetrics.statusCounts.ReadyForPickup} ready,{" "}
+            {liveOrderMetrics.statusCounts.PickedUp} on trip.
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Visible markers: {visibleMarkerCount}/{totalFilteredMarkerCount} -
             zoom {camera.zoom}
           </p>
+          {liveOrderMetrics.unassigned > 0 ? (
+            <p className="mt-1 text-[11px] font-semibold text-orange-600">
+              {liveOrderMetrics.unassigned} ready order needs rider assignment.
+            </p>
+          ) : null}
           {missingLocationSummary.total > 0 ? (
             <p className="mt-1 text-[11px] text-slate-500">
               Hidden: {missingLocationSummary.hiddenOrders} orders,{" "}
@@ -2150,10 +2239,10 @@ export function LiveMapPage() {
           <SheetHeader className="border-b px-6 py-5">
             <SheetTitle className="flex items-center gap-2">
               <ListChecks className="size-5 text-pink-500" />
-              Live orders
+              Active order queue
             </SheetTitle>
             <SheetDescription>
-              Real live order queue, store load, value, and priority signals.
+              Kitchen, pickup, trip, store load, value, and priority signals.
             </SheetDescription>
           </SheetHeader>
           <LiveOrdersDrawerContent
@@ -2464,7 +2553,15 @@ function SelectedRouteTab({
       <>
         <DetailRow
           label="Current order"
-          value={rider.liveOrderNumber || "No active trip"}
+          value={
+            (rider.activeOrderNumbers ?? []).length
+              ? rider.activeOrderNumbers.join(", ")
+              : "No active trip"
+          }
+        />
+        <DetailRow
+          label="Active load"
+          value={`${rider.activeOrderCount ?? 0} active (${rider.readyOrderCount ?? 0} ready, ${rider.pickedUpOrderCount ?? 0} trip)`}
         />
         <DetailRow label="Phone" value={rider.phone || "Not added"} />
         <DetailRow
@@ -3115,6 +3212,8 @@ function LiveOrdersDrawerContent({
   deliveries: AdminLiveMapDelivery[]
   metrics: {
     total: number
+    routeOrders: number
+    liveTrips: number
     totalValue: number
     statusCounts: Record<AdminLiveMapDelivery["status"], number>
     delayed: number
@@ -3143,7 +3242,7 @@ function LiveOrdersDrawerContent({
       <div className="space-y-4 p-4">
         <div className="grid grid-cols-2 gap-2">
           <LiveOrderMetricChip
-            label="Live orders"
+            label="Active queue"
             value={metrics.total}
             icon={ListChecks}
             tone="border-pink-200 bg-pink-50 text-pink-700"
@@ -3155,10 +3254,16 @@ function LiveOrdersDrawerContent({
             tone="border-emerald-200 bg-emerald-50 text-emerald-700"
           />
           <LiveOrderMetricChip
-            label="Unassigned"
-            value={metrics.unassigned}
+            label="Ready/trips"
+            value={metrics.routeOrders}
             icon={Send}
             tone="border-orange-200 bg-orange-50 text-orange-700"
+          />
+          <LiveOrderMetricChip
+            label="Live map trips"
+            value={metrics.liveTrips}
+            icon={Route}
+            tone="border-blue-200 bg-blue-50 text-blue-700"
           />
           <LiveOrderMetricChip
             label="Delayed"
@@ -3190,11 +3295,16 @@ function LiveOrdersDrawerContent({
                 Top priority:{" "}
                 {metrics.topOrder
                   ? `${metrics.topOrder.orderNumber} - ${getDeliveryQueueReason(metrics.topOrder)}`
-                  : "No live order"}
+                  : "No active order"}
               </p>
               <p className="mt-1">
                 Last synced {formatDateTime(lastUpdatedAt)}
               </p>
+              {metrics.unassigned > 0 ? (
+                <p className="mt-1 font-semibold text-orange-600">
+                  {metrics.unassigned} ready order needs rider assignment.
+                </p>
+              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -3209,7 +3319,7 @@ function LiveOrdersDrawerContent({
                 Restaurant load
               </CardTitle>
               <p className="text-xs text-slate-500">
-                Live orders and value by store.
+                Active queue and value by store.
               </p>
             </div>
             <Badge variant="secondary" className="rounded-full">
@@ -3219,7 +3329,7 @@ function LiveOrdersDrawerContent({
           <div className="max-h-44 overflow-y-auto p-3">
             {restaurantSummary.length === 0 ? (
               <div className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-medium text-slate-500">
-                No restaurant has a live order right now.
+                No restaurant has an active order right now.
               </div>
             ) : null}
             <div className="space-y-2">
@@ -3275,10 +3385,10 @@ function LiveOrdersDrawerContent({
             <div>
               <CardTitle className="flex items-center gap-2 text-sm font-black text-slate-950">
                 <ListChecks className="size-4 text-pink-500" />
-                Live order queue
+                Active order queue
               </CardTitle>
               <p className="text-xs text-slate-500">
-                Priority sorted from current live data.
+                Priority sorted from current operations data.
               </p>
             </div>
             <Button
@@ -3293,7 +3403,7 @@ function LiveOrdersDrawerContent({
           <div className="space-y-2 p-3">
             {deliveries.length === 0 ? (
               <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
-                No live order right now.
+                No active order right now.
               </div>
             ) : null}
             {deliveries.map((delivery, index) => {
@@ -3342,6 +3452,15 @@ function LiveOrdersDrawerContent({
                           )}
                         >
                           {getDeliveryStatusLabel(delivery.status)}
+                        </Badge>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "rounded-full",
+                            getPaymentMethodBadgeClass(delivery.paymentMethod)
+                          )}
+                        >
+                          {getPaymentMethodLabel(delivery.paymentMethod)}
                         </Badge>
                         {showReasonBadge ? (
                           <Badge
@@ -3480,8 +3599,8 @@ function NearbyRidersPanel({
               </p>
               <p className="text-xs text-slate-500">
                 {formatDistance(candidate.distanceKm)} away
-                {candidate.rider.liveOrderNumber
-                  ? ` - on ${candidate.rider.liveOrderNumber}`
+                {(candidate.rider.activeOrderNumbers ?? []).length
+                  ? ` - on ${candidate.rider.activeOrderNumbers.join(", ")}`
                   : ""}
               </p>
             </div>
@@ -3542,6 +3661,15 @@ function DeliveryDetails({
     <>
       <div className="flex flex-wrap gap-2">
         <Badge className="rounded-full bg-slate-950">{delivery.status}</Badge>
+        <Badge
+          variant="outline"
+          className={cn(
+            "rounded-full",
+            getPaymentMethodBadgeClass(delivery.paymentMethod)
+          )}
+        >
+          {getPaymentMethodLabel(delivery.paymentMethod)}
+        </Badge>
         {delivery.delaySeverity !== "none" ? (
           <Badge
             className={cn(
@@ -3565,6 +3693,12 @@ function DeliveryDetails({
         label="Rider"
         value={delivery.rider?.fullName || "Unassigned"}
       />
+      {delivery.rider ? (
+        <DetailRow
+          label="Rider load"
+          value={`${delivery.rider.activeOrderCount ?? 0} active (${delivery.rider.readyOrderCount ?? 0} ready, ${delivery.rider.pickedUpOrderCount ?? 0} trip)`}
+        />
+      ) : null}
       <DetailRow label="Next target" value={getDeliveryTargetLabel(delivery)} />
       <DetailRow label="Map state" value={getDeliveryMapState(delivery)} />
       <DetailRow
@@ -3698,7 +3832,15 @@ function RiderDetails({
       <DetailRow label="Phone" value={rider.phone || "Not added"} />
       <DetailRow
         label="Current order"
-        value={rider.liveOrderNumber || "No active trip"}
+        value={
+          (rider.activeOrderNumbers ?? []).length
+            ? rider.activeOrderNumbers.join(", ")
+            : "No active trip"
+        }
+      />
+      <DetailRow
+        label="Active load"
+        value={`${rider.activeOrderCount ?? 0} active (${rider.readyOrderCount ?? 0} ready, ${rider.pickedUpOrderCount ?? 0} trip)`}
       />
       <DetailRow
         label="Last location"
@@ -3708,7 +3850,7 @@ function RiderDetails({
         label="Speed"
         value={`${Math.round(rider.currentLocation?.speedKmph ?? 0)} km/h`}
       />
-      {rider.liveOrderId ? (
+      {(rider.activeOrderCount ?? 0) > 0 ? (
         <NearbyRidersPanel
           riders={nearbyRiders}
           title="Riders near this trip target"
@@ -3769,6 +3911,13 @@ function RestaurantDetails({
   onFocus: () => void
   onOpen: (path: string) => void
 }) {
+  const statusEntries = liveOrderDrawerStatuses
+    .map((status) => ({
+      status,
+      count: restaurant.statusCounts[status] ?? 0,
+    }))
+    .filter((entry) => entry.count > 0)
+
   return (
     <>
       <div className="flex flex-wrap gap-2">
@@ -3797,8 +3946,24 @@ function RestaurantDetails({
       />
       <DetailRow
         label="Latest order"
-        value={restaurant.latestOrder?.orderNumber || "No live order"}
+        value={restaurant.latestOrder?.orderNumber || "No active order"}
       />
+      {statusEntries.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 rounded-2xl bg-slate-50 px-4 py-3">
+          {statusEntries.map((entry) => (
+            <Badge
+              key={entry.status}
+              variant="outline"
+              className={cn(
+                "rounded-full",
+                getDeliveryStatusBadgeClass(entry.status)
+              )}
+            >
+              {getDeliveryStatusLabel(entry.status)} {entry.count}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
       <DetailRow label="Phone" value={restaurant.phone || "Not added"} />
       <DetailRow
         label="Address"

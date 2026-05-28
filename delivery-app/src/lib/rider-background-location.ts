@@ -14,13 +14,23 @@ const BACKGROUND_PENDING_LOCATION_KEY =
   "foodbela-rider-background-pending-location";
 const AUTH_STORAGE_KEY = "delivery-rider-auth";
 
+type PersistedRiderState = {
+  accessToken?: string;
+  refreshToken?: string;
+  rider?: {
+    activeTrackingOrderId?: string | null;
+  } | null;
+};
+
 type PersistedAuthState = {
   state?: {
     accessToken?: string;
+    refreshToken?: string;
     rider?: {
       activeTrackingOrderId?: string | null;
     } | null;
   };
+  version?: number;
 };
 
 type LocationTaskData = {
@@ -61,6 +71,56 @@ async function getPersistedAuth() {
   }
 }
 
+async function writePersistedAuth(nextAuth: PersistedAuthState) {
+  await secureStateStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextAuth));
+}
+
+async function refreshBackgroundSession(refreshToken: string) {
+  const response = await fetch(`${API_BASE_URL}/rider/auth/refresh`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ refreshToken }),
+  }).catch(() => null);
+
+  if (!response?.ok) {
+    return null;
+  }
+
+  const body = (await response.json().catch(() => null)) as {
+    data?: {
+      accessToken?: string;
+      refreshToken?: string;
+      rider?: PersistedRiderState["rider"];
+    };
+  } | null;
+
+  const accessToken = body?.data?.accessToken;
+  const nextRefreshToken = body?.data?.refreshToken;
+  if (!accessToken || !nextRefreshToken) {
+    return null;
+  }
+
+  const currentAuth = await getPersistedAuth();
+  const nextAuth: PersistedAuthState = {
+    ...currentAuth,
+    state: {
+      ...(currentAuth?.state ?? {}),
+      accessToken,
+      refreshToken: nextRefreshToken,
+      rider: body.data?.rider ?? currentAuth?.state?.rider ?? null,
+    },
+  };
+
+  await writePersistedAuth(nextAuth);
+
+  return {
+    accessToken,
+    refreshToken: nextRefreshToken,
+  };
+}
+
 async function persistPendingBackgroundLocation(payload: BackgroundLocationPayload) {
   await secureStateStorage.setItem(
     BACKGROUND_PENDING_LOCATION_KEY,
@@ -93,7 +153,10 @@ async function clearPendingBackgroundLocation() {
   await secureStateStorage.removeItem(BACKGROUND_PENDING_LOCATION_KEY);
 }
 
-async function sendBackgroundLocationPayload(payload: BackgroundLocationPayload) {
+async function sendBackgroundLocationPayload(
+  payload: BackgroundLocationPayload,
+  allowRefresh = true,
+) {
   const auth = await getPersistedAuth();
   const accessToken = auth?.state?.accessToken;
 
@@ -109,6 +172,13 @@ async function sendBackgroundLocationPayload(payload: BackgroundLocationPayload)
     },
     body: JSON.stringify(payload),
   }).catch(() => null);
+
+  if (response?.status === 401 && allowRefresh && auth?.state?.refreshToken) {
+    const refreshed = await refreshBackgroundSession(auth.state.refreshToken);
+    if (refreshed?.accessToken) {
+      return sendBackgroundLocationPayload(payload, false);
+    }
+  }
 
   if (!response?.ok) {
     return false;
@@ -233,4 +303,5 @@ export async function stopRiderBackgroundLocationAsync() {
   }
 
   await setRiderBackgroundTrackingOrderId(null);
+  await clearPendingBackgroundLocation();
 }

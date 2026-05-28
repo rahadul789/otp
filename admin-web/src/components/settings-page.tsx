@@ -22,15 +22,17 @@ import { toast } from "sonner"
 
 import {
   getAdminDispatchSettings,
+  listAdminRidersAssignmentOptions,
   getAdminOtpSecurity,
-  getPlatformContent,
   deleteAdminOtpBlock,
   listAdminActivityLogs,
-  listAdminRiders,
-  updatePlatformContent,
   upsertAdminOtpBlock,
-  type PlatformContent,
 } from "@/lib/admin-api"
+import {
+  getAdminPlatformSettings,
+  updateAdminPlatformSettings,
+  type AdminPlatformSettings,
+} from "@/lib/admin-settings-api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -53,6 +55,8 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 
+type PlatformContent = AdminPlatformSettings
+
 function cloneContent(content: PlatformContent) {
   return JSON.parse(JSON.stringify(content)) as PlatformContent
 }
@@ -68,6 +72,7 @@ function clampNumber(value: number, min: number, max: number) {
 
 const defaultFinanceSettings: PlatformContent["operations"]["finance"] = {
   settlementDelayDays: 3,
+  minimumPayoutAmountEnabled: true,
   minimumPayoutAmountTaka: 500,
   oneActivePayoutRequest: true,
 }
@@ -79,10 +84,51 @@ const defaultAdminNotificationSettings: PlatformContent["operations"]["adminNoti
   preparationDelays: true,
   riderDelays: true,
   deliveryDelays: true,
+  paymentExceptions: true,
   payoutRequests: true,
   support: true,
   security: true,
   campaigns: true,
+}
+
+const defaultOwnerAppSettings: PlatformContent["operations"]["ownerApp"] = {
+  webDashboardUrl: "http://localhost:5173",
+  showCustomerPhoneNumbers: true,
+}
+
+const defaultPaymentSettings: PlatformContent["operations"]["payments"] = {
+  cashOnDeliveryEnabled: true,
+  bkashEnabled: false,
+  bkashLabel: "bKash",
+  bkashSubtitle: "Continue to the official hosted payment page.",
+  bkashRefundEtaMinutes: 60,
+  bkashRefundSmsEnabled: true,
+  bkashRefundSmsTemplate:
+    "{{platformName}}: Refund completed for {{orderNumber}}. Amount {{amount}}. Ref {{refundReference}}.",
+}
+
+const defaultRateLimitSettings: PlatformContent["auth"]["rateLimits"] = {
+  signinAttemptsPerWindow: 10,
+  signupAttemptsPerWindow: 5,
+  otpSendPerPhoneWindow: 5,
+  otpSendPerIpWindow: 12,
+  otpVerifyAttemptsPerWindow: 8,
+  passwordRecoveryPerWindow: 5,
+  refreshPerWindow: 30,
+  paymentInitiatePerWindow: 8,
+  orderPlacePerWindow: 12,
+  orderActionPerWindow: 10,
+  cartQuotePerWindow: 300,
+  supportWritePerWindow: 20,
+  analyticsEventsPerWindow: 240,
+  riderLocationPerWindow: 900,
+  adminWritePerWindow: 240,
+  ownerWritePerWindow: 240,
+  otpPhoneHourlySendLimit: 5,
+  otpPhoneDailySendLimit: 15,
+  otpIpDailySendLimit: 60,
+  otpFailedVerifyLimit: 5,
+  otpVerifyLockMinutes: 15,
 }
 
 function ensureFinanceSettings(content: PlatformContent) {
@@ -101,6 +147,30 @@ function ensureAdminNotificationSettings(content: PlatformContent) {
   return content.operations.adminNotifications
 }
 
+function ensureOwnerAppSettings(content: PlatformContent) {
+  content.operations.ownerApp = {
+    ...defaultOwnerAppSettings,
+    ...(content.operations.ownerApp ?? {}),
+  }
+  return content.operations.ownerApp
+}
+
+function ensurePaymentSettings(content: PlatformContent) {
+  content.operations.payments = {
+    ...defaultPaymentSettings,
+    ...(content.operations.payments ?? {}),
+  }
+  return content.operations.payments
+}
+
+function ensureRateLimitSettings(content: PlatformContent) {
+  content.auth.rateLimits = {
+    ...defaultRateLimitSettings,
+    ...(content.auth.rateLimits ?? {}),
+  }
+  return content.auth.rateLimits
+}
+
 function renderOtpTemplatePreview(
   template: string,
   platformName: string,
@@ -112,6 +182,17 @@ function renderOtpTemplatePreview(
     .replaceAll("{{platformName}}", platformName || "Foodbela")
     .replaceAll("{{expiryMinutes}}", String(expiryMinutes))
     .replaceAll("{{expirySeconds}}", String(expiresInSeconds))
+}
+
+function renderRefundSmsTemplatePreview(template: string, platformName: string) {
+  return template
+    .replaceAll("{{platformName}}", platformName || "Foodbela")
+    .replaceAll("{{orderNumber}}", "FB-1042")
+    .replaceAll("{{amount}}", "Tk 260")
+    .replaceAll("{{refundReference}}", "RF-82910")
+    .replaceAll("{{transactionId}}", "TRX123456")
+    .replaceAll("{{customerName}}", "Customer")
+    .replaceAll("{{customerPhone}}", "01700000000")
 }
 
 function renderReferralTemplatePreview(
@@ -151,7 +232,7 @@ function formatDateTime(value?: string | null) {
 }
 
 const recommendedOrderAutomation = {
-  autoCancelUnacceptedOrdersEnabled: false,
+  autoCancelUnacceptedOrdersEnabled: true,
   autoCancelAfterMinutes: 12,
   autoCancelNotifyBeforeMinutes: 3,
   prepStartGraceMinutes: 3,
@@ -162,6 +243,8 @@ const recommendedOrderAutomation = {
   deliveryWatchAfterPickupMinutes: 20,
   deliveryLateAfterPickupMinutes: 25,
   deliveryCriticalAfterPickupMinutes: 30,
+  riderEtaSpeedKmph: 24,
+  riderEtaRouteFactor: 1.1,
 }
 
 const operationalThresholdFields = [
@@ -179,6 +262,8 @@ const operationalThresholdFields = [
   ["deliveryWatchAfterPickupMinutes", "Delivery watch after pickup", "minutes after pickup", 1, 240],
   ["deliveryLateAfterPickupMinutes", "Delivery late after pickup", "minutes after pickup", 1, 240],
   ["deliveryCriticalAfterPickupMinutes", "Delivery critical after pickup", "minutes after pickup", 1, 240],
+  ["riderEtaSpeedKmph", "Rider ETA cycle speed", "km/h", 6, 45],
+  ["riderEtaRouteFactor", "Rider ETA route multiplier", "x direct distance", 1, 2],
   ["retryCooldownMinutes", "Dispatch retry cooldown", "minutes", 1, 60],
   ["surgeReadyOrderThreshold", "Surge ready-order threshold", "orders", 1, 100],
   ["surgeUnassignedOrderThreshold", "Surge unassigned threshold", "orders", 1, 100],
@@ -233,6 +318,13 @@ const adminNotificationRules: Array<{
     badge: "Delivery",
   },
   {
+    key: "paymentExceptions",
+    title: "Payment exception alerts",
+    description:
+      "bKash paid-without-order, paid cancelled orders that need refund review, and gateway reconciliation failures.",
+    badge: "Payments",
+  },
+  {
     key: "payoutRequests",
     title: "Payout request alerts",
     description:
@@ -259,6 +351,190 @@ const adminNotificationRules: Array<{
     description:
       "Admin-created campaign and scheduled notification history in the admin inbox.",
     badge: "Campaign",
+  },
+]
+
+const rateLimitFields: Array<{
+  key: keyof PlatformContent["auth"]["rateLimits"]
+  title: string
+  description: string
+  windowLabel: string
+  min: number
+  max: number
+  step?: number
+}> = [
+  {
+    key: "signinAttemptsPerWindow",
+    title: "Sign-in attempts",
+    description: "Per IP plus phone/email identity.",
+    windowLabel: "15 minutes",
+    min: 2,
+    max: 100,
+  },
+  {
+    key: "signupAttemptsPerWindow",
+    title: "Owner sign-up attempts",
+    description: "Per IP plus phone/email identity.",
+    windowLabel: "30 minutes",
+    min: 1,
+    max: 50,
+  },
+  {
+    key: "otpSendPerPhoneWindow",
+    title: "OTP sends per phone",
+    description: "Express limiter before OTP abuse DB guard.",
+    windowLabel: "10 minutes",
+    min: 1,
+    max: 30,
+  },
+  {
+    key: "otpSendPerIpWindow",
+    title: "OTP sends per IP",
+    description: "Stops many OTP requests from one network/device.",
+    windowLabel: "10 minutes",
+    min: 3,
+    max: 100,
+  },
+  {
+    key: "otpVerifyAttemptsPerWindow",
+    title: "OTP verify attempts",
+    description: "Per verification session or phone.",
+    windowLabel: "10 minutes",
+    min: 3,
+    max: 30,
+  },
+  {
+    key: "passwordRecoveryPerWindow",
+    title: "Password recovery",
+    description: "Forgot/reset password request protection.",
+    windowLabel: "15 minutes",
+    min: 1,
+    max: 30,
+  },
+  {
+    key: "refreshPerWindow",
+    title: "Auth refresh",
+    description: "Protects token refresh loops.",
+    windowLabel: "15 minutes",
+    min: 10,
+    max: 300,
+  },
+  {
+    key: "paymentInitiatePerWindow",
+    title: "Payment initiate",
+    description: "Customer bKash/payment creation attempts.",
+    windowLabel: "15 minutes",
+    min: 2,
+    max: 60,
+  },
+  {
+    key: "orderPlacePerWindow",
+    title: "Order placement",
+    description: "Customer order creation attempts.",
+    windowLabel: "15 minutes",
+    min: 2,
+    max: 100,
+  },
+  {
+    key: "orderActionPerWindow",
+    title: "Order cancel/review",
+    description: "Customer order action mutation attempts.",
+    windowLabel: "15 minutes",
+    min: 2,
+    max: 100,
+  },
+  {
+    key: "cartQuotePerWindow",
+    title: "Cart quote",
+    description: "Cart pricing/quote recalculation requests.",
+    windowLabel: "15 minutes",
+    min: 60,
+    max: 1000,
+    step: 10,
+  },
+  {
+    key: "supportWritePerWindow",
+    title: "Support writes",
+    description: "Customer support case and message creation.",
+    windowLabel: "15 minutes",
+    min: 5,
+    max: 200,
+  },
+  {
+    key: "analyticsEventsPerWindow",
+    title: "Analytics events",
+    description: "Customer app lightweight event ingestion.",
+    windowLabel: "15 minutes",
+    min: 60,
+    max: 2000,
+    step: 10,
+  },
+  {
+    key: "riderLocationPerWindow",
+    title: "Rider location updates",
+    description: "Per rider live location heartbeat/tracking.",
+    windowLabel: "15 minutes",
+    min: 120,
+    max: 3000,
+    step: 10,
+  },
+  {
+    key: "adminWritePerWindow",
+    title: "Admin write endpoints",
+    description: "Admin POST/PATCH/PUT/DELETE across protected modules.",
+    windowLabel: "15 minutes",
+    min: 60,
+    max: 1000,
+    step: 10,
+  },
+  {
+    key: "ownerWritePerWindow",
+    title: "Owner write endpoints",
+    description: "Owner app/web POST/PATCH/PUT/DELETE across protected modules.",
+    windowLabel: "15 minutes",
+    min: 60,
+    max: 1000,
+    step: 10,
+  },
+  {
+    key: "otpPhoneHourlySendLimit",
+    title: "OTP phone hourly DB guard",
+    description: "Hard OTP abuse guard counted from security events.",
+    windowLabel: "1 hour",
+    min: 1,
+    max: 60,
+  },
+  {
+    key: "otpPhoneDailySendLimit",
+    title: "OTP phone daily DB guard",
+    description: "Maximum sent OTPs to one phone per day.",
+    windowLabel: "24 hours",
+    min: 1,
+    max: 200,
+  },
+  {
+    key: "otpIpDailySendLimit",
+    title: "OTP IP daily DB guard",
+    description: "Maximum sent OTPs from one IP per day.",
+    windowLabel: "24 hours",
+    min: 5,
+    max: 1000,
+  },
+  {
+    key: "otpFailedVerifyLimit",
+    title: "Wrong OTP lock threshold",
+    description: "Session locks after this many wrong OTP attempts.",
+    windowLabel: "per OTP session",
+    min: 3,
+    max: 20,
+  },
+  {
+    key: "otpVerifyLockMinutes",
+    title: "Wrong OTP lock duration",
+    description: "How long a locked OTP session stays blocked.",
+    windowLabel: "minutes",
+    min: 5,
+    max: 1440,
   },
 ]
 
@@ -356,34 +632,39 @@ function SettingRow({
 export function SettingsPage() {
   const queryClient = useQueryClient()
   const platformContentQuery = useQuery({
-    queryKey: ["admin-platform-content"],
-    queryFn: getPlatformContent,
+    queryKey: ["admin-platform-settings"],
+    queryFn: getAdminPlatformSettings,
   })
+  const [activeTab, setActiveTab] = React.useState<
+    "operations" | "notifications" | "payments" | "referrals" | "general" | "security" | "support"
+  >("operations")
   const dispatchQuery = useQuery({
     queryKey: ["admin-dispatch-settings"],
     queryFn: getAdminDispatchSettings,
+    enabled: activeTab === "operations",
   })
   const ridersQuery = useQuery({
-    queryKey: ["admin-riders", "settings-primary"],
-    queryFn: () =>
-      listAdminRiders({
-        status: "active",
-        sortBy: "mostActive",
-        pageSize: 50,
-      }),
+    queryKey: ["admin-riders-assignment-options", "settings-primary"],
+    queryFn: listAdminRidersAssignmentOptions,
+    enabled: activeTab === "operations",
   })
   const activityLogsQuery = useQuery({
     queryKey: ["admin-activity-logs", "settings"],
-    queryFn: () => listAdminActivityLogs({ pageSize: 8 }),
+    queryFn: () => listAdminActivityLogs({ pageSize: 8, includeTotal: false }),
+    enabled: activeTab === "operations",
   })
   const otpSecurityQuery = useQuery({
     queryKey: ["admin-otp-security", "settings"],
     queryFn: () => getAdminOtpSecurity({ hours: 24, pageSize: 10 }),
     staleTime: 30_000,
+    enabled: activeTab === "security",
   })
+  const settingsLoadError = platformContentQuery.error instanceof Error
+    ? platformContentQuery.error
+    : null
 
   const [draft, setDraft] = React.useState<PlatformContent | null>(null)
-  const [savedSnapshot, setSavedSnapshot] = React.useState("")
+  const [isDirty, setIsDirty] = React.useState(false)
   const [otpBlockTargetType, setOtpBlockTargetType] = React.useState<"phone" | "ip" | "device">("phone")
   const [otpBlockTargetValue, setOtpBlockTargetValue] = React.useState("")
   const [otpBlockDuration, setOtpBlockDuration] = React.useState("60")
@@ -392,26 +673,32 @@ export function SettingsPage() {
   const [showThresholdHelp, setShowThresholdHelp] = React.useState(false)
 
   React.useEffect(() => {
-    const content = platformContentQuery.data?.content
+    const content = platformContentQuery.data?.settings
     if (!content) return
     const cloned = cloneContent(content)
+    ensurePaymentSettings(cloned)
+    ensureFinanceSettings(cloned)
     ensureAdminNotificationSettings(cloned)
+    ensureRateLimitSettings(cloned)
     setDraft(cloned)
-    setSavedSnapshot(JSON.stringify(cloned))
-  }, [platformContentQuery.data?.content])
+    setIsDirty(false)
+  }, [platformContentQuery.data?.settings])
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!draft) throw new Error("Settings are still loading")
-      return updatePlatformContent(draft)
+      return updateAdminPlatformSettings(draft)
     },
     onSuccess: (result) => {
       toast.success("Platform settings updated")
-      const cloned = cloneContent(result.content)
+      const cloned = cloneContent(result.settings)
+      ensurePaymentSettings(cloned)
+      ensureFinanceSettings(cloned)
       ensureAdminNotificationSettings(cloned)
+      ensureRateLimitSettings(cloned)
       setDraft(cloned)
-      setSavedSnapshot(JSON.stringify(cloned))
-      void queryClient.invalidateQueries({ queryKey: ["admin-platform-content"] })
+      setIsDirty(false)
+      void queryClient.invalidateQueries({ queryKey: ["admin-platform-settings"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-dispatch-settings"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-dashboard-orders"] })
@@ -453,7 +740,7 @@ export function SettingsPage() {
     },
   })
 
-  const hasChanges = draft ? JSON.stringify(draft) !== savedSnapshot : false
+  const hasChanges = isDirty
   const dispatchMetrics = dispatchQuery.data?.metrics
 
   const updateDraft = (updater: (content: PlatformContent) => void) => {
@@ -463,15 +750,19 @@ export function SettingsPage() {
       updater(next)
       return next
     })
+    setIsDirty(true)
   }
 
   const resetDraft = () => {
-    const content = platformContentQuery.data?.content
+    const content = platformContentQuery.data?.settings
     if (!content) return
     const cloned = cloneContent(content)
+    ensurePaymentSettings(cloned)
+    ensureFinanceSettings(cloned)
     ensureAdminNotificationSettings(cloned)
+    ensureRateLimitSettings(cloned)
     setDraft(cloned)
-    setSavedSnapshot(JSON.stringify(cloned))
+    setIsDirty(false)
     toast.info("Unsaved settings reset")
   }
 
@@ -503,6 +794,22 @@ export function SettingsPage() {
     toast.info("Recommended auto-cancel policy applied")
   }
 
+  if (platformContentQuery.isError) {
+    return (
+      <div className="grid min-h-[360px] place-items-center rounded-lg border border-destructive/30 bg-destructive/5 p-6">
+        <div className="max-w-md space-y-3 text-center">
+          <p className="text-lg font-semibold">Settings failed to load</p>
+          <p className="text-sm text-muted-foreground">
+            {settingsLoadError?.message ?? "Please retry the request."}
+          </p>
+          <Button type="button" variant="outline" onClick={() => void platformContentQuery.refetch()}>
+            Retry
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   if (platformContentQuery.isLoading || !draft) {
     return (
       <div className="grid min-h-[360px] place-items-center rounded-lg border border-dashed">
@@ -523,7 +830,10 @@ export function SettingsPage() {
   const adminNotifications =
     draft.operations.adminNotifications ?? defaultAdminNotificationSettings
   const referrals = draft.operations.referrals
-  const ownerApp = draft.operations.ownerApp
+  const ownerApp = {
+    ...defaultOwnerAppSettings,
+    ...(draft.operations.ownerApp ?? {}),
+  }
   const referralShareLinkPreview = renderReferralTemplatePreview(
     referrals.shareLinkTemplate,
     referrals
@@ -534,12 +844,23 @@ export function SettingsPage() {
   )
   const support = draft.supportContact
   const otp = draft.auth.otp
+  const rateLimits = {
+    ...defaultRateLimitSettings,
+    ...(draft.auth.rateLimits ?? {}),
+  }
   const otpPreview = renderOtpTemplatePreview(
     otp.messageTemplate,
     draft.branding.platformName,
     otp.expiresInSeconds
   )
+  const refundSmsPreview = renderRefundSmsTemplatePreview(
+    payments.bkashRefundSmsTemplate,
+    draft.branding.platformName
+  )
   const otpTemplateValid = otp.messageTemplate.includes("{{code}}")
+  const refundSmsTemplateValid =
+    payments.bkashRefundSmsTemplate.trim().length >= 20 &&
+    payments.bkashRefundSmsTemplate.includes("{{orderNumber}}")
   const otpSecurity = otpSecurityQuery.data
   const fillOtpBlockTarget = (
     targetType: "phone" | "ip" | "device",
@@ -548,6 +869,16 @@ export function SettingsPage() {
     setOtpBlockTargetType(targetType)
     setOtpBlockTargetValue(targetValue)
     setOtpBlockReason("Suspicious OTP activity")
+  }
+  const updateRateLimit = (
+    key: keyof PlatformContent["auth"]["rateLimits"],
+    value: number,
+    min: number,
+    max: number
+  ) => {
+    updateDraft((content) => {
+      ensureRateLimitSettings(content)[key] = clampNumber(value, min, max)
+    })
   }
 
   return (
@@ -574,7 +905,12 @@ export function SettingsPage() {
           <Button
             type="button"
             onClick={() => saveMutation.mutate()}
-            disabled={!hasChanges || saveMutation.isPending || !otpTemplateValid}
+            disabled={
+              !hasChanges ||
+              saveMutation.isPending ||
+              !otpTemplateValid ||
+              !refundSmsTemplateValid
+            }
           >
             {saveMutation.isPending ? (
               <Loader2 className="size-4 animate-spin" />
@@ -642,7 +978,11 @@ export function SettingsPage() {
         </Card>
       </div>
 
-      <Tabs defaultValue="operations" className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as typeof activeTab)}
+        className="space-y-4"
+      >
         <TabsList className="grid w-full grid-cols-3 sm:grid-cols-4 lg:w-[1120px] lg:grid-cols-7">
           <TabsTrigger value="operations">Operations</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
@@ -1006,7 +1346,7 @@ export function SettingsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">No primary rider</SelectItem>
-                      {(ridersQuery.data?.items ?? []).map((rider) => (
+                      {(ridersQuery.data ?? []).map((rider) => (
                         <SelectItem key={rider.id} value={rider.id}>
                           {rider.fullName} - {rider.activeOrders} active
                         </SelectItem>
@@ -1217,6 +1557,7 @@ export function SettingsPage() {
                       type="number"
                       min={min}
                       max={max}
+                      step={key === "riderEtaRouteFactor" ? 0.05 : 1}
                       value={(dispatch[key as keyof typeof dispatch] as number) ?? min}
                       onChange={(event) =>
                         updateDraft((content) => {
@@ -1376,6 +1717,74 @@ export function SettingsPage() {
                   }
                 />
               </SettingRow>
+              <SettingRow
+                title="bKash refund message time"
+                description="Customer order details will say cancelled bKash refunds are processed within this time."
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  step={1}
+                  value={payments.bkashRefundEtaMinutes ?? 60}
+                  onChange={(event) =>
+                    updateDraft((content) => {
+                      content.operations.payments.bkashRefundEtaMinutes = clampNumber(
+                        numberFromInput(event.target.value, payments.bkashRefundEtaMinutes ?? 60),
+                        1,
+                        1440
+                      )
+                    })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                title="Refund SMS"
+                description="Send a customer phone SMS when admin marks a bKash refund completed."
+              >
+                <Switch
+                  checked={payments.bkashRefundSmsEnabled !== false}
+                  onCheckedChange={(checked) =>
+                    updateDraft((content) => {
+                      ensurePaymentSettings(content).bkashRefundSmsEnabled = checked
+                    })
+                  }
+                />
+              </SettingRow>
+              <div className="space-y-3 rounded-lg border bg-background p-3">
+                <div className="space-y-1">
+                  <Label>Refund SMS template</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Used after admin marks a bKash refund completed. Keep it short for SMS cost and readability.
+                  </p>
+                </div>
+                <Textarea
+                  rows={4}
+                  value={payments.bkashRefundSmsTemplate}
+                  onChange={(event) =>
+                    updateDraft((content) => {
+                      ensurePaymentSettings(content).bkashRefundSmsTemplate = event.target.value
+                    })
+                  }
+                />
+                <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <Badge variant="outline">{"{{platformName}}"}</Badge>
+                  <Badge variant="outline">{"{{orderNumber}}"}</Badge>
+                  <Badge variant="outline">{"{{amount}}"}</Badge>
+                  <Badge variant="outline">{"{{refundReference}}"}</Badge>
+                  <Badge variant="outline">{"{{transactionId}}"}</Badge>
+                  <Badge variant="outline">{"{{customerName}}"}</Badge>
+                  <Badge variant="outline">{"{{customerPhone}}"}</Badge>
+                </div>
+                {!refundSmsTemplateValid ? (
+                  <p className="text-xs font-medium text-destructive">
+                    Template must be at least 20 characters and include {"{{orderNumber}}"}.
+                  </p>
+                ) : null}
+                <div className="rounded-lg border bg-muted/30 p-3 text-sm leading-6">
+                  {refundSmsPreview}
+                </div>
+              </div>
             </CardContent>
           </Card>
           <Card>
@@ -1413,25 +1822,48 @@ export function SettingsPage() {
               </SettingRow>
               <SettingRow
                 title="Minimum payout request"
-                description="Owners cannot request payout below this amount. Backend enforces this rule too."
+                description="Optional minimum threshold. Disable it to allow any positive owner/admin payout amount."
               >
-                <Input
-                  type="number"
-                  min={1}
-                  max={100000}
-                  step={1}
-                  value={finance.minimumPayoutAmountTaka}
-                  onChange={(event) =>
-                    updateDraft((content) => {
-                      const financeDraft = ensureFinanceSettings(content)
-                      financeDraft.minimumPayoutAmountTaka = clampNumber(
-                        numberFromInput(event.target.value, finance.minimumPayoutAmountTaka),
-                        1,
-                        100000
-                      )
-                    })
-                  }
-                />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                    <span className="text-sm">
+                      {finance.minimumPayoutAmountEnabled === false
+                        ? "No minimum"
+                        : "Minimum enabled"}
+                    </span>
+                    <Switch
+                      checked={finance.minimumPayoutAmountEnabled !== false}
+                      onCheckedChange={(checked) =>
+                        updateDraft((content) => {
+                          const financeDraft = ensureFinanceSettings(content)
+                          financeDraft.minimumPayoutAmountEnabled = checked
+                          financeDraft.minimumPayoutAmountTaka = checked
+                            ? Math.max(1, financeDraft.minimumPayoutAmountTaka || 500)
+                            : 0
+                        })
+                      }
+                    />
+                  </div>
+                  {finance.minimumPayoutAmountEnabled !== false ? (
+                    <Input
+                      type="number"
+                      min={1}
+                      max={100000}
+                      step={1}
+                      value={finance.minimumPayoutAmountTaka}
+                      onChange={(event) =>
+                        updateDraft((content) => {
+                          const financeDraft = ensureFinanceSettings(content)
+                          financeDraft.minimumPayoutAmountTaka = clampNumber(
+                            numberFromInput(event.target.value, finance.minimumPayoutAmountTaka),
+                            1,
+                            100000
+                          )
+                        })
+                      }
+                    />
+                  ) : null}
+                </div>
               </SettingRow>
               <SettingRow
                 title="One active payout request"
@@ -1695,10 +2127,23 @@ export function SettingsPage() {
                   value={ownerApp.webDashboardUrl}
                   onChange={(event) =>
                     updateDraft((content) => {
-                      content.operations.ownerApp.webDashboardUrl = event.target.value
+                      ensureOwnerAppSettings(content).webDashboardUrl = event.target.value
                     })
                   }
                   placeholder="https://owner.foodbela.com"
+                />
+              </SettingRow>
+              <SettingRow
+                title="Show customer phone to restaurant owners"
+                description="When off, restaurant owner app and web hide customer phone in order list/details."
+              >
+                <Switch
+                  checked={ownerApp.showCustomerPhoneNumbers}
+                  onCheckedChange={(checked) =>
+                    updateDraft((content) => {
+                      ensureOwnerAppSettings(content).showCustomerPhoneNumbers = checked
+                    })
+                  }
                 />
               </SettingRow>
             </CardContent>
@@ -1706,6 +2151,69 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="security" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <ShieldCheck className="size-4" />
+                    Security & Traffic Control
+                  </CardTitle>
+                  <CardDescription>
+                    Runtime limiter values for customer, owner, rider, and admin traffic. Backend reads these from cached settings, so saved changes normally apply within 30 seconds.
+                  </CardDescription>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">Admin editable</Badge>
+                  <Badge variant="outline">Safe bounded</Badge>
+                  <Badge variant="outline">Nginx aware</Badge>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                {rateLimitFields.map((field) => (
+                  <div key={field.key} className="rounded-lg border bg-background p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">{field.title}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {field.description}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="shrink-0">
+                        {field.windowLabel}
+                      </Badge>
+                    </div>
+                    <div className="mt-3 grid gap-2">
+                      <Input
+                        type="number"
+                        min={field.min}
+                        max={field.max}
+                        step={field.step ?? 1}
+                        value={rateLimits[field.key]}
+                        onChange={(event) =>
+                          updateRateLimit(
+                            field.key,
+                            numberFromInput(event.target.value, rateLimits[field.key]),
+                            field.min,
+                            field.max
+                          )
+                        }
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        Allowed range: {field.min}-{field.max}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                Keep global RATE_LIMIT_MAX in .env for broad IP protection. Use these controls for business-specific limits. In production behind Nginx, set TRUST_PROXY_HOPS=1 so real customer IPs are used.
+              </div>
+            </CardContent>
+          </Card>
+
           <div className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
             <Card>
               <CardHeader>

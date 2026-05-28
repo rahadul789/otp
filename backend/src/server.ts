@@ -22,7 +22,7 @@ async function bootstrap() {
   const app = createApp()
   const server = http.createServer(app)
 
-  createSocketServer(server)
+  const socketServer = createSocketServer(server)
   startPlatformContentScheduler()
   startAdminNotificationScheduler()
 
@@ -45,23 +45,25 @@ async function bootstrap() {
     }, 10_000)
     forceExitTimer.unref()
 
-    server.close((error) => {
-      if (error) {
-        logger.error(error, "HTTP server close failed")
-      }
-      mongoose
-        .disconnect()
-        .then(() => {
-          clearTimeout(forceExitTimer)
-          logger.info("Backend shutdown completed")
-          process.exit(error ? 1 : 0)
-        })
-        .catch((disconnectError) => {
-          clearTimeout(forceExitTimer)
-          logger.error(disconnectError, "MongoDB disconnect failed")
-          process.exit(1)
-        })
-    })
+    socketServer
+      .close()
+      .catch((error) => {
+        logger.error(error, "Socket.IO server close failed")
+      })
+      .finally(() => {
+        mongoose
+          .disconnect()
+          .then(() => {
+            clearTimeout(forceExitTimer)
+            logger.info("Backend shutdown completed")
+            process.exit(0)
+          })
+          .catch((disconnectError) => {
+            clearTimeout(forceExitTimer)
+            logger.error(disconnectError, "MongoDB disconnect failed")
+            process.exit(1)
+          })
+      })
   }
 
   process.on("SIGTERM", shutdown)

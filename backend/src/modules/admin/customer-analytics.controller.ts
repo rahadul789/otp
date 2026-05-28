@@ -1,100 +1,147 @@
-import type { Response } from "express";
-import { z } from "zod";
+import type { Request, Response } from "express"
+import { z } from "zod"
 
-import type { AuthenticatedRequest } from "../../common/middleware/auth";
-import { sendSuccess } from "../../common/utils/api-response";
-import { asyncHandler } from "../../common/utils/async-handler";
+import type { AuthenticatedRequest } from "../../common/middleware/auth"
+import { asyncHandler } from "../../common/utils/async-handler"
+import { sendSuccess } from "../../common/utils/api-response"
 import {
-  getCustomerAnalyticsActorDetail,
-  getCustomerAnalyticsSummary,
-} from "./customer-analytics.service";
+  getAdminCustomerAnalyticsActorDetail,
+  getAdminCustomerAnalyticsCustomers,
+  getAdminCustomerAnalyticsEvents,
+  getAdminCustomerAnalyticsFunnels,
+  getAdminCustomerAnalyticsOverview,
+  getAdminCustomerAnalyticsPayments,
+} from "./customer-analytics.service"
+
+const analyticsPresetSchema = z.enum([
+  "today",
+  "yesterday",
+  "last7Days",
+  "last30Days",
+  "last90Days",
+  "thisMonth",
+  "lastMonth",
+  "lifetime",
+  "custom",
+])
 
 const analyticsQuerySchema = z.object({
-  preset: z
-    .enum([
-      "today",
-      "yesterday",
-      "last7Days",
-      "last30Days",
-      "last90Days",
-      "thisMonth",
-      "lastMonth",
-      "lifetime",
-      "custom",
-    ])
-    .optional(),
+  preset: analyticsPresetSchema.optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   limit: z.coerce.number().int().min(5).max(100).optional(),
-  detail: z.enum(["summary", "full"]).optional(),
-  section: z
-    .enum([
-      "overview",
-      "graphs",
-      "funnels",
-      "customers",
-      "abandoned",
-      "payments",
-      "events",
-      "all",
-    ])
-    .optional(),
-});
+})
 
-const analyticsActorDetailQuerySchema = analyticsQuerySchema
-  .pick({
-    preset: true,
-    from: true,
-    to: true,
-    limit: true,
-  })
-  .extend({
-    customerId: z.string().optional(),
-    anonymousId: z.string().optional(),
-  })
-  .refine((query) => query.customerId || query.anonymousId, {
-    message: "customerId or anonymousId is required",
-  });
+const analyticsEventsQuerySchema = analyticsQuerySchema.extend({
+  eventType: z.string().optional(),
+  actorType: z.enum(["all", "guest", "customer"]).optional(),
+  search: z.string().optional(),
+  customerId: z.string().optional(),
+  anonymousId: z.string().optional(),
+  sessionId: z.string().optional(),
+  path: z.string().optional(),
+  page: z.coerce.number().int().positive().optional(),
+  pageSize: z.coerce.number().int().min(5).max(100).optional(),
+})
 
-function getStringParam(value: unknown) {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return typeof value[0] === "string" ? value[0] : "";
-  return "";
+const analyticsActorQuerySchema = analyticsQuerySchema.extend({
+  customerId: z.string().optional(),
+  anonymousId: z.string().optional(),
+}).refine((query) => Boolean(query.customerId || query.anonymousId), {
+  message: "customerId or anonymousId is required",
+})
+
+function normalizeOptionalString(value: unknown) {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
-function getOptionalStringParam(value: unknown) {
-  const normalized = getStringParam(value).trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-export const getCustomerAnalyticsSummaryController = asyncHandler(
-  async (req: AuthenticatedRequest, res: Response) => {
+export const getAdminCustomerAnalyticsOverviewController = asyncHandler(
+  async (req: Request, res: Response) => {
     const query = analyticsQuerySchema.parse({
-      preset: getOptionalStringParam(req.query.preset),
-      from: getOptionalStringParam(req.query.from),
-      to: getOptionalStringParam(req.query.to),
-      limit: getOptionalStringParam(req.query.limit),
-      detail: getOptionalStringParam(req.query.detail),
-      section: getOptionalStringParam(req.query.section),
-    });
-    const data = await getCustomerAnalyticsSummary(query);
+      preset: normalizeOptionalString(req.query.preset),
+      from: normalizeOptionalString(req.query.from),
+      to: normalizeOptionalString(req.query.to),
+      limit: normalizeOptionalString(req.query.limit),
+    })
+    const data = await getAdminCustomerAnalyticsOverview(query)
+    return sendSuccess(res, { data })
+  },
+)
 
-    return sendSuccess(res, { data });
-  }
-);
+export const getAdminCustomerAnalyticsFunnelsController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = analyticsQuerySchema.parse({
+      preset: normalizeOptionalString(req.query.preset),
+      from: normalizeOptionalString(req.query.from),
+      to: normalizeOptionalString(req.query.to),
+      limit: normalizeOptionalString(req.query.limit),
+    })
+    const data = await getAdminCustomerAnalyticsFunnels(query)
+    return sendSuccess(res, { data })
+  },
+)
 
-export const getCustomerAnalyticsActorDetailController = asyncHandler(
+export const getAdminCustomerAnalyticsCustomersController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = analyticsQuerySchema.parse({
+      preset: normalizeOptionalString(req.query.preset),
+      from: normalizeOptionalString(req.query.from),
+      to: normalizeOptionalString(req.query.to),
+      limit: normalizeOptionalString(req.query.limit),
+    })
+    const data = await getAdminCustomerAnalyticsCustomers(query)
+    return sendSuccess(res, { data })
+  },
+)
+
+export const getAdminCustomerAnalyticsPaymentsController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = analyticsQuerySchema.parse({
+      preset: normalizeOptionalString(req.query.preset),
+      from: normalizeOptionalString(req.query.from),
+      to: normalizeOptionalString(req.query.to),
+      limit: normalizeOptionalString(req.query.limit),
+    })
+    const data = await getAdminCustomerAnalyticsPayments(query)
+    return sendSuccess(res, { data })
+  },
+)
+
+export const getAdminCustomerAnalyticsEventsController = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = analyticsEventsQuerySchema.parse({
+      preset: normalizeOptionalString(req.query.preset),
+      from: normalizeOptionalString(req.query.from),
+      to: normalizeOptionalString(req.query.to),
+      limit: normalizeOptionalString(req.query.limit),
+      eventType: normalizeOptionalString(req.query.eventType),
+      actorType: normalizeOptionalString(req.query.actorType),
+      search: normalizeOptionalString(req.query.search),
+      customerId: normalizeOptionalString(req.query.customerId),
+      anonymousId: normalizeOptionalString(req.query.anonymousId),
+      sessionId: normalizeOptionalString(req.query.sessionId),
+      path: normalizeOptionalString(req.query.path),
+      page: normalizeOptionalString(req.query.page),
+      pageSize: normalizeOptionalString(req.query.pageSize),
+    })
+    const data = await getAdminCustomerAnalyticsEvents(query)
+    return sendSuccess(res, { data })
+  },
+)
+
+export const getAdminCustomerAnalyticsActorDetailController = asyncHandler(
   async (req: AuthenticatedRequest, res: Response) => {
-    const query = analyticsActorDetailQuerySchema.parse({
-      preset: getOptionalStringParam(req.query.preset),
-      from: getOptionalStringParam(req.query.from),
-      to: getOptionalStringParam(req.query.to),
-      limit: getOptionalStringParam(req.query.limit),
-      customerId: getOptionalStringParam(req.query.customerId),
-      anonymousId: getOptionalStringParam(req.query.anonymousId),
-    });
-    const data = await getCustomerAnalyticsActorDetail(query);
-
-    return sendSuccess(res, { data });
-  }
-);
+    const query = analyticsActorQuerySchema.parse({
+      preset: normalizeOptionalString(req.query.preset),
+      from: normalizeOptionalString(req.query.from),
+      to: normalizeOptionalString(req.query.to),
+      limit: normalizeOptionalString(req.query.limit),
+      customerId: normalizeOptionalString(req.query.customerId),
+      anonymousId: normalizeOptionalString(req.query.anonymousId),
+    })
+    const data = await getAdminCustomerAnalyticsActorDetail(query)
+    return sendSuccess(res, { data })
+  },
+)

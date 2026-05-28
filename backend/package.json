@@ -15,6 +15,9 @@
     "test:watch": "jest --watch",
     "seed": "tsx src/scripts/seed.ts",
     "seed:owners-showcase": "tsx src/scripts/seed-owner-showcase.ts",
+    "perf:seed": "tsx scripts/perf-seed.ts",
+    "seed:showcase": "tsx scripts/reset-showcase-seed.ts --seed-only",
+    "db:reset-showcase": "tsx scripts/reset-showcase-seed.ts",
     "test:smoke": "node scripts/smoke-test.js"
   },
   "engines": {

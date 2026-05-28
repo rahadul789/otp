@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -12,7 +12,6 @@ import {
   View,
 } from "react-native";
 
-import { OwnerStatusBadge } from "@/src/components/owner-status-badge";
 import { Screen } from "@/src/components/screen";
 import { StatusPill } from "@/src/components/status-pill";
 import {
@@ -21,7 +20,8 @@ import {
   useOwnerStoreSettingsQuery,
   useUpdateOwnerRestaurantStatusMutation,
 } from "@/src/hooks/use-owner-api";
-import { formatCurrency, formatTime, getOrderPlacedAt } from "@/src/lib/format";
+import { useNow } from "@/src/hooks/use-now";
+import { formatTime, getOrderPlacedAt } from "@/src/lib/format";
 import {
   formatAutoCancelCountdown,
   getAutoCancelRemainingSeconds,
@@ -43,16 +43,15 @@ export default function TodayScreen() {
   });
   const statusMutation = useUpdateOwnerRestaurantStatusMutation();
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
-  const [now, setNow] = useState(Date.now());
+  const now = useNow();
   const store = storeQuery.data;
   const dashboard = dashboardQuery.data;
   const liveOrders = liveOrdersQuery.data?.items ?? [];
   const isOnline = store?.runtime?.isOnline ?? dashboard?.restaurant.isOnline ?? false;
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const savedPrepMinutes =
+    typeof store?.preparationTimeMinutes === "number"
+      ? store.preparationTimeMinutes
+      : null;
 
   async function handleToggleOnline() {
     try {
@@ -87,14 +86,6 @@ export default function TodayScreen() {
           />
         }
       >
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.kicker}>Owner operations</Text>
-            <Text style={styles.title}>Today</Text>
-          </View>
-          <OwnerStatusBadge isOnline={isOnline} />
-        </View>
-
         <View style={styles.restaurantCard}>
           <View style={styles.restaurantTop}>
             <View style={styles.restaurantNameWrap}>
@@ -119,29 +110,22 @@ export default function TodayScreen() {
               />
             </View>
           </View>
-          <Text style={styles.restaurantMeta}>
-            {store?.runtime?.currentOperationalStatus ??
-              dashboard?.restaurant.currentOperationalStatus ??
-              "Operational status will appear here."}
-          </Text>
-        </View>
-
-        <View style={styles.metricGrid}>
-          <MetricCard
-            label="Orders"
-            value={`${dashboard?.metrics.totalOrders ?? 0}`}
-            icon="receipt-outline"
-          />
-          <MetricCard
-            label="Sales"
-            value={formatCurrency(dashboard?.metrics.totalRevenue)}
-            icon="cash-outline"
-          />
-          <MetricCard
-            label="Pending"
-            value={`${dashboard?.metrics.pendingOrders ?? liveOrders.length}`}
-            icon="time-outline"
-          />
+          <View style={styles.prepSummaryRow}>
+            <View style={styles.prepSummaryCopy}>
+              <Ionicons name="restaurant-outline" size={15} color={palette.primary} />
+              <Text style={styles.prepSummaryText}>
+                Prep time: {savedPrepMinutes ? `${savedPrepMinutes} min` : "Not set"}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              hitSlop={8}
+              style={styles.prepEditButton}
+              onPress={() => router.push("/account-preparation-time" as never)}
+            >
+              <Ionicons name="create-outline" size={16} color={palette.foreground} />
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.sectionHeader}>
@@ -264,48 +248,10 @@ export default function TodayScreen() {
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}) {
-  return (
-    <View style={styles.metricCard}>
-      <Ionicons name={icon} size={18} color={palette.primary} />
-      <Text numberOfLines={1} style={styles.metricValue}>
-        {value}
-      </Text>
-      <Text style={styles.metricLabel}>{label}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   content: {
     padding: 18,
     gap: 16,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  kicker: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "900",
-    color: palette.primary,
-    textTransform: "uppercase",
-  },
-  title: {
-    fontSize: 31,
-    lineHeight: 38,
-    fontWeight: "900",
-    color: palette.foreground,
   },
   restaurantCard: {
     borderRadius: 22,
@@ -334,11 +280,37 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     color: palette.foreground,
   },
-  restaurantMeta: {
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "600",
-    color: palette.mutedForeground,
+  prepSummaryRow: {
+    minHeight: 38,
+    borderRadius: 14,
+    backgroundColor: palette.primarySoft,
+    paddingLeft: 11,
+    paddingRight: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  prepSummaryCopy: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  prepSummaryText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  prepEditButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 11,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
   },
   switchWrap: {
     minHeight: 44,
@@ -348,30 +320,102 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 6,
   },
-  metricGrid: {
+  prepCard: {
+    borderRadius: 22,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: 15,
+    gap: 13,
+  },
+  prepHeader: {
     flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  prepTitleRow: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
     gap: 10,
   },
-  metricCard: {
-    flex: 1,
-    minHeight: 94,
-    borderRadius: 18,
-    backgroundColor: palette.surface,
-    padding: 13,
-    justifyContent: "center",
-    gap: 5,
-  },
-  metricValue: {
-    fontSize: 18,
-    lineHeight: 24,
+  prepTitle: {
+    fontSize: 15,
+    lineHeight: 20,
     fontWeight: "900",
     color: palette.foreground,
   },
-  metricLabel: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: "800",
+  prepSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
     color: palette.mutedForeground,
+  },
+  checkboxButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.primarySoft,
+  },
+  prepInputRow: {
+    minHeight: 54,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surfaceMuted,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    gap: 8,
+  },
+  prepInputRowDisabled: {
+    opacity: 0.55,
+  },
+  prepStepButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  prepInput: {
+    flex: 1,
+    minHeight: 48,
+    textAlign: "center",
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "900",
+    color: palette.foreground,
+    paddingVertical: 0,
+  },
+  prepUnit: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "900",
+    color: palette.mutedForeground,
+  },
+  prepSaveButton: {
+    minHeight: 48,
+    borderRadius: 15,
+    backgroundColor: palette.foreground,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  prepSaveButtonDisabled: {
+    opacity: 0.6,
+  },
+  prepSaveText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "900",
+    color: "#FFFFFF",
   },
   sectionHeader: {
     flexDirection: "row",

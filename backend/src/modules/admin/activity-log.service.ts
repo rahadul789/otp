@@ -27,6 +27,7 @@ export async function listAdminActivityLogs(params?: {
   entityId?: string;
   page?: number;
   pageSize?: number;
+  includeTotal?: boolean;
 }) {
   const query: Record<string, unknown> = {};
   if (params?.entityType) query.entityType = params.entityType;
@@ -34,15 +35,14 @@ export async function listAdminActivityLogs(params?: {
 
   const page = Math.max(1, params?.page ?? 1);
   const pageSize = Math.min(100, Math.max(1, params?.pageSize ?? 20));
+  const includeTotal = params?.includeTotal !== false;
 
-  const [items, total] = await Promise.all([
-    AdminActivityLogModel.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
-      .lean(),
-    AdminActivityLogModel.countDocuments(query),
-  ]);
+  const items = await AdminActivityLogModel.find(query)
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * pageSize)
+    .limit(pageSize)
+    .lean();
+  const total = includeTotal ? await AdminActivityLogModel.countDocuments(query) : items.length;
 
   return {
     items: items.map((item) => ({

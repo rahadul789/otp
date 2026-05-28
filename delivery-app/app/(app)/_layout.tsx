@@ -1,26 +1,31 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
 import { StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useDeliveryCopy } from "@/src/lib/copy";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 
 function TabIcon({
+  color,
   focused,
   activeName,
   inactiveName,
+  accentColor,
 }: {
+  color: string;
   focused: boolean;
   activeName: keyof typeof Ionicons.glyphMap;
   inactiveName: keyof typeof Ionicons.glyphMap;
+  accentColor: string;
 }) {
   return (
-    <View style={[styles.tabIconShell, focused ? styles.tabIconShellActive : null]}>
+    <View style={[styles.tabIconShell, focused ? { backgroundColor: accentColor } : styles.tabIconShellIdle]}>
       <Ionicons
         name={focused ? activeName : inactiveName}
-        color={focused ? palette.secondary : palette.mutedForeground}
-        size={20}
+        color={color}
+        size={22}
       />
     </View>
   );
@@ -28,6 +33,7 @@ function TabIcon({
 
 export default function AppLayout() {
   const { copy } = useDeliveryCopy();
+  const insets = useSafeAreaInsets();
   const isHydrated = useRiderAuthStore((state) => state.isHydrated);
   const rider = useRiderAuthStore((state) => state.rider);
   const accessToken = useRiderAuthStore((state) => state.accessToken);
@@ -40,41 +46,47 @@ export default function AppLayout() {
     return <Redirect href="/sign-in" />;
   }
 
+  const tabBarBottomPadding = Math.max(insets.bottom, 12);
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
+        animation: "fade",
+        sceneStyle: {
+          backgroundColor: palette.background,
+        },
         tabBarActiveTintColor: palette.secondary,
         tabBarInactiveTintColor: palette.mutedForeground,
+        tabBarShowLabel: true,
+        tabBarLabelPosition: "below-icon",
         tabBarHideOnKeyboard: true,
         tabBarStyle: {
-          position: "absolute",
-          left: 16,
-          right: 16,
-          bottom: 14,
-          height: 76,
-          paddingTop: 8,
-          paddingBottom: 10,
-          backgroundColor: palette.surface,
-          borderTopWidth: 0,
-          borderRadius: 26,
-          borderWidth: 1,
-          borderColor: palette.border,
+          height: 72 + tabBarBottomPadding,
+          paddingTop: 10,
+          paddingBottom: tabBarBottomPadding,
+          paddingHorizontal: 10,
+          backgroundColor: "rgba(255,248,243,0.98)",
+          borderTopWidth: 1,
+          borderColor: "rgba(255,122,89,0.08)",
+          borderTopLeftRadius: 30,
+          borderTopRightRadius: 30,
           shadowColor: palette.shadow,
           shadowOpacity: 1,
-          shadowRadius: 18,
-          shadowOffset: { width: 0, height: 10 },
-          elevation: 10,
+          shadowRadius: 24,
+          shadowOffset: { width: 0, height: 14 },
+          elevation: 7,
         },
         tabBarItemStyle: {
-          borderRadius: 20,
-          marginHorizontal: 3,
+          borderRadius: 24,
+          marginHorizontal: 2,
         },
         tabBarLabelStyle: {
           fontSize: 11,
-          lineHeight: 14,
-          fontWeight: "800",
-          marginTop: 2,
+          lineHeight: 15,
+          fontWeight: "700",
+          marginTop: 3,
+          marginBottom: 2,
         },
       }}
     >
@@ -82,8 +94,8 @@ export default function AppLayout() {
         name="available"
         options={{
           title: copy.tabs.available,
-          tabBarIcon: ({ focused }) => (
-            <TabIcon focused={focused} activeName="storefront" inactiveName="storefront-outline" />
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon color={color} focused={focused} activeName="storefront" inactiveName="storefront-outline" accentColor="#FFE3D5" />
           ),
         }}
       />
@@ -91,8 +103,17 @@ export default function AppLayout() {
         name="active"
         options={{
           title: copy.tabs.active,
-          tabBarIcon: ({ focused }) => (
-            <TabIcon focused={focused} activeName="flash" inactiveName="flash-outline" />
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon color={color} focused={focused} activeName="flash" inactiveName="flash-outline" accentColor="#FFD7E8" />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="map"
+        options={{
+          title: copy.tabs.map,
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon color={color} focused={focused} activeName="map" inactiveName="map-outline" accentColor="#DDE8FF" />
           ),
         }}
       />
@@ -100,8 +121,8 @@ export default function AppLayout() {
         name="history"
         options={{
           title: copy.tabs.history,
-          tabBarIcon: ({ focused }) => (
-            <TabIcon focused={focused} activeName="time" inactiveName="time-outline" />
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon color={color} focused={focused} activeName="time" inactiveName="time-outline" accentColor="#E2FFF0" />
           ),
         }}
       />
@@ -109,8 +130,8 @@ export default function AppLayout() {
         name="profile"
         options={{
           title: copy.tabs.profile,
-          tabBarIcon: ({ focused }) => (
-            <TabIcon focused={focused} activeName="person-circle" inactiveName="person-circle-outline" />
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon color={color} focused={focused} activeName="person-circle" inactiveName="person-circle-outline" accentColor="#FFF1C8" />
           ),
         }}
       />
@@ -120,15 +141,13 @@ export default function AppLayout() {
 
 const styles = StyleSheet.create({
   tabIconShell: {
-    width: 40,
-    height: 30,
+    width: 44,
+    height: 36,
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
   },
-  tabIconShellActive: {
-    backgroundColor: "#FFEAF2",
-    borderWidth: 1,
-    borderColor: "#FFCEE0",
+  tabIconShellIdle: {
+    backgroundColor: "transparent",
   },
 });

@@ -100,6 +100,7 @@ const payoutStatusSchema = z.object({
   providerTransactionId: z.string().trim().max(120).optional(),
   paymentProofUrl: z.string().trim().max(500).optional(),
   processingNote: z.string().trim().max(500).optional(),
+  notifyOwnerSms: z.boolean().optional(),
 });
 
 function getStringParam(value: unknown) {
@@ -297,6 +298,7 @@ export const patchAdminRestaurantPayoutStatus = asyncHandler(
       providerTransactionId: payload.providerTransactionId,
       paymentProofUrl: payload.paymentProofUrl,
       processingNote: payload.processingNote,
+      notifyOwnerSms: payload.notifyOwnerSms,
       adminId: getAdminId(req),
     });
 

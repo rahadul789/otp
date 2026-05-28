@@ -494,6 +494,8 @@ export function HelpCenterPage() {
     [platformContent]
   )
   const supportContact = platformContent?.supportContact
+  const supportPhone = supportContact?.phone?.trim() ?? ""
+  const supportEmail = supportContact?.email?.trim() ?? ""
 
   const reports = React.useMemo<SupportTicket[]>(
     () =>
@@ -919,7 +921,7 @@ export function HelpCenterPage() {
               <CardContent className="grid gap-3 sm:grid-cols-3">
                 {[
                   { label: "Report Issue", icon: Bug, categoryId: "technical", subject: "Need help with a technical issue" },
-                  { label: "Request Payout Help", icon: CreditCard, categoryId: "payments", subject: "Need help with payout timing" },
+                  { label: "Payout Timing Help", icon: CreditCard, categoryId: "payments", subject: "Need help with payout timing" },
                   { label: "Order Problem", icon: ShoppingBag, categoryId: "orders", subject: "Need help with an order issue" },
                 ].map((item) => {
                   const Icon = item.icon
@@ -1032,19 +1034,42 @@ export function HelpCenterPage() {
                     "Use the report drawer for dashboard-based tracking, or reach support directly by email or phone."}
                 </p>
               </div>
+              {supportPhone ? (
+                <a
+                  href={`tel:${supportPhone}`}
+                  className="flex items-center justify-between gap-4 rounded-[24px] border border-primary/20 bg-primary/[0.04] p-4 transition hover:bg-primary/[0.07]"
+                >
+                  <span className="flex items-center gap-3">
+                    <span className="flex size-11 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-sm">
+                      <Phone className="size-5" />
+                    </span>
+                    <span>
+                      <span className="block text-sm font-medium text-muted-foreground">
+                        Admin support phone
+                      </span>
+                      <span className="mt-0.5 block text-xl font-semibold tracking-tight">
+                        {supportPhone}
+                      </span>
+                    </span>
+                  </span>
+                  <Badge className="rounded-full bg-primary text-primary-foreground hover:bg-primary">
+                    Tap to call
+                  </Badge>
+                </a>
+              ) : null}
               <div className="flex flex-wrap gap-3">
                 <Button onClick={() => openReportDrawer()}>
                   <Bug className="size-4" />
                   Report Issue
                 </Button>
                 <Button variant="outline" asChild>
-                  <a href={`mailto:${supportContact?.email ?? ""}`}>
+                  <a href={`mailto:${supportEmail}`}>
                     <Mail className="size-4" />
                     Email Support
                   </a>
                 </Button>
                 <Button variant="outline" asChild>
-                  <a href={`tel:${supportContact?.phone ?? ""}`}>
+                  <a href={`tel:${supportPhone}`}>
                     <Phone className="size-4" />
                     Call Support
                   </a>

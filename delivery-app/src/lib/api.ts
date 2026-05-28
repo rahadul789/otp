@@ -1,3 +1,6 @@
+import NetInfo from "@react-native-community/netinfo";
+
+import { secureStateStorage } from "@/src/lib/secure-storage";
 import { useRiderAuthStore, type RiderProfile } from "@/src/store/auth-store";
 import { setDeliveryNetworkOnline, useNetworkStore } from "@/src/store/network-store";
 import { API_BASE_URL } from "@/src/config/api";
@@ -7,6 +10,10 @@ type ApiResponse<T> = {
   message?: string;
   data: T;
 };
+
+let refreshSessionPromise: Promise<boolean> | null = null;
+const AUTH_STORAGE_KEY = "delivery-rider-auth";
+const API_REQUEST_TIMEOUT_MS = 18_000;
 
 async function parseResponse<T>(response: Response) {
   const text = await response.text();
@@ -44,15 +51,54 @@ function isLikelyNetworkError(error: unknown) {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
   return (
+    error.name === "AbortError" ||
     error.name === "TypeError" ||
+    message.includes("aborted") ||
     message.includes("network request failed") ||
     message.includes("failed to fetch") ||
     message.includes("networkerror")
   );
 }
 
+async function hasInternetConnection() {
+  const state = await NetInfo.fetch();
+  return Boolean(state.isConnected) && state.isInternetReachable !== false;
+}
+
+async function markConnectionFailure() {
+  const hasInternet = await hasInternetConnection();
+
+  if (hasInternet) {
+    const message =
+      "Unable to reach Foodbela server. Please check the backend URL or try again.";
+    useNetworkStore.getState().markServerIssue(message);
+    return message;
+  }
+
+  const message = "You appear to be offline. Reconnect and try again.";
+  useNetworkStore.getState().markOffline(message);
+  return message;
+}
+
+async function getPersistedRefreshToken() {
+  const rawAuth = await secureStateStorage.getItem(AUTH_STORAGE_KEY);
+  if (!rawAuth) return "";
+
+  try {
+    const parsed = JSON.parse(rawAuth) as {
+      state?: {
+        refreshToken?: string;
+      };
+    };
+    return parsed.state?.refreshToken ?? "";
+  } catch {
+    return "";
+  }
+}
+
 async function refreshRiderSession() {
-  const { refreshToken } = useRiderAuthStore.getState();
+  const storeRefreshToken = useRiderAuthStore.getState().refreshToken;
+  const refreshToken = (await getPersistedRefreshToken()) || storeRefreshToken;
   if (!refreshToken) return false;
 
   let response: Response;
@@ -67,7 +113,7 @@ async function refreshRiderSession() {
     setDeliveryNetworkOnline(true);
   } catch (error) {
     if (isLikelyNetworkError(error)) {
-      setDeliveryNetworkOnline(false);
+      await markConnectionFailure();
     }
     throw error;
   }
@@ -94,14 +140,28 @@ async function refreshRiderSession() {
   return true;
 }
 
+async function refreshRiderSessionOnce() {
+  if (!refreshSessionPromise) {
+    refreshSessionPromise = refreshRiderSession().finally(() => {
+      refreshSessionPromise = null;
+    });
+  }
+
+  return refreshSessionPromise;
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit, allowRetry = true) {
   const { accessToken } = useRiderAuthStore.getState();
   const headers = new Headers(init?.headers ?? {});
+  const controller = new AbortController();
   let slowTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
     useNetworkStore
       .getState()
       .markSlow("Connection is taking longer than usual. We are still trying.");
   }, 6000);
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    controller.abort();
+  }, API_REQUEST_TIMEOUT_MS);
 
   if (!headers.has("Content-Type") && init?.body) {
     headers.set("Content-Type", "application/json");
@@ -116,10 +176,15 @@ async function apiRequest<T>(path: string, init?: RequestInit, allowRetry = true
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
       headers,
+      signal: controller.signal,
     });
     if (slowTimer) {
       clearTimeout(slowTimer);
       slowTimer = null;
+    }
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
     }
     setDeliveryNetworkOnline(true);
   } catch (error) {
@@ -127,16 +192,19 @@ async function apiRequest<T>(path: string, init?: RequestInit, allowRetry = true
       clearTimeout(slowTimer);
       slowTimer = null;
     }
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
     if (isLikelyNetworkError(error)) {
-      const message = "You appear to be offline. Reconnect and try again.";
-      useNetworkStore.getState().markOffline(message);
+      const message = await markConnectionFailure();
       throw new Error(message);
     }
     throw error;
   }
 
   if (response.status === 401 && allowRetry && !path.includes("/rider/auth/refresh")) {
-    const refreshed = await refreshRiderSession();
+    const refreshed = await refreshRiderSessionOnce();
     if (refreshed) {
       return apiRequest<T>(path, init, false);
     }

@@ -4,7 +4,6 @@ const staticCustomerRoutes = new Set([
   "/(tabs)/cart",
   "/(tabs)/orders",
   "/(tabs)/profile",
-  "/account-request",
   "/checkout",
   "/favorite-restaurants",
   "/location-picker",

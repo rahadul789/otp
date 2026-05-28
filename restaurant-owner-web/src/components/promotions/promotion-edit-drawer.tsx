@@ -63,7 +63,7 @@ function getLocalDateTimeValue(date = new Date()) {
 
 function getOwnerCostMessage(form: VoucherFormState) {
   if (form.type === "free-delivery") {
-    return "Foodbela will remove the delivery fee for the customer. That waived delivery amount is treated as your voucher cost when the order uses this offer."
+    return "Free-delivery owner offers are no longer available. Use flat or percentage discounts for owner-funded promotions."
   }
 
   if (form.type === "percentage") {
@@ -112,7 +112,7 @@ export function PromotionEditDrawer({
   existingCodes: string[]
   categories: { id: string; name: string }[]
   items: { id: string; name: string }[]
-  onSubmitVoucher: (payload: VoucherSubmitPayload) => void
+  onSubmitVoucher: (payload: VoucherSubmitPayload) => Promise<boolean | void> | boolean | void
   isSubmitting?: boolean
 }) {
   const [form, setForm] = React.useState<VoucherFormState | null>(null)
@@ -214,13 +214,13 @@ export function PromotionEditDrawer({
 
     if (!currentForm.startsAt) {
       nextErrors.startsAt = "Start date is required."
-    } else if (new Date(currentForm.startsAt).getTime() < nowTime) {
+    } else if (!voucher && new Date(currentForm.startsAt).getTime() < nowTime) {
       nextErrors.startsAt = "Start date cannot be in the past."
     }
 
     if (!currentForm.endsAt) {
       nextErrors.endsAt = "End date is required."
-    } else if (new Date(currentForm.endsAt).getTime() < nowTime) {
+    } else if (!voucher && new Date(currentForm.endsAt).getTime() < nowTime) {
       nextErrors.endsAt = "End date cannot be in the past."
     }
 
@@ -247,24 +247,20 @@ export function PromotionEditDrawer({
       nextErrors.itemIds = "Select at least one item."
     }
 
-    if (
-      currentForm.type === "free-delivery" &&
-      currentForm.discountValue.trim()
-    ) {
-      nextErrors.discountValue =
-        "Free delivery uses the delivery fee automatically. Leave this empty."
+    if (currentForm.type === "free-delivery") {
+      nextErrors.type = "Owner free-delivery offers are disabled."
     }
 
     setErrors(nextErrors)
     return Object.keys(nextErrors).length === 0
   }
 
-  function handleSubmit(event: React.FormEvent) {
+  async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     if (!form) return
     if (!validate(form)) return
 
-    onSubmitVoucher({
+    const didSave = await onSubmitVoucher({
       name: form.name.trim(),
       code: form.mode === "coupon" ? form.code.trim().toUpperCase() : "",
       mode: form.mode,
@@ -284,7 +280,9 @@ export function PromotionEditDrawer({
       endsAt: new Date(form.endsAt).toISOString(),
     })
 
-    onOpenChange(false)
+    if (didSave !== false) {
+      onOpenChange(false)
+    }
   }
 
   return (
@@ -384,11 +382,16 @@ export function PromotionEditDrawer({
                       <SelectItem value="percentage">
                         Percentage Discount
                       </SelectItem>
-                      <SelectItem value="free-delivery">
-                        Free Delivery
-                      </SelectItem>
+                      {form.type === "free-delivery" ? (
+                        <SelectItem value="free-delivery" disabled>
+                          Free Delivery unavailable
+                        </SelectItem>
+                      ) : null}
                     </SelectContent>
                   </Select>
+                  {errors.type ? (
+                    <p className="text-sm text-destructive">{errors.type}</p>
+                  ) : null}
                 </div>
                 {!isDiscountValueHidden(form.type) ? (
                   <div className="space-y-2">
@@ -518,7 +521,7 @@ export function PromotionEditDrawer({
                   <Input
                     type="datetime-local"
                     value={form.startsAt}
-                    min={nowMin}
+                    min={voucher ? undefined : nowMin}
                     onChange={(event) =>
                       updateForm("startsAt", event.target.value)
                     }
@@ -534,7 +537,7 @@ export function PromotionEditDrawer({
                   <Input
                     type="datetime-local"
                     value={form.endsAt}
-                    min={form.startsAt || nowMin}
+                    min={voucher ? form.startsAt || undefined : form.startsAt || nowMin}
                     onChange={(event) =>
                       updateForm("endsAt", event.target.value)
                     }
@@ -633,7 +636,7 @@ export function PromotionEditDrawer({
                   </Badge>
                   <Badge variant="outline">
                     {form.type === "free-delivery"
-                      ? "Delivery fee becomes 0"
+                      ? "Unavailable"
                       : formatVoucherDiscount({
                           type: form.type,
                           discountValue: form.discountValue

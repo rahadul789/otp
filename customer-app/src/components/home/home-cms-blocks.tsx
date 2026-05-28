@@ -367,10 +367,21 @@ export function HowToOrderGuideBlock({ cms }: { cms: CustomerHomeCms }) {
               styles.guideTitle,
               { color: guide.textColor || "#24406F" },
             ]}
-            numberOfLines={2}
+            numberOfLines={1}
           >
             {guide.title || "How to order on Foodbela"}
           </Text>
+          {guide.subtitle?.trim() ? (
+            <Text
+              style={[
+                styles.guideSubtitle,
+                { color: guide.textColor || "#24406F" },
+              ]}
+              numberOfLines={1}
+            >
+              {guide.subtitle}
+            </Text>
+          ) : null}
         </View>
         {canOpenVideo ? (
           <View
@@ -379,6 +390,7 @@ export function HowToOrderGuideBlock({ cms }: { cms: CustomerHomeCms }) {
               { backgroundColor: guide.accentColor || "#5D8BFF" },
             ]}
           >
+            <Ionicons name="play" size={12} color="#fff" />
             <Text style={styles.guideButtonText}>
               {guide.ctaLabel || "Watch"}
             </Text>
@@ -493,7 +505,7 @@ const styles = StyleSheet.create({
   cmsImageOnly: {
     width: "100%",
     height: 112,
-    borderRadius: 0,
+    borderRadius: 16,
     backgroundColor: "#FFFFFF80",
   },
   cmsCarouselOnly: {
@@ -508,8 +520,8 @@ const styles = StyleSheet.create({
   },
   cmsCarouselOnlyImage: {
     width: "100%",
-    height: 142,
-    borderRadius: 22,
+    height: 112,
+    borderRadius: 16,
     backgroundColor: "#FFF1F6",
   },
   cmsCarouselDots: {
@@ -593,8 +605,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    padding: 14,
-    borderRadius: 22,
+    padding: 15,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.72)",
+    shadowColor: "#111827",
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
   },
   guideIcon: {
     width: 42,
@@ -609,8 +628,8 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   guideTitle: {
-    fontSize: 19,
-    lineHeight: 24,
+    fontSize: 17,
+    lineHeight: 22,
     fontWeight: "900",
   },
   guideSubtitle: {
@@ -620,9 +639,19 @@ const styles = StyleSheet.create({
     opacity: 0.72,
   },
   guideButton: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
     paddingHorizontal: 12,
     paddingVertical: 9,
     borderRadius: 999,
+    shadowColor: "#111827",
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
   },
   guideButtonText: {
     fontSize: 11,

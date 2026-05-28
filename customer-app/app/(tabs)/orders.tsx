@@ -14,6 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ReorderCartSwitchModal } from "@/src/components/orders/reorder-cart-switch-modal";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { OrdersTabSkeleton } from "@/src/components/loading-skeleton";
 import { styles } from "@/src/components/orders/orders-list.styles";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import {
@@ -294,15 +295,7 @@ export default function OrdersScreen() {
 
         {!hasAnyOrders && isAnyInitialLoading ? (
           <View style={styles.inlineLoadingWrap}>
-            <View style={styles.loadingCard}>
-              <View style={styles.loadingIndicatorWrap}>
-                <ActivityIndicator size="small" color={palette.primary} />
-              </View>
-              <Text style={styles.loadingTitle}>Loading your orders</Text>
-              <Text style={styles.loadingText}>
-                Pulling your latest delivery timeline and history.
-              </Text>
-            </View>
+            <OrdersTabSkeleton />
           </View>
         ) : !hasAnyOrders ? (
           <View style={styles.inlineEmptyWrap}>

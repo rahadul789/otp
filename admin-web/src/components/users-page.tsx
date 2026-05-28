@@ -35,7 +35,6 @@ import {
   listAdminCustomerGroups,
   listAdminCustomers,
   deleteAdminRestaurantReview,
-  reviewCustomerAccountRequest,
   restoreAdminRestaurantReview,
   removeAdminCustomerGroupMember,
   updateAdminCustomerGroup,
@@ -115,13 +114,6 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 
 type CustomerStatusFilter = "all" | "active" | "suspended" | "locked"
-type CustomerRequestFilter =
-  | "all"
-  | "pending"
-  | "cancelled"
-  | "reviewed"
-  | "completed"
-  | "none"
 type CustomerSort = "newest" | "recentLogin" | "mostOrders" | "highestSpend"
 type CustomerStatus = AdminCustomerSummary["status"]
 type CustomerStatusTargetCustomer = Pick<
@@ -443,11 +435,9 @@ function CustomerDetailsSheet({
     status: CustomerStatus
   ) => void
 }) {
-  const queryClient = useQueryClient()
   const [preset, setPreset] = React.useState<CustomerOrderPreset>("last7Days")
   const [from, setFrom] = React.useState("")
   const [to, setTo] = React.useState("")
-  const [requestNote, setRequestNote] = React.useState("")
   const detailsQuery = useQuery({
     queryKey: ["admin-customer-details", customerId, preset, from, to],
     queryFn: () =>
@@ -459,27 +449,6 @@ function CustomerDetailsSheet({
     enabled: open && Boolean(customerId),
   })
   const details = detailsQuery.data
-  const accountRequestMutation = useMutation({
-    mutationFn: reviewCustomerAccountRequest,
-    onSuccess: () => {
-      toast.success("Account request reviewed.")
-      setRequestNote("")
-      void queryClient.invalidateQueries({
-        queryKey: ["admin-customer-details", customerId],
-      })
-      void queryClient.invalidateQueries({ queryKey: ["admin-customers"] })
-      void queryClient.invalidateQueries({
-        queryKey: ["admin-customer-account-requests"],
-      })
-    },
-    onError: (error) => {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Account request review failed."
-      )
-    },
-  })
 
   React.useEffect(() => {
     if (preset !== "custom") {
@@ -494,7 +463,7 @@ function CustomerDetailsSheet({
         <SheetHeader className="border-b">
           <SheetTitle>{details?.fullName ?? "Customer details"}</SheetTitle>
           <SheetDescription>
-            Profile, orders, devices, account request, and admin audit trail.
+            Profile, orders, devices, account controls, and admin audit trail.
           </SheetDescription>
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1">
@@ -529,9 +498,6 @@ function CustomerDetailsSheet({
                       >
                         {details.status}
                       </Badge>
-                      {details.accountRequest?.status === "pending" ? (
-                        <Badge variant="outline">Request pending</Badge>
-                      ) : null}
                     </div>
                     <p className="text-sm text-muted-foreground">
                       {details.phone || "No phone"} -{" "}
@@ -607,7 +573,6 @@ function CustomerDetailsSheet({
                   <TabsTrigger value="reviews">Reviews</TabsTrigger>
                   <TabsTrigger value="account">Account</TabsTrigger>
                   <TabsTrigger value="devices">Devices</TabsTrigger>
-                  <TabsTrigger value="requests">Requests</TabsTrigger>
                   <TabsTrigger value="audit">Audit</TabsTrigger>
                 </TabsList>
 
@@ -857,117 +822,6 @@ function CustomerDetailsSheet({
                           No active device tokens.
                         </div>
                       ) : null}
-                    </CardContent>
-                  </Card>
-                </TabsContent>
-
-                <TabsContent value="requests">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Account request</CardTitle>
-                      <CardDescription>
-                        Customer deactivate/delete request review.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      {details.accountRequest ? (
-                        <>
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <InfoRow
-                              label="Type"
-                              value={details.accountRequest.type ?? "N/A"}
-                            />
-                            <InfoRow
-                              label="Status"
-                              value={details.accountRequest.status ?? "N/A"}
-                            />
-                            <InfoRow
-                              label="Requested"
-                              value={formatDate(
-                                details.accountRequest.requestedAt
-                              )}
-                            />
-                            <InfoRow
-                              label="Reviewed"
-                              value={formatDate(
-                                details.accountRequest.reviewedAt
-                              )}
-                            />
-                          </div>
-                          <div className="rounded-lg border p-3 text-sm text-muted-foreground">
-                            {details.accountRequest.reason ||
-                              "No reason provided."}
-                          </div>
-                          {details.accountRequest.status === "pending" ? (
-                            <div className="space-y-3">
-                              <Label htmlFor="account-request-note">
-                                Review note
-                              </Label>
-                              <Textarea
-                                id="account-request-note"
-                                value={requestNote}
-                                onChange={(event) =>
-                                  setRequestNote(event.target.value)
-                                }
-                                placeholder="Optional message for customer"
-                              />
-                              <div className="flex flex-wrap gap-2">
-                                <Button
-                                  disabled={accountRequestMutation.isPending}
-                                  onClick={() =>
-                                    accountRequestMutation.mutate({
-                                      customerId: details.id,
-                                      decision: "approve",
-                                      reviewNote: requestNote,
-                                    })
-                                  }
-                                >
-                                  <CheckCircle2 className="size-4" />
-                                  Approve request
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  disabled={accountRequestMutation.isPending}
-                                  onClick={() =>
-                                    accountRequestMutation.mutate({
-                                      customerId: details.id,
-                                      decision: "reject",
-                                      reviewNote: requestNote,
-                                    })
-                                  }
-                                >
-                                  Reject request
-                                </Button>
-                              </div>
-                            </div>
-                          ) : null}
-                          <div className="space-y-2">
-                            {details.accountRequest.history.map(
-                              (item, index) => (
-                                <div
-                                  key={index}
-                                  className="rounded-lg border p-3"
-                                >
-                                  <div className="font-medium">
-                                    {item.action}
-                                  </div>
-                                  <p className="mt-1 text-sm text-muted-foreground">
-                                    {item.note || "No note"}
-                                  </p>
-                                  <p className="mt-2 text-xs text-muted-foreground">
-                                    {item.actorName || "Customer"} -{" "}
-                                    {formatDate(item.createdAt)}
-                                  </p>
-                                </div>
-                              )
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
-                          No account request for this customer.
-                        </div>
-                      )}
                     </CardContent>
                   </Card>
                 </TabsContent>
@@ -1421,8 +1275,6 @@ export function UsersPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = React.useState("")
   const [status, setStatus] = React.useState<CustomerStatusFilter>("all")
-  const [requestStatus, setRequestStatus] =
-    React.useState<CustomerRequestFilter>("all")
   const [customerGroupKey, setCustomerGroupKey] = React.useState("none")
   const [sortBy, setSortBy] = React.useState<CustomerSort>("newest")
   const [page, setPage] = React.useState(1)
@@ -1453,7 +1305,6 @@ export function UsersPage() {
       "admin-customers",
       debouncedSearch,
       status,
-      requestStatus,
       customerGroupKey,
       sortBy,
       page,
@@ -1462,7 +1313,6 @@ export function UsersPage() {
       listAdminCustomers({
         search: debouncedSearch,
         status,
-        requestStatus,
         customerGroupKey: customerGroupKey === "none" ? undefined : customerGroupKey,
         sortBy,
         page,
@@ -1583,7 +1433,6 @@ export function UsersPage() {
   const hasFilters =
     search.trim() !== "" ||
     status !== "all" ||
-    requestStatus !== "all" ||
     customerGroupKey !== "none" ||
     sortBy !== "newest"
   const groupMembers = groupMembersQuery.data?.items ?? []
@@ -1592,7 +1441,7 @@ export function UsersPage() {
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, status, requestStatus, customerGroupKey, sortBy])
+  }, [debouncedSearch, status, customerGroupKey, sortBy])
 
   function openCreateGroupDialog() {
     setEditingGroup(null)
@@ -1629,7 +1478,6 @@ export function UsersPage() {
       sourceFilter: {
         search: debouncedSearch,
         status,
-        requestStatus,
         customerGroupKey:
           customerGroupKey === "none" ? undefined : customerGroupKey,
         sortBy,
@@ -1649,13 +1497,13 @@ export function UsersPage() {
           </div>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">Users</h1>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            Manage customer accounts, block or unlock access, review account
-            requests, and inspect order/review activity.
+            Manage customer accounts, block or unlock access, and inspect
+            order/review activity.
           </p>
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Total users"
           value={`${summary.total ?? customersQuery.data?.total ?? 0}`}
@@ -1675,11 +1523,6 @@ export function UsersPage() {
           label="Locked"
           value={`${summary.locked ?? 0}`}
           helper="Restricted account"
-        />
-        <StatCard
-          label="Requests"
-          value={`${summary.pendingRequests ?? 0}`}
-          helper="Pending review"
         />
       </div>
 
@@ -1794,7 +1637,7 @@ export function UsersPage() {
                 Search customers and review account health from one place.
               </CardDescription>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-[minmax(260px,1fr)_150px_170px_170px_190px_auto_auto_auto]">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-[minmax(260px,1fr)_150px_170px_190px_auto_auto_auto]">
               <div className="relative sm:col-span-2 lg:col-span-2 2xl:col-span-1">
                 <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
@@ -1818,24 +1661,6 @@ export function UsersPage() {
                   <SelectItem value="active">Active</SelectItem>
                   <SelectItem value="suspended">Suspended</SelectItem>
                   <SelectItem value="locked">Locked</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={requestStatus}
-                onValueChange={(value) =>
-                  setRequestStatus(value as CustomerRequestFilter)
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All requests</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="reviewed">Reviewed</SelectItem>
-                  <SelectItem value="cancelled">Cancelled</SelectItem>
-                  <SelectItem value="none">No request</SelectItem>
                 </SelectContent>
               </Select>
               <Select
@@ -1910,7 +1735,6 @@ export function UsersPage() {
                 onClick={() => {
                   setSearch("")
                   setStatus("all")
-                  setRequestStatus("all")
                   setCustomerGroupKey("none")
                   setSortBy("newest")
                   setPage(1)
@@ -2012,16 +1836,11 @@ export function UsersPage() {
                     {columnVisibility.account ? (
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
-                          {customer.requestStatus ? (
-                            <Badge variant="outline">
-                              {customer.requestType} {customer.requestStatus}
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline">No request</Badge>
-                          )}
                           {customer.hasPushToken ? (
                             <Badge variant="outline">Push</Badge>
-                          ) : null}
+                          ) : (
+                            <Badge variant="outline">No push token</Badge>
+                          )}
                         </div>
                       </TableCell>
                     ) : null}

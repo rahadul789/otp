@@ -258,7 +258,15 @@ export const initialVouchers: Voucher[] = [
   },
 ]
 
+function getLocalDateTimeValue(date = new Date()) {
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return offsetDate.toISOString().slice(0, 16)
+}
+
 export function getInitialVoucherFormState(): VoucherFormState {
+  const startsAt = new Date()
+  const endsAt = new Date(startsAt.getTime() + 7 * 24 * 60 * 60 * 1000)
+
   return {
     name: "",
     code: "",
@@ -273,8 +281,8 @@ export function getInitialVoucherFormState(): VoucherFormState {
     applicability: "all",
     categoryIds: [],
     itemIds: [],
-    startsAt: "",
-    endsAt: "",
+    startsAt: getLocalDateTimeValue(startsAt),
+    endsAt: getLocalDateTimeValue(endsAt),
   }
 }
 

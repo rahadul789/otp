@@ -1,13 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import LottieView from "lottie-react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
-  Easing,
   Linking,
-  Modal,
   Pressable,
   ScrollView,
   Text,
@@ -19,7 +16,9 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 
+import { AppBottomSheet } from "@/src/components/app-bottom-sheet";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { CardListSkeleton, ShimmerBlock } from "@/src/components/loading-skeleton";
 import { LiveOrderMap } from "@/src/components/orders/live-order-map";
 import { styles } from "@/src/components/orders/order-tracking.styles";
 import { PreparationRuntime } from "@/src/components/orders/preparation-runtime";
@@ -83,6 +82,32 @@ function getOrderStatusTime(order: OrderTimelineSource, status: string) {
   );
 }
 
+function isBkashRefundNoticeVisible(order: {
+  status: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+}) {
+  return (
+    ["Cancelled", "Rejected"].includes(order.status) &&
+    order.paymentMethod === "Bkash" &&
+    ["paid", "refund_pending"].includes(order.paymentStatus ?? "")
+  );
+}
+
+function formatRefundEta(minutes?: number) {
+  const safeMinutes =
+    typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
+      ? Math.round(minutes)
+      : 60;
+
+  if (safeMinutes < 60) {
+    return `${safeMinutes} minute${safeMinutes === 1 ? "" : "s"}`;
+  }
+
+  const hours = Math.max(1, Math.round(safeMinutes / 60));
+  return `${hours} hour${hours === 1 ? "" : "s"}`;
+}
+
 export default function OrderTrackingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -95,7 +120,6 @@ export default function OrderTrackingScreen() {
     incomingRestaurantName: string;
     previewItemName: string;
   } | null>(null);
-  const detailsSheetProgress = useRef(new Animated.Value(0)).current;
   const orderId =
     typeof params.orderId === "string" ? params.orderId : undefined;
   const orderQuery = useCustomerOrderDetailsQuery(orderId);
@@ -142,37 +166,8 @@ export default function OrderTrackingScreen() {
     setDetailsOpen(true);
   };
   const closeDetailsSheet = () => {
-    Animated.timing(detailsSheetProgress, {
-      toValue: 0,
-      duration: 160,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) {
-        setDetailsOpen(false);
-      }
-    });
+    setDetailsOpen(false);
   };
-  const detailsBackdropOpacity = detailsSheetProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 1],
-  });
-  const detailsSheetTranslateY = detailsSheetProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [28, 0],
-  });
-
-  useEffect(() => {
-    if (!isDetailsOpen) return;
-
-    detailsSheetProgress.setValue(0);
-    Animated.timing(detailsSheetProgress, {
-      toValue: 1,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [detailsSheetProgress, isDetailsOpen]);
 
   const handleBack = () => {
     if (router.canGoBack()) {
@@ -206,14 +201,9 @@ export default function OrderTrackingScreen() {
               <Text style={styles.orderIdText}>Loading order</Text>
             </View>
           </View>
-          <View style={styles.loadingPanel}>
-            <ActivityIndicator size="small" color={palette.primary} />
-            <View style={styles.loadingCopy}>
-              <Text style={styles.loadingTitle}>Loading live tracking</Text>
-              <Text style={styles.loadingText}>
-                Pulling your latest rider and delivery updates.
-              </Text>
-            </View>
+          <View style={styles.trackingSkeletonWrap}>
+            <ShimmerBlock style={styles.trackingSkeletonMap} />
+            <CardListSkeleton count={3} cardHeight={96} />
           </View>
         </ScrollView>
       </SafeAreaView>
@@ -238,8 +228,17 @@ export default function OrderTrackingScreen() {
   const trackingState = getLiveOrderTrackingState(order);
   const remainingMinutes =
     order.riderTracking?.remainingDurationMinutes ?? null;
+  const queuedEtaMinutes = order.riderTracking?.queueEtaMinutes ?? null;
   const statusMeta = getCustomerOrderStatusMeta(order.status);
-  const canShowLiveMap = order.status === "PickedUp";
+  const isQueuedForDelivery =
+    order.status === "PickedUp" && order.riderTracking?.isFocused === false;
+  const canShowLiveMap = order.status === "PickedUp" && !isQueuedForDelivery;
+  const queuedDeliveryEtaText =
+    typeof queuedEtaMinutes === "number" && Number.isFinite(queuedEtaMinutes)
+      ? `Delivery man will arrive in ${formatDurationMinutes(
+          Math.max(queuedEtaMinutes, 1),
+        )}`
+      : "Waiting for delivery";
   const hasAssignedRider = Boolean(
     order.riderSnapshot?.name || order.riderSnapshot?.phone,
   );
@@ -269,6 +268,8 @@ export default function OrderTrackingScreen() {
     "Delivery address unavailable",
   );
   const isDeliveredOrder = order.status === "Delivered";
+  const showBkashRefundNotice = isBkashRefundNoticeVisible(order);
+  const refundEtaText = formatRefundEta(order.paymentSnapshot?.refundEtaMinutes);
   const totalItemCount = itemRows.reduce(
     (sum, item) => sum + Math.max(item.quantity ?? 0, 0),
     0,
@@ -385,6 +386,20 @@ export default function OrderTrackingScreen() {
           </View>
         ) : null}
 
+        {showBkashRefundNotice ? (
+          <View style={styles.refundNoticeCard}>
+            <View style={styles.refundNoticeIcon}>
+              <Ionicons name="wallet-outline" size={18} color={palette.secondary} />
+            </View>
+            <View style={styles.refundNoticeCopy}>
+              <Text style={styles.refundNoticeTitle}>bKash refund is in review</Text>
+              <Text style={styles.refundNoticeText}>
+                Your order was cancelled after bKash payment. We will process the refund within {refundEtaText}.
+              </Text>
+            </View>
+          </View>
+        ) : null}
+
         {!isDeliveredOrder ? (
         <View style={styles.trackingCard}>
           {canShowLiveMap ? (
@@ -414,6 +429,32 @@ export default function OrderTrackingScreen() {
                 </Text>
               </View>
             )
+          ) : isQueuedForDelivery ? (
+            <View style={styles.pickupWaitingCard}>
+              <View style={styles.pickupWaitingPill}>
+                <Ionicons
+                  name="list-outline"
+                  size={14}
+                  color={palette.primary}
+                />
+                <Text style={styles.pickupWaitingPillText}>Order Queue</Text>
+              </View>
+              <LottieView
+                autoPlay
+                loop
+                source={require("../../../assets/animations/delivery-boy.json")}
+                style={styles.pickupWaitingAnimation}
+              />
+              <Text style={styles.pickupWaitingTitle}>
+                Waiting for delivery
+              </Text>
+              <Text style={styles.pickupWaitingSubtitle}>
+                Delivery man is completing another order.
+              </Text>
+              <Text style={styles.pickupWaitingMeta}>
+                {queuedDeliveryEtaText}
+              </Text>
+            </View>
           ) : order.status === "PickedUp" ? (
             <View style={styles.pickupWaitingCard}>
               <View style={styles.pickupWaitingPill}>
@@ -888,45 +929,20 @@ export default function OrderTrackingScreen() {
         ) : null}
       </ScrollView>
 
-      <Modal
+      <AppBottomSheet
         visible={isDetailsOpen}
-        transparent
-        animationType="none"
-        onRequestClose={closeDetailsSheet}
+        onClose={closeDetailsSheet}
+        title="Order items"
+        subtitle={`${restaurantName} - ${formatShortOrderIdLabel(order.orderNumber)}`}
+        leadingIcon="receipt-outline"
+        snapPoints={[0.7, 0.92]}
+        initialSnapPoint={0.7}
+        scroll={false}
+        contentContainerStyle={styles.detailsBottomSheetContent}
       >
-        <View style={styles.modalBackdrop}>
-          <Animated.View
-            pointerEvents="none"
-            style={[styles.modalOverlay, { opacity: detailsBackdropOpacity }]}
-          />
-          <Pressable
-            style={styles.modalBackdropTouch}
-            onPress={closeDetailsSheet}
-          />
-          <Animated.View
-            style={[
-              styles.detailsSheet,
-              { transform: [{ translateY: detailsSheetTranslateY }] },
-            ]}
-          >
-            <View style={styles.detailsHandle} />
-            <View style={styles.detailsHeader}>
-              <View>
-                <Text style={styles.detailsTitle}>Order items</Text>
-                <Text style={styles.detailsSubtitle}>
-                  {restaurantName} - {formatShortOrderIdLabel(order.orderNumber)}
-                </Text>
-                <Text style={styles.detailsDateText}>
-                  Placed {formatDateMedium(order.createdAt)}
-                </Text>
-              </View>
-              <Pressable
-                style={styles.detailsCloseButton}
-                onPress={closeDetailsSheet}
-              >
-                <Ionicons name="close" size={18} color={palette.foreground} />
-              </Pressable>
-            </View>
+        <Text style={styles.detailsDateText}>
+          Placed {formatDateMedium(order.createdAt)}
+        </Text>
 
             <ScrollView
               style={styles.detailsList}
@@ -1074,9 +1090,7 @@ export default function OrderTrackingScreen() {
               </View>
 
             </ScrollView>
-          </Animated.View>
-        </View>
-      </Modal>
+      </AppBottomSheet>
       <ReorderCartSwitchModal
         visible={Boolean(reorderConflictMeta)}
         previewItemName={reorderConflictMeta?.previewItemName ?? "Delivered items"}

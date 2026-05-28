@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { Animated, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Image, Pressable, ScrollView, Text, View } from "react-native";
 import { useEffect, useMemo, useRef } from "react";
 
 import { styles } from "@/src/components/cart/cart-screen.styles";
@@ -126,6 +126,13 @@ export default function CartScreen() {
           offer.mode === "auto" && typeof offer.minimumOrderAmount === "number"
       ) ?? null,
     [restaurantDetailsQuery.data?.activeOffers]
+  );
+  const appliedAutoVoucher = useMemo(
+    () =>
+      quoteQuery.data?.appliedVouchers.find(
+        (voucher) => voucher.mode === "auto" && (voucher.discountAmount ?? 0) > 0
+      ) ?? null,
+    [quoteQuery.data?.appliedVouchers]
   );
   const offerProgress = useMemo(() => {
     if (!autoAppliedOffer || !autoAppliedOffer.minimumOrderAmount) {
@@ -484,7 +491,9 @@ export default function CartScreen() {
                     </View>
                     <Text style={styles.offerProgressSubtitle}>
                       {offerProgress.unlocked
-                        ? "This discount will apply automatically at checkout."
+                        ? appliedAutoVoucher
+                          ? `${appliedAutoVoucher.name} is applied to this cart.`
+                          : "This discount will apply automatically at checkout."
                         : `${formatCurrency(offerProgress.remaining)} more to unlock it.`}
                     </Text>
                     <View style={styles.offerTrack}>
@@ -513,7 +522,11 @@ export default function CartScreen() {
                 </View>
                 {(pricing?.discountAmount ?? 0) > 0 ? (
                   <View style={styles.summaryRow}>
-                    <Text style={[styles.summaryLabel, styles.summaryHighlight]}>Discount</Text>
+                    <Text style={[styles.summaryLabel, styles.summaryHighlight]}>
+                      {appliedAutoVoucher
+                        ? `Discount (${appliedAutoVoucher.name})`
+                        : "Discount"}
+                    </Text>
                     <Text style={[styles.summaryValue, styles.summaryHighlight]}>
                       -{formatCurrency(pricing?.discountAmount ?? 0)}
                     </Text>
@@ -558,6 +571,13 @@ export default function CartScreen() {
                     ]}
                   >
                     <View style={styles.checkoutButtonSheen} />
+                    {quoteQuery.isLoading ? (
+                      <ActivityIndicator
+                        size="small"
+                        color={palette.secondary}
+                        style={styles.checkoutButtonSpinner}
+                      />
+                    ) : null}
                     <Text style={styles.checkoutButtonText}>
                       {!customer
                         ? isServiceabilityBlocked

@@ -56,6 +56,17 @@ export type OrderLineItem = {
   addOns: OrderLineItemAddOn[]
 }
 
+export type OrderVoucherSnapshot = {
+  id?: string
+  code?: string
+  name?: string
+  type?: string
+  fundedBy?: string
+  discountAmount?: number
+  totalDiscountAmount?: number
+  ownerDiscountCost?: number
+}
+
 export type OrderCustomer = {
   name: string
   phone: string
@@ -87,6 +98,11 @@ export type Order = {
   deliveryFee: number
   discount: number
   total: number
+  restaurantSubtotal: number
+  ownerDiscountCost: number
+  platformDiscountCost: number
+  restaurantNetSales: number
+  customerPaidTotal: number
   paymentMethod: OrderPaymentMethod
   currentStatus: OrderStatus
   cancelledBy?: string
@@ -94,7 +110,24 @@ export type Order = {
   kitchenNote: string
   timestamps: OrderStatusTimestamps
   autoCancel?: OrderAutoCancelSnapshot
+  appliedVouchers: OrderVoucherSnapshot[]
   history: OrderStatusHistoryItem[]
+}
+
+export function getOwnerOrderSubtotal(order: Order) {
+  return (
+    order.restaurantSubtotal ||
+    order.subtotal ||
+    Math.max(0, getOwnerOrderCustomerPaidTotal(order) - order.deliveryFee + order.discount)
+  )
+}
+
+export function getOwnerOrderNetSales(order: Order) {
+  return order.restaurantNetSales || Math.max(0, getOwnerOrderSubtotal(order) - order.ownerDiscountCost)
+}
+
+export function getOwnerOrderCustomerPaidTotal(order: Order) {
+  return order.customerPaidTotal || Math.max(0, order.subtotal + order.deliveryFee - order.discount)
 }
 
 export type OrderOperationalTiming = {
@@ -104,6 +137,7 @@ export type OrderOperationalTiming = {
   tone: "neutral" | "warning" | "critical" | "success"
   lateByMinutes: number | null
   remainingMinutes: number | null
+  remainingSeconds?: number | null
 }
 
 export const liveOrderStatuses: OrderStatus[] = [

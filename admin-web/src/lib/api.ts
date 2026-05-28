@@ -114,6 +114,10 @@ export async function adminRequest<T>(
     }
   }
 
+  if (init?.body && !headers.has("content-type")) {
+    headers.set("content-type", "application/json")
+  }
+
   try {
     return await fetchJson<T>(`${API_BASE_URL}${path}`, {
       ...init,

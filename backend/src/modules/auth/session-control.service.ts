@@ -8,6 +8,21 @@ import { AdminRefreshTokenSessionModel } from "../admin/admin.model"
 import { CustomerRefreshTokenSessionModel } from "../customer/customer.model"
 
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000
+const SESSION_ACTIVE_CACHE_TTL_MS = 5 * 1000
+const accessSessionActiveCache = new Map<string, { expiresAt: number; value: boolean }>()
+
+function buildSessionCacheKey(payload: JwtPayload) {
+  return `${payload.role}:${payload.sub}:${payload.tokenId ?? ""}`
+}
+
+function pruneSessionActiveCache(nowMs: number) {
+  if (accessSessionActiveCache.size <= 10_000) return
+  for (const [key, entry] of accessSessionActiveCache) {
+    if (entry.expiresAt <= nowMs) {
+      accessSessionActiveCache.delete(key)
+    }
+  }
+}
 
 async function isActiveSessionAndTouch(params: {
   model: Model<any>
@@ -15,6 +30,13 @@ async function isActiveSessionAndTouch(params: {
   payload: JwtPayload
 }) {
   const now = new Date()
+  pruneSessionActiveCache(now.getTime())
+  const cacheKey = buildSessionCacheKey(params.payload)
+  const cached = accessSessionActiveCache.get(cacheKey)
+  if (cached && cached.expiresAt > now.getTime()) {
+    return cached.value
+  }
+
   const session = (await params.model
     .findOne({
       tokenId: params.payload.tokenId,
@@ -25,7 +47,13 @@ async function isActiveSessionAndTouch(params: {
     .select({ _id: 1, updatedAt: 1 })
     .lean()) as { _id: unknown; updatedAt?: Date | string | null } | null
 
-  if (!session) return false
+  if (!session) {
+    accessSessionActiveCache.set(cacheKey, {
+      value: false,
+      expiresAt: now.getTime() + SESSION_ACTIVE_CACHE_TTL_MS,
+    })
+    return false
+  }
 
   const updatedAt =
     session.updatedAt instanceof Date
@@ -41,6 +69,10 @@ async function isActiveSessionAndTouch(params: {
     )
   }
 
+  accessSessionActiveCache.set(cacheKey, {
+    value: true,
+    expiresAt: now.getTime() + SESSION_ACTIVE_CACHE_TTL_MS,
+  })
   return true
 }
 

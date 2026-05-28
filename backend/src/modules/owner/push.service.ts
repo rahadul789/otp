@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout"
 import { logger } from "../../config/logger"
 import { OwnerModel } from "../auth/auth.model"
 
@@ -129,14 +130,22 @@ export async function sendPushToOwner(params: {
     data: params.payload.data
   }))
 
-  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+  const response = await fetchWithTimeout("https://exp.host/--/api/v2/push/send", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json"
     },
-    body: JSON.stringify(messages)
+    body: JSON.stringify(messages),
+    timeoutMs: 3_000,
+  }).catch((error) => {
+    logger.warn({ error, ownerId: params.ownerId }, "Expo owner push send timed out or failed")
+    return null
   })
+
+  if (!response) {
+    return { sent: 0, disabled: 0 }
+  }
 
   if (!response.ok) {
     logger.error(

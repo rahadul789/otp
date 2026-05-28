@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -53,9 +53,37 @@ export default function BkashPaymentScreen() {
   const hasNavigatedRef = useRef(false);
 
   const paymentUrl = draft?.paymentUrl ?? "";
+  const bkashCallbackPrefix = useMemo(
+    () => `${getApiBaseUrl()}/customer/payments/bkash/callback`,
+    []
+  );
   const bkashReturnPrefix = useMemo(
     () => `${getApiBaseUrl()}/customer/payments/bkash/return`,
     []
+  );
+
+  const markSuccessProcessingIfNeeded = useCallback(
+    (url: string) => {
+      const isBackendPaymentStep =
+        url.startsWith(bkashCallbackPrefix) || url.startsWith(bkashReturnPrefix);
+      if (isBackendPaymentStep && url.includes("status=success")) {
+        setPaymentProcessing(true);
+      }
+    },
+    [bkashCallbackPrefix, bkashReturnPrefix]
+  );
+
+  const handleReturnUrl = useCallback(
+    (url: string) => {
+      if (!url.startsWith(bkashReturnPrefix) || !url.includes("status=")) {
+        return false;
+      }
+
+      markSuccessProcessingIfNeeded(url);
+      setCallbackUrl(url);
+      return true;
+    },
+    [bkashReturnPrefix, markSuccessProcessingIfNeeded]
   );
 
   useEffect(() => {
@@ -65,7 +93,7 @@ export default function BkashPaymentScreen() {
   }, []);
 
   useEffect(() => {
-    if (!paymentProcessing) {
+    if (!paymentUrl && !paymentProcessing) {
       return;
     }
 
@@ -75,7 +103,7 @@ export default function BkashPaymentScreen() {
     );
 
     return () => subscription.remove();
-  }, [paymentProcessing]);
+  }, [paymentProcessing, paymentUrl]);
 
   useEffect(() => {
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
@@ -106,7 +134,7 @@ export default function BkashPaymentScreen() {
   }, [params.sessionId]);
 
   useEffect(() => {
-    if (!callbackUrl || !draft || paymentProcessing || callbackHandled) {
+    if (!callbackUrl || !draft || callbackHandled) {
       return;
     }
 
@@ -152,6 +180,7 @@ export default function BkashPaymentScreen() {
 
     if (typeof callbackParams.orderId === "string" && callbackParams.orderId) {
       setCallbackHandled(true);
+      setPaymentProcessing(true);
       void clearBkashPaymentDraft(draft.sessionId).catch(() => undefined);
       clearCart();
       if (!isMountedRef.current || hasNavigatedRef.current) return;
@@ -227,7 +256,7 @@ export default function BkashPaymentScreen() {
           },
         });
 
-        await clearBkashPaymentDraft(draft.sessionId).catch(() => undefined);
+        void clearBkashPaymentDraft(draft.sessionId).catch(() => undefined);
         clearCart();
         if (!isMountedRef.current || hasNavigatedRef.current) return;
 
@@ -277,7 +306,6 @@ export default function BkashPaymentScreen() {
     clearCart,
     draft,
     callbackHandled,
-    paymentProcessing,
     placeOrderMutation,
     router,
   ]);
@@ -306,31 +334,15 @@ export default function BkashPaymentScreen() {
     <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
       <StatusBar style="dark" />
       <View style={styles.root}>
-        <Pressable
-          style={[
-            styles.backButton,
-            { top: 10 + insets.top },
-            paymentProcessing ? styles.backButtonDisabled : null,
-          ]}
-          disabled={paymentProcessing}
-          onPress={() => {
-            if (!paymentProcessing) {
-              router.back();
-            }
-          }}
-        >
-          <Ionicons name="chevron-back" size={20} color={palette.foreground} />
-        </Pressable>
-
-        <View style={[styles.brandPill, { top: 10 + insets.top, right: 16 }]}>
-          <Text style={styles.brandPillText}>bKash checkout</Text>
-        </View>
-
-        <View style={[styles.webviewFrame, { marginTop: 66 + insets.top, marginBottom: Math.max(insets.bottom, 16) }]}>
+        <View style={styles.webviewFrame}>
           <View style={styles.webviewWrap}>
           {paymentProcessing ? (
             <View style={styles.loadingOverlay}>
               <ActivityIndicator size="large" color={palette.secondary} />
+              <Text style={styles.processingTitle}>Confirming bKash payment</Text>
+              <Text style={styles.processingText}>
+                Please wait while we create your order.
+              </Text>
             </View>
           ) : null}
 
@@ -341,18 +353,18 @@ export default function BkashPaymentScreen() {
             thirdPartyCookiesEnabled
             javaScriptEnabled
             domStorageEnabled
+            onLoadStart={(event) => {
+              markSuccessProcessingIfNeeded(event.nativeEvent.url);
+            }}
             onShouldStartLoadWithRequest={(request) => {
-              if (request.url.startsWith(bkashReturnPrefix) && request.url.includes("status=")) {
-                setCallbackUrl(request.url);
+              if (handleReturnUrl(request.url)) {
                 return false;
               }
 
               return true;
             }}
             onNavigationStateChange={(state) => {
-              if (state.url.startsWith(bkashReturnPrefix) && state.url.includes("status=")) {
-                setCallbackUrl(state.url);
-              }
+              handleReturnUrl(state.url);
             }}
             onError={() => {
               setLoadError("Could not load the bKash checkout.");
@@ -360,6 +372,7 @@ export default function BkashPaymentScreen() {
             renderLoading={() => (
               <View style={styles.loadingOverlay}>
                 <ActivityIndicator size="large" color={palette.secondary} />
+                <Text style={styles.processingTitle}>Opening bKash checkout</Text>
               </View>
             )}
           />
@@ -369,6 +382,14 @@ export default function BkashPaymentScreen() {
         {loadError ? (
           <View style={[styles.bottomNotice, { bottom: Math.max(insets.bottom, 12) }]}>
             <Text style={styles.bottomNoticeText}>{loadError}</Text>
+            {!paymentProcessing ? (
+              <Pressable
+                style={styles.noticeButton}
+                onPress={() => router.replace("/checkout")}
+              >
+                <Text style={styles.noticeButtonText}>Back to checkout</Text>
+              </Pressable>
+            ) : null}
             {canRetryOrderCreation ? (
               <Pressable
                 style={styles.retryButton}
@@ -416,39 +437,12 @@ const styles = StyleSheet.create({
   backButtonDisabled: {
     opacity: 0.5,
   },
-  brandPill: {
-    position: "absolute",
-    zIndex: 2,
-    minHeight: 42,
-    paddingHorizontal: 14,
-    borderRadius: 21,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FFE7F1",
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.14,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 4,
-  },
-  brandPillText: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: palette.secondary,
-  },
   webviewFrame: {
     flex: 1,
-    marginHorizontal: 16,
-    borderRadius: 26,
+    marginHorizontal: 0,
+    borderRadius: 0,
     backgroundColor: palette.surface,
     overflow: "hidden",
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.16,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 6,
-    borderWidth: 1,
-    borderColor: "#F0E3EA",
   },
   webviewWrap: {
     flex: 1,
@@ -460,6 +454,23 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: palette.surface,
     zIndex: 1,
+    paddingHorizontal: 28,
+    gap: 8,
+  },
+  processingTitle: {
+    marginTop: 6,
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: "900",
+    color: palette.foreground,
+    textAlign: "center",
+  },
+  processingText: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+    textAlign: "center",
   },
   bottomNotice: {
     position: "absolute",
@@ -474,6 +485,7 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 5,
+    gap: 10,
   },
   bottomNoticeText: {
     fontSize: 13,
@@ -482,7 +494,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   retryButton: {
-    marginTop: 10,
     alignSelf: "center",
     borderRadius: 999,
     backgroundColor: palette.secondary,
@@ -491,6 +502,18 @@ const styles = StyleSheet.create({
   },
   retryButtonText: {
     color: palette.surface,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  noticeButton: {
+    alignSelf: "center",
+    borderRadius: 999,
+    backgroundColor: "#F7E8EF",
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
+  noticeButtonText: {
+    color: palette.secondary,
     fontSize: 13,
     fontWeight: "800",
   },

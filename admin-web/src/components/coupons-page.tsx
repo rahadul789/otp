@@ -14,6 +14,7 @@ import {
   Search,
   TicketPercent,
 } from "lucide-react"
+import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 import { toast } from "sonner"
 
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
@@ -77,6 +78,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type VoucherTypeFilter = "all" | "flat" | "percentage" | "free-delivery"
 type VoucherSort =
@@ -217,7 +224,7 @@ function getInitialForm(
   restaurants: AdminRestaurantSummary[]
 ): VoucherFormState {
   const now = new Date()
-  const endsAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000)
+  const endsAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
   return {
     restaurantId: restaurants[0]?.id ?? "",
     scopeType: "restaurant",
@@ -1275,6 +1282,21 @@ function VoucherDetailsSheet({
   const lifecycle = getVoucherLifecycleStatus(voucher)
   const categoryNames = voucher.targetCategories?.map((item) => item.name) ?? []
   const itemNames = voucher.targetItems?.map((item) => item.name) ?? []
+  const usageRows = voucher.analytics.usageRows ?? []
+  const appliedCount = voucher.analytics.appliedCount ?? voucher.analytics.totalUses
+  const deliveredCount =
+    voucher.analytics.deliveredCount ??
+    voucher.analytics.totalOrdersUsingVoucher
+  const usageChartConfig = {
+    uses: {
+      label: "Uses",
+      color: "hsl(var(--chart-1))",
+    },
+    discount: {
+      label: "Discount",
+      color: "hsl(var(--chart-2))",
+    },
+  }
 
   return (
     <Sheet open={Boolean(voucher)} onOpenChange={onOpenChange}>
@@ -1314,7 +1336,14 @@ function VoucherDetailsSheet({
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-6">
-          <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+          <Tabs defaultValue="overview" className="space-y-4">
+            <TabsList className="flex h-auto w-full flex-wrap justify-start">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="usage">Uses</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="overview" className="space-y-4">
+              <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
             <Card>
               <CardHeader>
                 <CardTitle>Offer rules</CardTitle>
@@ -1580,7 +1609,146 @@ function VoucherDetailsSheet({
                 )}
               </CardContent>
             </Card>
-          </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="usage" className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <StatCard
+                  label="Applied"
+                  value={appliedCount}
+                  helper="Non-released redemption holds"
+                />
+                <StatCard
+                  label="Delivered"
+                  value={deliveredCount}
+                  helper="Delivered orders counted in revenue"
+                />
+                <StatCard
+                  label="Discount"
+                  value={formatCurrency(voucher.analytics.totalDiscountGiven)}
+                  helper="Delivered-order discount impact"
+                />
+                <StatCard
+                  label="Revenue"
+                  value={formatCurrency(voucher.analytics.revenueGenerated)}
+                  helper="Delivered order totals"
+                />
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Usage graph</CardTitle>
+                  <CardDescription>
+                    Daily voucher claims and delivered-order discount.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ChartContainer
+                    config={usageChartConfig}
+                    className="h-[280px] w-full"
+                  >
+                    <AreaChart data={voucher.analytics.points}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis
+                        dataKey="label"
+                        tickLine={false}
+                        axisLine={false}
+                        tickMargin={8}
+                      />
+                      <ChartTooltip
+                        cursor={false}
+                        content={<ChartTooltipContent indicator="dot" />}
+                      />
+                      <Area
+                        dataKey="uses"
+                        type="monotone"
+                        fill="var(--color-uses)"
+                        fillOpacity={0.18}
+                        stroke="var(--color-uses)"
+                        strokeWidth={2}
+                      />
+                      <Area
+                        dataKey="discount"
+                        type="monotone"
+                        fill="var(--color-discount)"
+                        fillOpacity={0.12}
+                        stroke="var(--color-discount)"
+                        strokeWidth={2}
+                      />
+                    </AreaChart>
+                  </ChartContainer>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Voucher uses</CardTitle>
+                  <CardDescription>
+                    Latest applied orders, status, funding split, and released rows.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {usageRows.length ? (
+                    <div className="overflow-hidden rounded-lg border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Order</TableHead>
+                            <TableHead>Customer</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead>Applied</TableHead>
+                            <TableHead className="text-right">Discount</TableHead>
+                            <TableHead className="text-right">Owner</TableHead>
+                            <TableHead className="text-right">Platform</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {usageRows.map((row) => (
+                            <TableRow key={row.id}>
+                              <TableCell>
+                                <div className="font-medium">
+                                  {row.orderNumber || row.orderId || "Order"}
+                                </div>
+                                {row.released ? (
+                                  <div className="text-xs text-muted-foreground">
+                                    Released
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                              <TableCell>
+                                <div>{row.customerName || "Customer"}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {row.customerPhone || row.customerId || "N/A"}
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{row.status || "N/A"}</Badge>
+                              </TableCell>
+                              <TableCell>{formatDate(row.appliedAt)}</TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency(row.discountAmount)}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency(row.ownerDiscountCost)}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatCurrency(row.platformDiscountCost)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                      No usage rows yet.
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         </div>
       </SheetContent>
     </Sheet>
