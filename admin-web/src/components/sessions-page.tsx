@@ -23,6 +23,7 @@ import {
   type AdminSessionRole,
   type AdminSessionStatus,
 } from "@/lib/admin-api"
+import { useAdminRefreshPolicy } from "@/lib/refresh-policy"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -224,6 +225,7 @@ function SessionRow({
 
 export function SessionsPage() {
   const queryClient = useQueryClient()
+  const { policy: refreshPolicy } = useAdminRefreshPolicy()
   const [role, setRole] = React.useState<RoleFilter>("all")
   const [status, setStatus] = React.useState<StatusFilter>("active")
   const [page, setPage] = React.useState(1)
@@ -240,7 +242,7 @@ export function SessionsPage() {
         page,
         pageSize,
       }),
-    refetchInterval: 30_000,
+    refetchInterval: refreshPolicy.sessionsMs || false,
   })
 
   const invalidateSessions = () =>

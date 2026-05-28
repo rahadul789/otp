@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-type NetworkStatus = "online" | "slow" | "offline";
+type NetworkStatus = "online" | "slow" | "offline" | "server";
 
 type NetworkStore = {
   status: NetworkStatus;
@@ -9,6 +9,7 @@ type NetworkStore = {
   markOnline: () => void;
   markSlow: (message?: string) => void;
   markOffline: (message?: string) => void;
+  markServerIssue: (message?: string) => void;
 };
 
 export const useNetworkStore = create<NetworkStore>()((set) => ({
@@ -30,6 +31,14 @@ export const useNetworkStore = create<NetworkStore>()((set) => ({
   markOffline: (message = "You appear to be offline. Reconnect and try again.") =>
     set({
       status: "offline",
+      message,
+      updatedAt: Date.now(),
+    }),
+  markServerIssue: (
+    message = "Unable to reach Foodbela server. Please check the backend URL or try again.",
+  ) =>
+    set({
+      status: "server",
       message,
       updatedAt: Date.now(),
     }),

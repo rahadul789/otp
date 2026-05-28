@@ -7,6 +7,7 @@ export type AdminNotificationSettings = {
   preparationDelays: boolean;
   riderDelays: boolean;
   deliveryDelays: boolean;
+  paymentExceptions: boolean;
   payoutRequests: boolean;
   support: boolean;
   security: boolean;
@@ -22,6 +23,7 @@ export const defaultAdminNotificationSettings: AdminNotificationSettings = {
   preparationDelays: true,
   riderDelays: true,
   deliveryDelays: true,
+  paymentExceptions: true,
   payoutRequests: true,
   support: true,
   security: true,
@@ -39,7 +41,12 @@ export async function getAdminNotificationSettings() {
 export function classifyAdminAlertType(
   alertType: string,
 ): AdminNotificationSettingKey {
-  if (alertType === "payout_request") return "payoutRequests";
+  if (alertType.startsWith("payment_") || alertType.startsWith("payment.")) {
+    return "paymentExceptions";
+  }
+  if (alertType === "payout_request" || alertType.startsWith("payout_")) {
+    return "payoutRequests";
+  }
   if (alertType.startsWith("support_")) return "support";
   if (alertType === "otp_abuse" || alertType === "referral_fraud") {
     return "security";
@@ -57,7 +64,11 @@ export function classifyAdminAlertType(
     return "riderDelays";
   }
   if (alertType.startsWith("delivery_")) return "deliveryDelays";
-  if (alertType.startsWith("order_") || alertType === "owner_response_late") {
+  if (
+    alertType.startsWith("order_") ||
+    alertType.startsWith("restaurant_") ||
+    alertType === "owner_response_late"
+  ) {
     return "orderDelays";
   }
   return "security";

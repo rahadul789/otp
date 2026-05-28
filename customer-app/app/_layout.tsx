@@ -19,6 +19,7 @@ export default function RootLayout() {
           <Stack.Screen name="bkash-payment" />
           <Stack.Screen name="profile-edit" />
           <Stack.Screen name="profile-password" />
+          <Stack.Screen name="payment-preferences" />
           <Stack.Screen name="referrals" />
           <Stack.Screen name="privacy-policy" />
           <Stack.Screen name="notifications" />
@@ -29,7 +30,6 @@ export default function RootLayout() {
           <Stack.Screen name="promo-details" />
           <Stack.Screen name="voucher-help" />
           <Stack.Screen name="payment-refunds" />
-          <Stack.Screen name="account-request" />
           <Stack.Screen name="orders/[orderId]" />
           <Stack.Screen name="orders/[orderId]/tracking" />
           <Stack.Screen name="restaurants/[restaurantId]" />

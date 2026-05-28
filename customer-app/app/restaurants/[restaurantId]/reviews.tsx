@@ -1,9 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useMemo } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { ReviewsSkeleton } from "@/src/components/loading-skeleton";
 import { useCustomerRestaurantDetailsQuery } from "@/src/hooks/use-customer-api";
 import { useLocationStore } from "@/src/store/location-store";
 import { palette } from "@/src/theme/palette";
@@ -57,14 +59,35 @@ export default function RestaurantReviewsScreen() {
 
   const restaurant = detailsQuery.data?.restaurant;
   const recentReviews = detailsQuery.data?.recentReviews ?? [];
+  const ratingCards = useMemo(() => {
+    const totalReviews = restaurant?.reviewCount ?? 0;
+    const avgRating =
+      typeof restaurant?.avgRating === "number" && totalReviews > 0
+        ? restaurant.avgRating.toFixed(1)
+        : "New";
+
+    return [
+      {
+        key: "average",
+        icon: "star",
+        label: "Average",
+        value: avgRating,
+        helper: totalReviews > 0 ? "out of 5" : "No rating yet",
+      },
+      {
+        key: "count",
+        icon: "people-outline",
+        label: "Rated by",
+        value: String(totalReviews),
+        helper: totalReviews === 1 ? "customer" : "customers",
+      },
+    ];
+  }, [restaurant?.avgRating, restaurant?.reviewCount]);
 
   if (detailsQuery.isLoading) {
     return (
       <SafeAreaView style={styles.safeArea} edges={["top"]}>
-        <View style={styles.centerState}>
-          <ActivityIndicator size="small" color={palette.primary} />
-          <Text style={styles.centerStateText}>Loading reviews...</Text>
-        </View>
+        <ReviewsSkeleton />
       </SafeAreaView>
     );
   }
@@ -100,6 +123,39 @@ export default function RestaurantReviewsScreen() {
                 : "Customer feedback will appear here once reviews start coming in."}
             </Text>
           </View>
+        </View>
+
+        <View style={styles.ratingCardGrid}>
+          {ratingCards.map((item, index) => {
+            const isAverage = index === 0;
+            return (
+            <View
+              key={item.key}
+              style={[
+                styles.ratingInfoCard,
+                isAverage ? styles.ratingInfoCardAverage : styles.ratingInfoCardCount,
+              ]}
+            >
+              <View
+                style={[
+                  styles.ratingInfoIconWrap,
+                  isAverage ? styles.ratingInfoIconAverage : styles.ratingInfoIconCount,
+                ]}
+              >
+                <Ionicons
+                  name={item.icon as keyof typeof Ionicons.glyphMap}
+                  size={17}
+                  color={isAverage ? "#D49700" : palette.secondary}
+                />
+              </View>
+              <View style={styles.ratingInfoCopy}>
+                <Text style={styles.ratingInfoLabel}>{item.label}</Text>
+                <Text style={styles.ratingInfoValue}>{item.value}</Text>
+                <Text style={styles.ratingInfoHelper}>{item.helper}</Text>
+              </View>
+            </View>
+          );
+          })}
         </View>
 
         {recentReviews.length ? (
@@ -200,6 +256,70 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 13,
     lineHeight: 19,
+    color: palette.mutedForeground,
+  },
+  ratingCardGrid: {
+    paddingHorizontal: 18,
+    flexDirection: "row",
+    gap: 8,
+  },
+  ratingInfoCard: {
+    flex: 1,
+    minHeight: 56,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    shadowColor: palette.shadow,
+    shadowOpacity: 0.28,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  ratingInfoCardAverage: {
+    backgroundColor: "#FFE7BA",
+    borderWidth: 1,
+    borderColor: "#FFC76D",
+  },
+  ratingInfoCardCount: {
+    backgroundColor: "#FFF0F6",
+  },
+  ratingInfoIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ratingInfoIconAverage: {
+    backgroundColor: "#FFD48A",
+  },
+  ratingInfoIconCount: {
+    backgroundColor: "#FFD9E8",
+  },
+  ratingInfoCopy: {
+    flex: 1,
+    gap: 1,
+  },
+  ratingInfoLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+    textTransform: "uppercase",
+  },
+  ratingInfoValue: {
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  ratingInfoHelper: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "600",
     color: palette.mutedForeground,
   },
   reviewList: {

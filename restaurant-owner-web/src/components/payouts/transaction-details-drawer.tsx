@@ -119,10 +119,6 @@ export function TransactionDetailsDrawer({
               <CardContent><p className="text-sm">-{formatPayoutMoney(transaction.discountCost)}</p></CardContent>
             </Card>
             <Card className="rounded-2xl shadow-none">
-              <CardHeader><CardTitle className="text-base">Delivery Cost</CardTitle></CardHeader>
-              <CardContent><p className="text-sm">-{formatPayoutMoney(transaction.deliveryCost)}</p></CardContent>
-            </Card>
-            <Card className="rounded-2xl shadow-none">
               <CardHeader><CardTitle className="text-base">Type</CardTitle></CardHeader>
               <CardContent>
                 <div className="inline-flex items-center gap-2 text-sm font-medium">

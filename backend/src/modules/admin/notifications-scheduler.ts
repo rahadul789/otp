@@ -7,9 +7,11 @@ import {
 } from "./business-event.service";
 import { pruneAdminOperationalAlerts } from "./admin-alert.service";
 import { processDueAdminNotificationSchedules } from "./notifications.service";
+import { processPendingBkashPaymentAttemptReconciliation } from "../customer/customer.service";
 
 let intervalHandle: NodeJS.Timeout | null = null;
 let isProcessing = false;
+const ADMIN_SCHEDULER_INTERVAL_MS = 10_000;
 
 function runAdminSchedulerCycle() {
   if (isProcessing) return;
@@ -20,6 +22,7 @@ function runAdminSchedulerCycle() {
     processDueAdminNotificationSchedules(),
     processAdminOperationalAlerts(),
     pruneAdminOperationalAlerts(),
+    processPendingBkashPaymentAttemptReconciliation(),
   ])
     .then(() => {
       markOperationalJobFinished("admin_notifications", "ok", startedAt);
@@ -45,7 +48,7 @@ export function startAdminNotificationScheduler() {
   if (intervalHandle) return;
 
   runAdminSchedulerCycle();
-  intervalHandle = setInterval(runAdminSchedulerCycle, 60_000);
+  intervalHandle = setInterval(runAdminSchedulerCycle, ADMIN_SCHEDULER_INTERVAL_MS);
 
   logger.info("Admin notification scheduler started");
 }

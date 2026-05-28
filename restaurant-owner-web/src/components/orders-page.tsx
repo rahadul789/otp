@@ -95,9 +95,36 @@ type SortKey = "latest" | "oldest" | "highestValue"
 type PaymentFilter = "all" | OrderPaymentMethod
 const pageSizeOptions = [5, 10, 20, 30]
 
-function getDelayState(order: Order) {
-  const now = Date.now()
+function getAutoCancelRemainingSeconds(order: Order, now = Date.now()) {
+  if (order.currentStatus !== "New" || !order.autoCancel?.applies) return null
+  const autoCancelAt = order.autoCancel.autoCancelAt
+    ? new Date(order.autoCancel.autoCancelAt).getTime()
+    : 0
 
+  if (autoCancelAt > 0 && !Number.isNaN(autoCancelAt)) {
+    return Math.max(0, Math.ceil((autoCancelAt - now) / 1000))
+  }
+
+  return typeof order.autoCancel.remainingSeconds === "number"
+    ? Math.max(0, order.autoCancel.remainingSeconds)
+    : null
+}
+
+function formatDurationFromSeconds(value?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "N/A"
+  const seconds = Math.max(0, Math.ceil(value))
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60)
+    const extraMinutes = minutes % 60
+    return `${hours}h ${extraMinutes}m`
+  }
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`
+  return `${remainingSeconds}s`
+}
+
+function getDelayState(order: Order, now = Date.now()) {
   if (order.currentStatus === "New") {
     const placed = new Date(order.timestamps.placedAt).getTime()
     const minutes = Math.floor((now - placed) / 60000)
@@ -142,16 +169,36 @@ function pluralizeMinutes(value: number) {
 
 function getOrderOperationalTiming(
   order: Order,
-  averagePreparationMinutes: number
+  averagePreparationMinutes: number,
+  now = Date.now()
 ): OrderOperationalTiming {
-  const now = Date.now()
   const prepTargetMinutes = Math.max(5, averagePreparationMinutes)
 
   if (order.currentStatus === "New") {
+    const autoCancelSeconds = getAutoCancelRemainingSeconds(order, now)
     const placedMinutes = Math.max(
       0,
       Math.floor((now - new Date(order.timestamps.placedAt).getTime()) / 60000)
     )
+    if (autoCancelSeconds !== null) {
+      return {
+        phaseLabel: "Awaiting acceptance",
+        primaryLabel:
+          autoCancelSeconds === 0
+            ? "Auto-cancel due now"
+            : `Accept in ${formatDurationFromSeconds(autoCancelSeconds)}`,
+        secondaryLabel: `Auto-cancel after ${order.autoCancel?.autoCancelAfterMinutes ?? 0} min if not accepted.`,
+        tone:
+          autoCancelSeconds <= 60
+            ? "critical"
+            : autoCancelSeconds <= 180
+              ? "warning"
+              : "neutral",
+        lateByMinutes: autoCancelSeconds === 0 ? placedMinutes : null,
+        remainingMinutes: Math.ceil(autoCancelSeconds / 60),
+        remainingSeconds: autoCancelSeconds,
+      }
+    }
     return {
       phaseLabel: "New order",
       primaryLabel: `${pluralizeMinutes(placedMinutes)} since placed`,
@@ -164,6 +211,7 @@ function getOrderOperationalTiming(
             : "neutral",
       lateByMinutes: placedMinutes >= 5 ? placedMinutes - 5 : null,
       remainingMinutes: placedMinutes < 5 ? 5 - placedMinutes : null,
+      remainingSeconds: placedMinutes < 5 ? (5 - placedMinutes) * 60 : null,
     }
   }
 
@@ -425,6 +473,7 @@ function OrdersTable({
   pendingOrderId,
   pendingAction,
   averagePreparationMinutes,
+  clockTick,
 }: {
   orders: Order[]
   emptyTitle: string
@@ -435,6 +484,7 @@ function OrdersTable({
   pendingOrderId?: string | null
   pendingAction?: "status" | "assign" | "reject" | null
   averagePreparationMinutes: number
+  clockTick: number
 }) {
   return (
     <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
@@ -445,7 +495,7 @@ function OrdersTable({
               <TableHead>Order</TableHead>
               <TableHead>Customer</TableHead>
               <TableHead>Items</TableHead>
-              <TableHead>Total</TableHead>
+              <TableHead>Restaurant Sales</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Placed</TableHead>
               <TableHead>Elapsed</TableHead>
@@ -456,10 +506,15 @@ function OrdersTable({
             {orders.length > 0 ? (
               orders.map((order) => {
                 const primaryAction = getNextPrimaryAction(order.currentStatus)
-                const delayState = getDelayState(order)
+                const delayState = getDelayState(order, clockTick)
                 const operationalTiming = getOrderOperationalTiming(
                   order,
-                  averagePreparationMinutes
+                  averagePreparationMinutes,
+                  clockTick
+                )
+                const autoCancelSeconds = getAutoCancelRemainingSeconds(
+                  order,
+                  clockTick
                 )
                 const isPendingRow = pendingOrderId === order.id
                 const isStatusPending =
@@ -484,6 +539,14 @@ function OrdersTable({
                         <div className="text-xs text-muted-foreground">
                           {getPaymentMethodLabel(order.paymentMethod)}
                         </div>
+                        {order.appliedVouchers.length ? (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-200 bg-amber-50 text-amber-700"
+                          >
+                            Voucher applied
+                          </Badge>
+                        ) : null}
                       </div>
                       <div className="mt-2 text-xs text-muted-foreground">
                         <span className="font-medium text-foreground/90">
@@ -495,9 +558,11 @@ function OrdersTable({
                     <TableCell>
                       <div className="space-y-1">
                         <div className="font-medium">{order.customer.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {order.customer.phone}
-                        </div>
+                        {order.customer.phone ? (
+                          <div className="text-xs text-muted-foreground">
+                            {order.customer.phone}
+                          </div>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -533,6 +598,21 @@ function OrdersTable({
                           >
                             <TriangleAlert className="mr-1 size-3" />
                             {delayState.label}
+                          </Badge>
+                        ) : null}
+                        {autoCancelSeconds !== null ? (
+                          <Badge
+                            variant="outline"
+                            className={
+                              autoCancelSeconds <= 60
+                                ? "border-rose-200 bg-rose-50 text-rose-700"
+                                : "border-amber-200 bg-amber-50 text-amber-700"
+                            }
+                          >
+                            <Clock3 className="mr-1 size-3" />
+                            {autoCancelSeconds === 0
+                              ? "Auto-cancel due"
+                              : `Accept in ${formatDurationFromSeconds(autoCancelSeconds)}`}
                           </Badge>
                         ) : null}
                         {order.currentStatus === "ReadyForPickup" ? (
@@ -704,11 +784,6 @@ export function OrdersPage() {
     [historyDateFilter]
   )
 
-  React.useEffect(() => {
-    const timer = window.setInterval(() => setClockTick(Date.now()), 60_000)
-    return () => window.clearInterval(timer)
-  }, [])
-
   const backendQueryParams = React.useMemo(() => {
     const shouldFilterClientSide = activeTab === "live" && showUrgentOnly
 
@@ -762,6 +837,23 @@ export function OrdersPage() {
       ordersQuery.data as OwnerListResponse<OwnerOrderResponse>
     ).items.map(mapOwnerOrder)
   }, [orders, ordersQuery.data])
+
+  const hasActiveAutoCancelCountdown = React.useMemo(
+    () =>
+      ordersSource.some(
+        (order) => order.currentStatus === "New" && order.autoCancel?.applies
+      ),
+    [ordersSource]
+  )
+
+  React.useEffect(() => {
+    setClockTick(Date.now())
+    const timer = window.setInterval(
+      () => setClockTick(Date.now()),
+      hasActiveAutoCancelCountdown ? 1000 : 60000
+    )
+    return () => window.clearInterval(timer)
+  }, [hasActiveAutoCancelCountdown])
 
   React.useEffect(() => {
     const queryTab = searchParams.get("tab")
@@ -999,14 +1091,14 @@ export function OrdersPage() {
 
     return [
       {
-        title: "Placed Value",
+        title: "Placed Food Sales",
         value: formatOrderMoney(placedTotal),
-        hint: "All orders in current filter",
+        hint: "Food subtotal minus owner discounts",
         icon: ShoppingBag,
         tone: "info" as const,
       },
       {
-        title: "Delivered Value",
+        title: "Delivered Food Sales",
         value: formatOrderMoney(deliveredTotal),
         hint: `${deliveredOrders.length} delivered orders`,
         icon: BadgeDollarSign,
@@ -1020,9 +1112,9 @@ export function OrdersPage() {
         tone: "rose" as const,
       },
       {
-        title: "Cancelled Value",
+        title: "Cancelled Food Sales",
         value: formatOrderMoney(cancelledTotal),
-        hint: "Total cancelled value",
+        hint: "Owner-side cancelled value",
         icon: Ban,
         tone: "rose" as const,
       },
@@ -1186,7 +1278,7 @@ export function OrdersPage() {
         "Customer",
         "Status",
         "Payment",
-        "Total",
+        "Restaurant Sales",
         "Placed At",
       ].join(","),
       ...filteredOrders.map((order) =>
@@ -1480,6 +1572,7 @@ export function OrdersPage() {
             pendingOrderId={pendingOrderAction?.orderId ?? null}
             pendingAction={pendingOrderAction?.type ?? null}
             averagePreparationMinutes={averagePreparationMinutes}
+            clockTick={clockTick}
           />
         </TabsContent>
 
@@ -1622,6 +1715,7 @@ export function OrdersPage() {
             pendingOrderId={pendingOrderAction?.orderId ?? null}
             pendingAction={pendingOrderAction?.type ?? null}
             averagePreparationMinutes={averagePreparationMinutes}
+            clockTick={clockTick}
           />
         </TabsContent>
       </Tabs>

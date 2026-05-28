@@ -8,6 +8,7 @@ import {
   Eye,
   Loader2,
   MoreHorizontal,
+  ReceiptText,
   RotateCcw,
   Search,
   WalletCards,
@@ -18,13 +19,19 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import {
   exportAdminPayments,
   getAdminOrder,
+  listAdminBkashPaymentAttempts,
   listAdminPayments,
+  reconcileAdminBkashPaymentAttempt,
   reconcileAdminPaymentsLedger,
   updateAdminOrderCodCollection,
   updateAdminOrderRefundStatus,
+  type AdminBkashPaymentAttempt,
   type AdminPaymentTransaction,
+  type AdminRefundNotificationChannelAudit,
+  type AdminRefundNotificationAudit,
   type AdminRestaurantOrderDateFilterPreset,
 } from "@/lib/admin-api"
+import { printTableReport } from "@/lib/export-utils"
 import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -99,6 +106,27 @@ type PaymentStatusFilter =
 type SettlementFilter = "all" | "delivered" | "refund_queue" | "online" | "cod"
 type PaymentSort = "newest" | "oldest" | "highestValue" | "recentlyUpdated"
 type RefundStatus = "refund_pending" | "refunded" | "refund_rejected"
+type BkashAttemptStatusFilter =
+  | "all"
+  | "initiated"
+  | "provider_created"
+  | "provider_create_failed"
+  | "callback_success"
+  | "customer_cancelled"
+  | "callback_failed"
+  | "execute_failed"
+  | "confirmed_paid"
+  | "order_finalized"
+  | "order_finalize_failed"
+  | "expired"
+type BkashAttemptPaymentStatusFilter =
+  | "all"
+  | "unpaid"
+  | "paid"
+  | "cancelled"
+  | "failed"
+  | "expired"
+type BkashAttemptOrderStateFilter = "all" | "finalized" | "missing" | "failed"
 
 const pageSizeOptions = [10, 20, 50]
 
@@ -121,6 +149,9 @@ function formatShortDate(value?: string | null) {
 }
 
 function getPaymentBadgeClass(status: string) {
+  if (status === "cancelled") {
+    return "border-rose-200 bg-rose-50 text-rose-700"
+  }
   if (status === "paid" || status === "refunded") {
     return "border-emerald-200 bg-emerald-50 text-emerald-700"
   }
@@ -141,7 +172,37 @@ function getOrderBadgeClass(status: string) {
   return "border-sky-200 bg-sky-50 text-sky-700"
 }
 
+function getDisplayPaymentStatus(transaction: {
+  status: string
+  paymentMethod: string
+  paymentStatus: string
+}) {
+  if (
+    ["Cancelled", "Rejected"].includes(transaction.status) &&
+    transaction.paymentMethod === "Cash" &&
+    transaction.paymentStatus !== "paid"
+  ) {
+    return "cancelled"
+  }
+  return transaction.paymentStatus || "N/A"
+}
+
 function getReconciliationState(transaction: AdminPaymentTransaction) {
+  if (["Cancelled", "Rejected"].includes(transaction.status)) {
+    if (transaction.paymentMethod === "Bkash") {
+      if (transaction.paymentStatus === "refunded") {
+        return { label: "Refunded", tone: "success" }
+      }
+      if (transaction.paymentStatus === "refund_rejected") {
+        return { label: "Refund rejected", tone: "danger" }
+      }
+      if (["paid", "refund_pending"].includes(transaction.paymentStatus)) {
+        return { label: "Refund review", tone: "warning" }
+      }
+    }
+    return { label: "Cancelled", tone: "danger" }
+  }
+
   if (transaction.paymentMethod === "Bkash") {
     if (transaction.paymentStatus === "paid" && !transaction.transactionId) {
       return { label: "Missing trx", tone: "warning" }
@@ -168,7 +229,96 @@ function getReconciliationState(transaction: AdminPaymentTransaction) {
 function getReconciliationBadgeClass(tone: string) {
   if (tone === "success") return "border-emerald-200 bg-emerald-50 text-emerald-700"
   if (tone === "warning") return "border-amber-200 bg-amber-50 text-amber-700"
+  if (tone === "danger") return "border-rose-200 bg-rose-50 text-rose-700"
   return ""
+}
+
+function getBkashAttemptBadgeClass(status: string) {
+  if (["paid", "order_finalized", "confirmed_paid"].includes(status)) {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  }
+  if (["unpaid", "initiated", "provider_created", "callback_success"].includes(status)) {
+    return "border-amber-200 bg-amber-50 text-amber-700"
+  }
+  if (["cancelled", "customer_cancelled", "expired"].includes(status)) {
+    return "border-slate-200 bg-slate-50 text-slate-700"
+  }
+  if (
+    [
+      "failed",
+      "provider_create_failed",
+      "callback_failed",
+      "execute_failed",
+      "order_finalize_failed",
+    ].includes(status)
+  ) {
+    return "border-rose-200 bg-rose-50 text-rose-700"
+  }
+  return ""
+}
+
+function formatAttemptLabel(value: string) {
+  if (!value) return "N/A"
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+}
+
+function getBkashAttemptPayerNumber(attempt: AdminBkashPaymentAttempt) {
+  return (
+    attempt.payerPhone ||
+    attempt.customerMsisdn ||
+    attempt.walletNumber ||
+    attempt.payerReference ||
+    ""
+  )
+}
+
+function getNotificationStatusBadgeClass(status: string) {
+  if (status === "sent") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (status === "in_app_only" || status === "skipped" || status === "not_configured" || status === "disabled") {
+    return "border-amber-200 bg-amber-50 text-amber-700"
+  }
+  if (status === "failed") return "border-rose-200 bg-rose-50 text-rose-700"
+  return "border-slate-200 bg-slate-50 text-slate-700"
+}
+
+function formatNotificationStatus(status: string) {
+  return formatAttemptLabel(status || "not_attempted")
+}
+
+function readRefundNotificationAudit(
+  value: unknown,
+): AdminRefundNotificationAudit | null {
+  if (!value || typeof value !== "object") return null
+  const audit = value as Partial<AdminRefundNotificationAudit>
+  const normalizeChannel = (
+    channel: Partial<AdminRefundNotificationChannelAudit> | undefined,
+  ): AdminRefundNotificationChannelAudit => {
+    const ticketIds = Array.isArray(channel?.ticketIds)
+      ? channel?.ticketIds ?? []
+      : []
+    return {
+      status: String(channel?.status || "not_attempted"),
+      attemptedAt: channel?.attemptedAt ?? null,
+      deliveredAt: channel?.deliveredAt ?? null,
+      provider: String(channel?.provider || ""),
+      recipient: String(channel?.recipient || ""),
+      requestId: String(channel?.requestId || ""),
+      error: String(channel?.error || ""),
+      sent: Number(channel?.sent || 0),
+      inAppCreated: Number(channel?.inAppCreated || 0),
+      ticketIds,
+    }
+  }
+
+  return {
+    message: String(audit.message || ""),
+    updatedAt: audit.updatedAt ?? null,
+    push: normalizeChannel(audit.push),
+    sms: normalizeChannel(audit.sms),
+  }
 }
 
 function StatCard({
@@ -188,6 +338,24 @@ function StatCard({
         <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
       </CardContent>
     </Card>
+  )
+}
+
+function InlineMetric({
+  label,
+  value,
+  helper,
+}: {
+  label: string
+  value: React.ReactNode
+  helper: string
+}) {
+  return (
+    <div className="rounded-md border bg-muted/20 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 text-lg font-semibold">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
+    </div>
   )
 }
 
@@ -353,6 +521,190 @@ function CodCollectionDialog({
   )
 }
 
+function BkashAttemptDetailsSheet({
+  attempt,
+  onOpenChange,
+  onOpenOrder,
+}: {
+  attempt: AdminBkashPaymentAttempt | null
+  onOpenChange: (open: boolean) => void
+  onOpenOrder: (orderId: string) => void
+}) {
+  return (
+    <Sheet open={Boolean(attempt)} onOpenChange={onOpenChange}>
+      <SheetContent className="flex h-full w-full max-w-none! flex-col overflow-hidden p-0 sm:max-w-2xl! md:max-w-4xl!">
+        <SheetHeader className="border-b px-6 py-5">
+          <SheetTitle>bKash gateway log</SheetTitle>
+          <SheetDescription>
+            Checkout attempt, callback, execute, and order finalization timeline.
+          </SheetDescription>
+        </SheetHeader>
+        {attempt ? (
+          <div className="flex-1 space-y-4 overflow-y-auto p-6">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge
+                variant="outline"
+                className={getBkashAttemptBadgeClass(attempt.paymentStatus)}
+              >
+                {formatAttemptLabel(attempt.paymentStatus)}
+              </Badge>
+              <Badge
+                variant="outline"
+                className={getBkashAttemptBadgeClass(attempt.status)}
+              >
+                {formatAttemptLabel(attempt.status)}
+              </Badge>
+              <Badge variant="secondary">{formatCurrency(attempt.amount)}</Badge>
+              {attempt.paymentID ? (
+                <Badge variant="outline">Payment ID {attempt.paymentID}</Badge>
+              ) : null}
+              {attempt.transactionId ? (
+                <Badge variant="outline">Trx {attempt.transactionId}</Badge>
+              ) : null}
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg border p-3">
+                <div className="text-sm font-medium">Customer</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {attempt.customerName || "Unknown"} -{" "}
+                  {attempt.customerPhone || "No phone"}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  bKash number {getBkashAttemptPayerNumber(attempt) || "N/A"}
+                </div>
+                <div className="mt-1 text-xs font-medium text-foreground">
+                  Payer reference {attempt.payerReference || "N/A"}
+                </div>
+              </div>
+              <div className="rounded-lg border p-3">
+                <div className="text-sm font-medium">Restaurant</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {attempt.restaurantName || "Unknown restaurant"}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Session {attempt.sessionId || "N/A"}
+                </div>
+              </div>
+              <div className="rounded-lg border p-3">
+                <div className="text-sm font-medium">Order finalization</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Badge
+                    variant="outline"
+                    className={getBkashAttemptBadgeClass(
+                      attempt.orderFinalizationStatus,
+                    )}
+                  >
+                    {formatAttemptLabel(attempt.orderFinalizationStatus || "missing")}
+                  </Badge>
+                  {attempt.orderId ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onOpenOrder(attempt.orderId)}
+                    >
+                      <Eye className="size-4" />
+                      Open order
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="rounded-lg border p-3">
+                <div className="text-sm font-medium">Gateway message</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {attempt.failureReason ||
+                    attempt.providerMessage ||
+                    attempt.latestNote ||
+                    "No gateway message recorded."}
+                </div>
+              </div>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Event timeline</CardTitle>
+                <CardDescription>
+                  Latest gateway and backend events for this checkout attempt.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Event</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Note</TableHead>
+                        <TableHead>When</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {attempt.events.map((event, index) => (
+                        <TableRow key={`${event.event}-${event.occurredAt}-${index}`}>
+                          <TableCell className="font-medium">
+                            {formatAttemptLabel(event.event)}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap gap-1">
+                              {event.status ? (
+                                <Badge
+                                  variant="outline"
+                                  className={getBkashAttemptBadgeClass(event.status)}
+                                >
+                                  {formatAttemptLabel(event.status)}
+                                </Badge>
+                              ) : null}
+                              {event.paymentStatus ? (
+                                <Badge
+                                  variant="outline"
+                                  className={getBkashAttemptBadgeClass(
+                                    event.paymentStatus,
+                                  )}
+                                >
+                                  {formatAttemptLabel(event.paymentStatus)}
+                                </Badge>
+                              ) : null}
+                            </div>
+                          </TableCell>
+                          <TableCell className="max-w-[320px]">
+                            <div className="truncate text-sm">
+                              {event.reason ||
+                                event.providerMessage ||
+                                event.note ||
+                                "No note"}
+                            </div>
+                            {event.providerCode ? (
+                              <div className="text-xs text-muted-foreground">
+                                Provider code {event.providerCode}
+                              </div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>{formatDate(event.occurredAt)}</TableCell>
+                        </TableRow>
+                      ))}
+                      {attempt.events.length === 0 ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={4}
+                            className="h-24 text-center text-muted-foreground"
+                          >
+                            No gateway timeline has been recorded for this attempt.
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        ) : null}
+      </SheetContent>
+    </Sheet>
+  )
+}
+
 function PaymentDetailsSheet({
   orderId,
   onRefund,
@@ -387,6 +739,7 @@ function PaymentDetailsSheet({
         paymentMethod: details.paymentMethod,
         paymentStatus: details.paymentStatus,
         provider: details.paymentMethod,
+        bkashPayerPhone: "",
         transactionId: "",
         amount: details.pricing.total,
         subtotal: details.pricing.subtotal,
@@ -396,6 +749,8 @@ function PaymentDetailsSheet({
         refundNote: "",
         refundRequestedAt: null,
         refundReviewedAt: null,
+        refundNotificationAudit: null,
+        voucherCodes: details.appliedVouchers?.map((voucher) => voucher.code || voucher.name).filter(Boolean) ?? [],
         createdAt: details.timestamps.createdAt,
         updatedAt: null,
         deliveredAt: details.timestamps.deliveredAt,
@@ -420,6 +775,14 @@ function PaymentDetailsSheet({
       : typeof paymentSnapshot.trxID === "string"
         ? paymentSnapshot.trxID
         : ""
+  const bkashPayerPhone =
+    typeof paymentSnapshot.customerMsisdn === "string" && paymentSnapshot.customerMsisdn
+      ? paymentSnapshot.customerMsisdn
+      : typeof paymentSnapshot.walletNumber === "string" && paymentSnapshot.walletNumber
+        ? paymentSnapshot.walletNumber
+        : typeof paymentSnapshot.payerReference === "string"
+          ? paymentSnapshot.payerReference
+          : transaction?.bkashPayerPhone || ""
   const refundStatus =
     typeof paymentSnapshot.refundStatus === "string"
       ? paymentSnapshot.refundStatus
@@ -434,6 +797,10 @@ function PaymentDetailsSheet({
     typeof paymentSnapshot.refundReviewedAt === "string"
       ? paymentSnapshot.refundReviewedAt
       : null
+  const refundNotificationAudit =
+    readRefundNotificationAudit(paymentSnapshot.refundNotificationAudit) ??
+    transaction?.refundNotificationAudit ??
+    null
 
   return (
     <Sheet open={Boolean(orderId)} onOpenChange={onOpenChange}>
@@ -452,16 +819,22 @@ function PaymentDetailsSheet({
               </Badge>
               <Badge
                 variant="outline"
-                className={getPaymentBadgeClass(details.paymentStatus)}
+                className={getPaymentBadgeClass(getDisplayPaymentStatus(details))}
               >
-                {details.paymentStatus}
+                {getDisplayPaymentStatus(details)}
               </Badge>
               <Badge variant="secondary">{details.paymentMethod}</Badge>
+              {details.appliedVouchers?.length ? (
+                <Badge variant="outline" className="border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700">
+                  Voucher applied
+                </Badge>
+              ) : null}
               {transactionId ? (
                 <Badge variant="outline">Trx {transactionId}</Badge>
               ) : null}
               <div className="ml-auto flex flex-wrap gap-2">
-                {transaction?.paymentStatus === "paid" &&
+                {transaction?.paymentMethod === "Bkash" &&
+                transaction.paymentStatus === "paid" &&
                 ["Cancelled", "Rejected"].includes(transaction.status) ? (
                   <Button
                     size="sm"
@@ -527,13 +900,34 @@ function PaymentDetailsSheet({
                   </CardHeader>
                   <CardContent className="grid gap-3 text-sm">
                     <InfoRow label="Method" value={details.paymentMethod} />
-                    <InfoRow label="Status" value={details.paymentStatus} />
+                    <InfoRow label="Status" value={getDisplayPaymentStatus(details)} />
                     <InfoRow label="Provider" value={provider || "N/A"} />
+                    {details.paymentMethod === "Bkash" ? (
+                      <InfoRow label="bKash payer number" value={bkashPayerPhone || "N/A"} />
+                    ) : null}
                     <InfoRow label="Transaction ID" value={transactionId || "N/A"} />
                     <InfoRow label="Total" value={formatCurrency(details.pricing.total)} />
                     <InfoRow label="Subtotal" value={formatCurrency(details.pricing.subtotal)} />
                     <InfoRow label="Delivery fee" value={formatCurrency(details.pricing.deliveryFee)} />
                     <InfoRow label="Discount" value={formatCurrency(details.pricing.discount)} />
+                    {details.appliedVouchers?.length ? (
+                      <InfoRow
+                        label="Voucher"
+                        value={
+                          <div className="flex flex-wrap justify-end gap-1">
+                            {details.appliedVouchers.map((voucher, index) => (
+                              <Badge
+                                key={`${voucher.id || voucher.code || index}`}
+                                variant="outline"
+                                className="border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700"
+                              >
+                                {voucher.code || voucher.name || "Applied"}
+                              </Badge>
+                            ))}
+                          </div>
+                        }
+                      />
+                    ) : null}
                   </CardContent>
                 </Card>
                 <Card>
@@ -603,23 +997,83 @@ function PaymentDetailsSheet({
                     />
                   </CardContent>
                 </Card>
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Refund</CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid gap-3 text-sm">
-                    <InfoRow label="Refund status" value={refundStatus || "N/A"} />
-                    <InfoRow
-                      label="Requested at"
-                      value={formatDate(refundRequestedAt)}
-                    />
-                    <InfoRow
-                      label="Reviewed at"
-                      value={formatDate(refundReviewedAt)}
-                    />
-                    <InfoRow label="Note" value={refundNote || "N/A"} />
-                  </CardContent>
-                </Card>
+                {details.paymentMethod === "Bkash" ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Refund</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 text-sm">
+                      <InfoRow label="Refund status" value={refundStatus || "N/A"} />
+                      <InfoRow
+                        label="Requested at"
+                        value={formatDate(refundRequestedAt)}
+                      />
+                      <InfoRow
+                        label="Reviewed at"
+                        value={formatDate(refundReviewedAt)}
+                      />
+                      <InfoRow label="Note" value={refundNote || "N/A"} />
+                      {refundNotificationAudit ? (
+                        <>
+                          <InfoRow
+                            label="Refund message"
+                            value={refundNotificationAudit.message || "N/A"}
+                          />
+                          <InfoRow
+                            label="Push status"
+                            value={
+                              <div className="flex flex-col items-end gap-1 text-right">
+                                <Badge
+                                  variant="outline"
+                                  className={getNotificationStatusBadgeClass(
+                                    refundNotificationAudit.push.status,
+                                  )}
+                                >
+                                  {formatNotificationStatus(refundNotificationAudit.push.status)}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {refundNotificationAudit.push.sent
+                                    ? `${refundNotificationAudit.push.sent} device push accepted`
+                                    : refundNotificationAudit.push.inAppCreated
+                                      ? "In-app notification created"
+                                      : refundNotificationAudit.push.error || "No push delivery"}
+                                </span>
+                              </div>
+                            }
+                          />
+                          <InfoRow
+                            label="SMS status"
+                            value={
+                              <div className="flex flex-col items-end gap-1 text-right">
+                                <Badge
+                                  variant="outline"
+                                  className={getNotificationStatusBadgeClass(
+                                    refundNotificationAudit.sms.status,
+                                  )}
+                                >
+                                  {formatNotificationStatus(refundNotificationAudit.sms.status)}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {refundNotificationAudit.sms.recipient || "No phone"}
+                                  {refundNotificationAudit.sms.requestId
+                                    ? ` - request ${refundNotificationAudit.sms.requestId}`
+                                    : ""}
+                                </span>
+                                {refundNotificationAudit.sms.error ? (
+                                  <span className="text-xs text-rose-600">
+                                    {refundNotificationAudit.sms.error}
+                                  </span>
+                                ) : null}
+                              </div>
+                            }
+                          />
+                        </>
+                      ) : (
+                        <InfoRow label="Notification audit" value="Not sent yet" />
+                      )}
+                    </CardContent>
+                  </Card>
+                ) : null}
                 <Card>
                   <CardHeader>
                     <CardTitle>Payment audit</CardTitle>
@@ -716,7 +1170,8 @@ function exportTransactionsCsv(
     restaurant: transaction.restaurantName,
     customer: transaction.customerName,
     method: transaction.paymentMethod,
-    paymentStatus: transaction.paymentStatus,
+    bkashPayerPhone: transaction.bkashPayerPhone,
+    paymentStatus: getDisplayPaymentStatus(transaction),
     orderStatus: transaction.status,
     amount: transaction.amount,
     transactionId: transaction.transactionId,
@@ -752,6 +1207,16 @@ export function PaymentsPage() {
   const [sortBy, setSortBy] = React.useState<PaymentSort>("newest")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(10)
+  const [attemptStatus, setAttemptStatus] =
+    React.useState<BkashAttemptStatusFilter>("all")
+  const [attemptPaymentStatus, setAttemptPaymentStatus] =
+    React.useState<BkashAttemptPaymentStatusFilter>("all")
+  const [attemptOrderState, setAttemptOrderState] =
+    React.useState<BkashAttemptOrderStateFilter>("all")
+  const [attemptPage, setAttemptPage] = React.useState(1)
+  const [attemptPageSize, setAttemptPageSize] = React.useState(10)
+  const [attemptDetails, setAttemptDetails] =
+    React.useState<AdminBkashPaymentAttempt | null>(null)
   const [detailsOrderId, setDetailsOrderId] = React.useState("")
   const [codTarget, setCodTarget] = React.useState<AdminPaymentTransaction | null>(null)
   const [refundTarget, setRefundTarget] = React.useState<null | {
@@ -806,6 +1271,34 @@ export function PaymentsPage() {
         pageSize,
       }),
   })
+  const bkashAttemptsQuery = useQuery({
+    queryKey: [
+      "admin-bkash-payment-attempts",
+      {
+        search: debouncedSearch,
+        preset,
+        from,
+        to,
+        attemptStatus,
+        attemptPaymentStatus,
+        attemptOrderState,
+        attemptPage,
+        attemptPageSize,
+      },
+    ],
+    queryFn: () =>
+      listAdminBkashPaymentAttempts({
+        search: debouncedSearch,
+        preset,
+        from: preset === "custom" ? from : "",
+        to: preset === "custom" ? to : "",
+        status: attemptStatus,
+        paymentStatus: attemptPaymentStatus,
+        orderState: attemptOrderState,
+        page: attemptPage,
+        pageSize: attemptPageSize,
+      }),
+  })
   const exportMutation = useMutation({
     mutationFn: () => exportAdminPayments(paymentFilterParams),
     onSuccess: (data) => {
@@ -835,11 +1328,88 @@ export function PaymentsPage() {
       toast.error(error instanceof Error ? error.message : "Ledger reconcile failed.")
     },
   })
+  const reconcileBkashAttemptMutation = useMutation({
+    mutationFn: (attemptId: string) =>
+      reconcileAdminBkashPaymentAttempt({
+        attemptId,
+        note: "Manual admin reconciliation from Payments page",
+      }),
+    onSuccess: (result) => {
+      toast.success(
+        result.orderId
+          ? "bKash payment reconciled and order is linked."
+          : `bKash payment reconciled: ${formatAttemptLabel(result.status)}.`
+      )
+      void queryClient.invalidateQueries({ queryKey: ["admin-bkash-payment-attempts"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
+      void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "bKash reconciliation failed."
+      )
+    },
+  })
+
+  function exportPaymentsPdf() {
+    const ok = printTableReport({
+      title: "Foodbela payments report",
+      subtitle: "Current filtered order payment transactions.",
+      metrics: [
+        { label: "Online collected", value: formatCurrency(summary?.onlineCollected ?? 0) },
+        { label: "Refund pending", value: formatCurrency(summary?.refundPendingAmount ?? 0) },
+        { label: "Restaurant payable", value: formatCurrency(summary?.restaurantPayable ?? 0) },
+      ],
+      headers: ["Order", "Restaurant", "Customer", "Method", "bKash payer", "Status", "Amount", "Created"],
+      rows: transactions.map((transaction) => [
+        transaction.orderNumber,
+        transaction.restaurantName,
+        `${transaction.customerName} ${transaction.customerPhone ? `(${transaction.customerPhone})` : ""}`,
+        transaction.paymentMethod,
+        transaction.bkashPayerPhone || "N/A",
+        getDisplayPaymentStatus(transaction),
+        formatCurrency(transaction.amount),
+        formatDate(transaction.createdAt),
+      ]),
+    })
+    if (!ok) toast.error("Allow popups to export the PDF report.")
+  }
+
+  function exportBkashAttemptsPdf() {
+    const ok = printTableReport({
+      title: "Foodbela bKash checkout attempts",
+      subtitle: "Current filtered bKash checkout audit records.",
+      metrics: [
+        { label: "Attempts", value: bkashAttemptSummary?.attemptCount ?? 0 },
+        { label: "Paid", value: formatCurrency(bkashAttemptSummary?.paidAmount ?? 0) },
+        {
+          label: "Paid without order",
+          value: formatCurrency(bkashAttemptSummary?.paidWithoutOrderAmount ?? 0),
+        },
+      ],
+      headers: ["Payment ID", "Customer", "Restaurant", "bKash number", "Payer reference", "Status", "Amount", "Created"],
+      rows: bkashAttempts.map((attempt) => [
+        attempt.paymentID || attempt.sessionId,
+        `${attempt.customerName} ${attempt.customerPhone ? `(${attempt.customerPhone})` : ""}`,
+        attempt.restaurantName,
+        getBkashAttemptPayerNumber(attempt) || "N/A",
+        attempt.payerReference || "N/A",
+        `${formatAttemptLabel(attempt.paymentStatus)} / ${formatAttemptLabel(attempt.status)}`,
+        formatCurrency(attempt.amount),
+        formatDate(attempt.createdAt),
+      ]),
+    })
+    if (!ok) toast.error("Allow popups to export the PDF report.")
+  }
 
   const transactions = paymentsQuery.data?.items ?? []
   const summary = paymentsQuery.data?.summary
   const pageCount = paymentsQuery.data?.pageCount ?? 1
   const safePage = Math.min(page, pageCount)
+  const bkashAttempts = bkashAttemptsQuery.data?.items ?? []
+  const bkashAttemptSummary = bkashAttemptsQuery.data?.summary
+  const attemptPageCount = bkashAttemptsQuery.data?.pageCount ?? 1
+  const safeAttemptPage = Math.min(attemptPage, attemptPageCount)
 
   React.useEffect(() => {
     setPage(1)
@@ -856,6 +1426,19 @@ export function PaymentsPage() {
   ])
 
   React.useEffect(() => {
+    setAttemptPage(1)
+  }, [
+    debouncedSearch,
+    preset,
+    from,
+    to,
+    attemptStatus,
+    attemptPaymentStatus,
+    attemptOrderState,
+    attemptPageSize,
+  ])
+
+  React.useEffect(() => {
     if (preset !== "custom") {
       setFrom("")
       setTo("")
@@ -865,6 +1448,10 @@ export function PaymentsPage() {
   React.useEffect(() => {
     if (page > pageCount) setPage(pageCount)
   }, [page, pageCount])
+
+  React.useEffect(() => {
+    if (attemptPage > attemptPageCount) setAttemptPage(attemptPageCount)
+  }, [attemptPage, attemptPageCount])
 
   function resetFilters() {
     setSearch("")
@@ -876,6 +1463,10 @@ export function PaymentsPage() {
     setSettlement("all")
     setSortBy("newest")
     setPage(1)
+    setAttemptStatus("all")
+    setAttemptPaymentStatus("all")
+    setAttemptOrderState("all")
+    setAttemptPage(1)
   }
 
   return (
@@ -915,6 +1506,14 @@ export function PaymentsPage() {
               <Download className="size-4" />
             )}
             Export filtered
+          </Button>
+          <Button
+            variant="outline"
+            onClick={exportPaymentsPdf}
+            disabled={transactions.length === 0}
+          >
+            <Download className="size-4" />
+            Export PDF
           </Button>
         </div>
       </div>
@@ -1071,6 +1670,321 @@ export function PaymentsPage() {
       </div>
 
       <Card>
+        <CardHeader className="gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <CardTitle>bKash checkout attempts</CardTitle>
+              <CardDescription>
+                Tracks customers who opened bKash, completed payment, cancelled, failed, or paid without an order.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              onClick={exportBkashAttemptsPdf}
+              disabled={bkashAttempts.length === 0}
+              className="w-full sm:w-auto"
+            >
+              <Download className="size-4" />
+              Export PDF
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <InlineMetric
+              label="Attempts"
+              value={bkashAttemptSummary?.attemptCount ?? 0}
+              helper="All bKash checkout starts"
+            />
+            <InlineMetric
+              label="Paid"
+              value={formatCurrency(bkashAttemptSummary?.paidAmount ?? 0)}
+              helper={`${bkashAttemptSummary?.paidCount ?? 0} successful payments`}
+            />
+            <InlineMetric
+              label="Open unpaid"
+              value={bkashAttemptSummary?.unpaidCount ?? 0}
+              helper={`${bkashAttemptSummary?.staleUnpaidCount ?? 0} expired or abandoned`}
+            />
+            <InlineMetric
+              label="Failed or cancelled"
+              value={
+                (bkashAttemptSummary?.failedCount ?? 0) +
+                (bkashAttemptSummary?.cancelledCount ?? 0) +
+                (bkashAttemptSummary?.expiredCount ?? 0)
+              }
+              helper="Gateway fail, user cancel, or timeout"
+            />
+            <InlineMetric
+              label="Paid without order"
+              value={formatCurrency(bkashAttemptSummary?.paidWithoutOrderAmount ?? 0)}
+              helper={`${bkashAttemptSummary?.paidWithoutOrderCount ?? 0} needs urgent review`}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-64 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="h-9 pl-9"
+                placeholder="Search bKash payment, customer, restaurant, wallet"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            <AdminDateRangeFilter<PaymentPreset>
+              value={preset}
+              from={from}
+              to={to}
+              label="Date"
+              triggerClassName="h-9 sm:w-44"
+              onPresetChange={setPreset}
+              onRangeChange={(range) => {
+                setFrom(range.from)
+                setTo(range.to)
+              }}
+            />
+            <Select
+              value={attemptPaymentStatus}
+              onValueChange={(value) =>
+                setAttemptPaymentStatus(value as BkashAttemptPaymentStatusFilter)
+              }
+            >
+              <SelectTrigger className="h-9 w-full sm:w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All payments</SelectItem>
+                <SelectItem value="unpaid">Unpaid</SelectItem>
+                <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="cancelled">Cancelled</SelectItem>
+                <SelectItem value="failed">Failed</SelectItem>
+                <SelectItem value="expired">Expired</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={attemptStatus}
+              onValueChange={(value) => setAttemptStatus(value as BkashAttemptStatusFilter)}
+            >
+              <SelectTrigger className="h-9 w-full sm:w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All events</SelectItem>
+                <SelectItem value="provider_created">Checkout created</SelectItem>
+                <SelectItem value="customer_cancelled">Customer cancelled</SelectItem>
+                <SelectItem value="execute_failed">Execute failed</SelectItem>
+                <SelectItem value="order_finalize_failed">Order finalize failed</SelectItem>
+                <SelectItem value="order_finalized">Order finalized</SelectItem>
+                <SelectItem value="expired">Expired</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={attemptOrderState}
+              onValueChange={(value) =>
+                setAttemptOrderState(value as BkashAttemptOrderStateFilter)
+              }
+            >
+              <SelectTrigger className="h-9 w-full sm:w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All order states</SelectItem>
+                <SelectItem value="finalized">Order finalized</SelectItem>
+                <SelectItem value="missing">Paid without order</SelectItem>
+                <SelectItem value="failed">Finalize failed</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Checkout</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Latest event</TableHead>
+                  <TableHead className="w-12" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {bkashAttemptsQuery.isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="h-24 text-center">
+                      <Loader2 className="mx-auto size-4 animate-spin text-muted-foreground" />
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+                {bkashAttempts.map((attempt: AdminBkashPaymentAttempt) => (
+                  <TableRow key={attempt.id}>
+                    <TableCell>
+                      <div className="font-medium">
+                        {attempt.paymentID || attempt.sessionId || "Pending provider id"}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {getBkashAttemptPayerNumber(attempt) || "No bKash number"} - {formatDate(attempt.createdAt)}
+                      </div>
+                      <div className="text-xs font-medium">
+                        Payer ref {attempt.payerReference || "N/A"}
+                      </div>
+                      {attempt.voucherCode ? (
+                        <Badge variant="outline" className="mt-1 border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700">
+                          Voucher {attempt.voucherCode}
+                        </Badge>
+                      ) : null}
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">{attempt.restaurantName}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {attempt.customerName} - {attempt.customerPhone || "N/A"}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        <Badge
+                          variant="outline"
+                          className={getBkashAttemptBadgeClass(attempt.paymentStatus)}
+                        >
+                          {formatAttemptLabel(attempt.paymentStatus)}
+                        </Badge>
+                        <Badge
+                          variant="outline"
+                          className={getBkashAttemptBadgeClass(attempt.status)}
+                        >
+                          {formatAttemptLabel(attempt.status)}
+                        </Badge>
+                        {attempt.orderFinalizationStatus === "failed" ? (
+                          <Badge variant="outline" className="border-rose-200 bg-rose-50 text-rose-700">
+                            Order needs review
+                          </Badge>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-medium">
+                      {formatCurrency(attempt.amount)}
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">
+                        {formatAttemptLabel(attempt.latestEvent || attempt.status)}
+                      </div>
+                      <div className="max-w-[280px] truncate text-xs text-muted-foreground">
+                        {attempt.failureReason ||
+                          attempt.providerMessage ||
+                          attempt.latestNote ||
+                          attempt.transactionId ||
+                          "No gateway note"}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setAttemptDetails(attempt)}
+                          title="Open gateway log"
+                        >
+                          <ReceiptText className="size-4" />
+                        </Button>
+                        {attempt.paymentID ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() =>
+                              reconcileBkashAttemptMutation.mutate(attempt.id)
+                            }
+                            disabled={
+                              reconcileBkashAttemptMutation.isPending &&
+                              reconcileBkashAttemptMutation.variables === attempt.id
+                            }
+                            title="Reconcile with bKash"
+                          >
+                            {reconcileBkashAttemptMutation.isPending &&
+                            reconcileBkashAttemptMutation.variables === attempt.id ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <RotateCcw className="size-4" />
+                            )}
+                          </Button>
+                        ) : null}
+                        {attempt.orderId ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setDetailsOrderId(attempt.orderId)}
+                          title="Open order"
+                        >
+                          <Eye className="size-4" />
+                        </Button>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {!bkashAttemptsQuery.isLoading && bkashAttempts.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                      No bKash checkout attempts match this filter.
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-muted-foreground">
+              Showing {bkashAttempts.length} of {bkashAttemptsQuery.data?.total ?? bkashAttempts.length} attempts
+              {bkashAttemptsQuery.isFetching && !bkashAttemptsQuery.isLoading ? " - refreshing" : ""}
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <Select
+                value={`${attemptPageSize}`}
+                onValueChange={(value) => setAttemptPageSize(Number(value))}
+              >
+                <SelectTrigger className="w-full sm:w-32">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent side="top">
+                  {pageSizeOptions.map((size) => (
+                    <SelectItem key={size} value={`${size}`}>
+                      {size} / page
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="text-sm font-medium">
+                Page {safeAttemptPage} of {attemptPageCount}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setAttemptPage((current) => Math.max(1, current - 1))}
+                  disabled={safeAttemptPage <= 1 || bkashAttemptsQuery.isFetching}
+                >
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() =>
+                    setAttemptPage((current) => Math.min(attemptPageCount, current + 1))
+                  }
+                  disabled={
+                    safeAttemptPage >= attemptPageCount || bkashAttemptsQuery.isFetching
+                  }
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader>
           <CardTitle>Transaction history</CardTitle>
           <CardDescription>
@@ -1188,6 +2102,11 @@ export function PaymentsPage() {
                       <Badge variant="outline" className={getOrderBadgeClass(transaction.status)}>
                         {transaction.status}
                       </Badge>
+                      {transaction.voucherCodes?.length ? (
+                        <Badge variant="outline" className="ml-1 border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700">
+                          Voucher applied
+                        </Badge>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <div className="font-medium">{transaction.restaurantName}</div>
@@ -1200,10 +2119,18 @@ export function PaymentsPage() {
                       <div className="text-xs text-muted-foreground">
                         {transaction.transactionId || transaction.provider || "No trx id"}
                       </div>
+                      {transaction.paymentMethod === "Bkash" ? (
+                        <div className="text-xs font-medium">
+                          Payer {transaction.bkashPayerPhone || "N/A"}
+                        </div>
+                      ) : null}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={getPaymentBadgeClass(transaction.paymentStatus)}>
-                        {transaction.paymentStatus}
+                      <Badge
+                        variant="outline"
+                        className={getPaymentBadgeClass(getDisplayPaymentStatus(transaction))}
+                      >
+                        {getDisplayPaymentStatus(transaction)}
                       </Badge>
                       {(() => {
                         const state = getReconciliationState(transaction)
@@ -1233,7 +2160,8 @@ export function PaymentsPage() {
                             <Eye className="size-4" />
                             View details
                           </DropdownMenuItem>
-                          {transaction.paymentStatus === "paid" &&
+                          {transaction.paymentMethod === "Bkash" &&
+                          transaction.paymentStatus === "paid" &&
                           ["Cancelled", "Rejected"].includes(transaction.status) ? (
                             <DropdownMenuItem
                               onClick={() =>
@@ -1363,6 +2291,16 @@ export function PaymentsPage() {
         onCollectCod={setCodTarget}
         onOpenChange={(open) => {
           if (!open) setDetailsOrderId("")
+        }}
+      />
+      <BkashAttemptDetailsSheet
+        attempt={attemptDetails}
+        onOpenOrder={(orderId) => {
+          setDetailsOrderId(orderId)
+          setAttemptDetails(null)
+        }}
+        onOpenChange={(open) => {
+          if (!open) setAttemptDetails(null)
         }}
       />
       <RefundDialog

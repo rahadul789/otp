@@ -7,7 +7,6 @@ import { sendSuccess } from "../../common/utils/api-response"
 import {
   appendCustomerSupportCaseMessage,
   cancelCustomerOrder,
-  cancelCustomerAccountChangeRequest,
   handleBkashCallback,
   createCustomerSupportCase,
   createCustomerReview,
@@ -32,7 +31,6 @@ import {
   quoteCustomerCart,
   refreshCustomerSession,
   requestCustomerPasswordReset,
-  requestCustomerAccountChange,
   resetCustomerPassword,
   signinCustomerWithGoogle,
   startCustomerPhoneSignin,
@@ -299,11 +297,6 @@ const customerProfileUpdateSchema = z.object({
     .optional()
 })
 
-const customerAccountRequestSchema = z.object({
-  type: z.enum(["deactivate", "delete"]),
-  reason: z.string().trim().optional()
-})
-
 const customerSupportAttachmentSchema = z.object({
   url: z.string().min(1),
   publicId: z.string().optional(),
@@ -540,31 +533,6 @@ export const getCustomerProfileSummary = asyncHandler(async (req: Request, res: 
   const data = await getCustomerProfile(req.user?.id ?? "")
 
   return sendSuccess(res, {
-    data
-  })
-})
-
-export const postCustomerAccountRequest = asyncHandler(async (req: Request, res: Response) => {
-  const payload = customerAccountRequestSchema.parse(req.body)
-  const data = await requestCustomerAccountChange({
-    customerId: req.user?.id ?? "",
-    type: payload.type,
-    reason: payload.reason
-  })
-
-  return sendSuccess(res, {
-    message: "Account request submitted successfully",
-    data
-  })
-})
-
-export const deleteCustomerAccountRequest = asyncHandler(async (req: Request, res: Response) => {
-  const data = await cancelCustomerAccountChangeRequest({
-    customerId: req.user?.id ?? ""
-  })
-
-  return sendSuccess(res, {
-    message: "Account request cancelled successfully",
     data
   })
 })

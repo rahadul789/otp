@@ -1,5 +1,6 @@
 import mongoose from "mongoose"
 
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout"
 import { logger } from "../../config/logger"
 import { emitSocketEvent } from "../../config/socket"
 import { CustomerModel } from "./customer.model"
@@ -87,10 +88,82 @@ function stripVisibleOrderReferences(text: string) {
     .trim()
 }
 
-function getOrderStatusPushMessage(payload: CustomerPushPayload) {
-  const hint = `${stringValue(payload.data?.status)} ${payload.title} ${payload.body}`.toLowerCase()
+function buildCleanOrderStatusPushMessage(status: string, hint: string) {
+  if (status === "cancelled" || status === "canceled" || hint.includes("cancel")) {
+    return {
+      title: "❌ Order cancelled",
+      body: "Your order was cancelled. You can order again anytime."
+    }
+  }
 
-  if (hint.includes("accepted")) {
+  if (status === "rejected" || hint.includes("reject") || hint.includes("not accepted")) {
+    return {
+      title: "😕 Order not accepted",
+      body: "The restaurant could not accept your order. Please try another restaurant."
+    }
+  }
+
+  if (hint.includes("accepted") && !hint.includes("not accepted")) {
+    return {
+      title: "✅ Order accepted",
+      body: "Your order is confirmed. The kitchen will start soon."
+    }
+  }
+
+  if (hint.includes("preparing") || hint.includes("cooking")) {
+    return {
+      title: "🍳 Food is preparing",
+      body: "Your food is being prepared now."
+    }
+  }
+
+  if (hint.includes("ready")) {
+    return {
+      title: "📦 Ready for pickup",
+      body: "Your order is packed. A rider will pick it up soon."
+    }
+  }
+
+  if (hint.includes("picked up") || hint.includes("on the way")) {
+    return {
+      title: "🛵 On the way",
+      body: "Your rider picked up the order and is heading to you."
+    }
+  }
+
+  if (hint.includes("delivered")) {
+    return {
+      title: "🎉 Delivered",
+      body: "Your food has arrived. Tap to rate your order."
+    }
+  }
+
+  return {
+    title: "🔔 Order update",
+    body: "There is a new update on your order."
+  }
+}
+
+function getOrderStatusPushMessage(payload: CustomerPushPayload) {
+  const status = stringValue(payload.data?.status).toLowerCase()
+  const hint = `${stringValue(payload.data?.status)} ${payload.title} ${payload.body}`.toLowerCase()
+  return buildCleanOrderStatusPushMessage(status, hint)
+
+  if (status === "cancelled" || status === "canceled") {
+    return {
+      title: "âŒ Order cancelled",
+      body: "Your order was cancelled. You can order again anytime."
+    }
+  }
+
+  if (status === "rejected") {
+    return {
+      title: "ðŸ˜• Order not accepted",
+      body: "The restaurant could not accept your order. Please try another restaurant."
+    }
+  }
+
+  if (hint.includes("accepted") && !hint.includes("not accepted")) {
     return {
       title: "✅ Order accepted",
       body: "Your order is confirmed. The kitchen will start soon."
@@ -165,6 +238,24 @@ function normalizeCustomerPushPayload(payload: CustomerPushPayload): CustomerPus
     return {
       ...payload,
       ...getOrderStatusPushMessage(payload),
+      data
+    }
+  }
+
+  if (type === "rider_assigned") {
+    return {
+      ...payload,
+      title: payload.title.includes("updated") ? "🛵 Rider updated" : "🛵 Rider assigned",
+      body: stripVisibleOrderReferences(payload.body || "A rider has been assigned to your order."),
+      data
+    }
+  }
+
+  if (type === "rider_near") {
+    return {
+      ...payload,
+      title: "📍 Rider is nearby",
+      body: stripVisibleOrderReferences(payload.body || "Your rider is getting close."),
       data
     }
   }
@@ -509,14 +600,22 @@ export async function sendPushToCustomer(params: {
     }
   }))
 
-  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+  const response = await fetchWithTimeout("https://exp.host/--/api/v2/push/send", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json"
     },
-    body: JSON.stringify(messages)
+    body: JSON.stringify(messages),
+    timeoutMs: 3_000,
+  }).catch((error) => {
+    logger.warn({ error, customerId: params.customerId }, "Expo push send timed out or failed")
+    return null
   })
+
+  if (!response) {
+    return { sent: 0, disabled: 0, inAppCreated: 1, sentExpoTokens, ticketIds: [] }
+  }
 
   if (!response.ok) {
     logger.error(

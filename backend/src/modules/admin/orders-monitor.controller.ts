@@ -11,6 +11,8 @@ import {
   createAdminRider,
   getAdminDispatchSettings,
   listAdminDispatchDecisionLogs,
+  listAdminBkashPaymentAttempts,
+  reconcileAdminBkashPaymentAttempt,
   getAdminLiveMap,
   getAdminOrderMonitorDetails,
   getAdminRiderDetails as getAdminRiderDetailsService,
@@ -41,9 +43,27 @@ const ordersMonitorQuerySchema = z.object({
 const activityLogsQuerySchema = z.object({
   entityType: z.string().optional(),
   entityId: z.string().optional(),
+  includeTotal: z.string().optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
 });
+
+function getStringParam(value: unknown) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? value[0] : "";
+  }
+
+  return "";
+}
+
+function getBooleanParam(value: unknown) {
+  const normalized = getStringParam(value).trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
 
 const ordersQuerySchema = z.object({
   search: z.string().optional(),
@@ -93,6 +113,35 @@ const paymentsQuerySchema = z.object({
     .enum(["all", "delivered", "refund_queue", "online", "cod"])
     .optional(),
   sortBy: z.enum(["newest", "oldest", "highestValue", "recentlyUpdated"]).optional(),
+  page: z.coerce.number().int().positive().optional(),
+  pageSize: z.coerce.number().int().positive().optional(),
+});
+
+const bkashPaymentAttemptsQuerySchema = z.object({
+  search: z.string().optional(),
+  preset: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  status: z
+    .enum([
+      "all",
+      "initiated",
+      "provider_created",
+      "provider_create_failed",
+      "callback_success",
+      "customer_cancelled",
+      "callback_failed",
+      "execute_failed",
+      "confirmed_paid",
+      "order_finalized",
+      "order_finalize_failed",
+      "expired",
+    ])
+    .optional(),
+  paymentStatus: z
+    .enum(["all", "unpaid", "paid", "cancelled", "failed", "expired"])
+    .optional(),
+  orderState: z.enum(["all", "finalized", "missing", "failed"]).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
 });
@@ -186,11 +235,17 @@ const updateOrderRefundStatusSchema = z.object({
   expectedPaymentStatus: z.string().optional(),
   paymentStatus: z.enum(["refund_pending", "refunded", "refund_rejected"]),
   note: z.string().optional(),
+  providerReference: z.string().trim().max(160).optional(),
+  proofUrl: z.string().trim().max(500).optional(),
 });
 
 const updateCodCollectionSchema = z.object({
   expectedPaymentStatus: z.string().optional(),
   note: z.string().optional(),
+});
+
+const reconcileBkashPaymentAttemptSchema = z.object({
+  note: z.string().trim().max(500).optional(),
 });
 
 const dispatchSettingsSchema = z.object({
@@ -258,6 +313,31 @@ export const getAdminPayments = asyncHandler(
     const data = await listAdminPayments(query);
 
     return sendSuccess(res, { data });
+  },
+);
+
+export const getAdminBkashPaymentAttempts = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = bkashPaymentAttemptsQuerySchema.parse(req.query);
+    const data = await listAdminBkashPaymentAttempts(query);
+
+    return sendSuccess(res, { data });
+  },
+);
+
+export const postAdminBkashPaymentAttemptReconcile = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = reconcileBkashPaymentAttemptSchema.parse(req.body);
+    const data = await reconcileAdminBkashPaymentAttempt({
+      attemptId: String(req.params.attemptId ?? ""),
+      adminId: req.user?.id ?? "",
+      note: body.note,
+    });
+
+    return sendSuccess(res, {
+      message: "bKash payment reconciled successfully",
+      data,
+    });
   },
 );
 
@@ -506,7 +586,13 @@ export const getAdminDispatchLogs = asyncHandler(
 export const getAdminActivityLogs = asyncHandler(
   async (req: Request, res: Response) => {
     const query = activityLogsQuerySchema.parse(req.query);
-    const data = await listAdminActivityLogs(query);
+    const data = await listAdminActivityLogs({
+      entityType: query.entityType,
+      entityId: query.entityId,
+      page: query.page,
+      pageSize: query.pageSize,
+      includeTotal: getBooleanParam(query.includeTotal),
+    });
     return sendSuccess(res, { data });
   }
 );
@@ -578,6 +664,8 @@ export const patchAdminOrderRefundStatus = asyncHandler(
       expectedPaymentStatus: payload.expectedPaymentStatus,
       paymentStatus: payload.paymentStatus,
       note: payload.note,
+      providerReference: payload.providerReference,
+      proofUrl: payload.proofUrl,
       adminId: req.user?.id ?? "",
     });
 

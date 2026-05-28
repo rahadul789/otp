@@ -20,7 +20,7 @@ import { useRiderDeliveryThresholdsQuery, useRiderOrdersQuery } from "@/src/hook
 import { useDeliveryCopy } from "@/src/lib/copy";
 import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
 import { getRiderDelayPriority, getRiderDelaySignal } from "@/src/lib/rider-delay-display";
-import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
+import { getOrderStatusBadge, getOrderTimingInfo, getPaymentMethodBadge } from "@/src/lib/rider-order-display";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 import { RiderScreenHeader } from "@/src/components/rider-screen-header";
@@ -206,6 +206,7 @@ export default function ActiveOrdersScreen() {
         }
         renderItem={({ item }) => {
           const statusBadge = getOrderStatusBadge(item.status);
+          const paymentBadge = getPaymentMethodBadge(item.paymentMethod);
           const timingInfo = getOrderTimingInfo(item);
           const delaySignal = getRiderDelaySignal(item, deliveryThresholds, nowMs);
           return (
@@ -225,6 +226,20 @@ export default function ActiveOrdersScreen() {
                     {statusBadge.label}
                   </Text>
                 </View>
+              </View>
+              <View
+                style={[
+                  styles.paymentBadge,
+                  {
+                    backgroundColor: paymentBadge.backgroundColor,
+                    borderColor: paymentBadge.borderColor,
+                  },
+                ]}
+              >
+                <Ionicons name={paymentBadge.icon} size={13} color={paymentBadge.color} />
+                <Text style={[styles.paymentBadgeText, { color: paymentBadge.color }]}>
+                  {paymentBadge.label}
+                </Text>
               </View>
               <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
               <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
@@ -299,6 +314,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   tripStatusText: { fontSize: 12, fontWeight: "800" },
+  paymentBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  paymentBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
   name: { fontSize: 15, fontWeight: "700", color: palette.foreground },
   metaStrong: { fontSize: 13, fontWeight: "700", color: palette.foreground },
   meta: { fontSize: 13, color: palette.mutedForeground },

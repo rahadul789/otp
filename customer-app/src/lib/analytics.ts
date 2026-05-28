@@ -1,5 +1,5 @@
 import { apiPost } from "@/src/lib/api";
-import { secureStateStorage } from "@/src/lib/secure-storage";
+import { appStateStorage } from "@/src/lib/app-storage";
 
 export const customerAnalyticsEventTypes = [
   "page_view",
@@ -77,7 +77,7 @@ async function getAnonymousId() {
   if (!anonymousIdPromise) {
     anonymousIdPromise = (async () => {
       try {
-        const existingId = await secureStateStorage.getItem(
+        const existingId = await appStateStorage.getItem(
           anonymousIdStorageKey,
         );
         if (existingId) {
@@ -85,7 +85,7 @@ async function getAnonymousId() {
         }
 
         const newId = buildId("anon");
-        await secureStateStorage.setItem(anonymousIdStorageKey, newId);
+        await appStateStorage.setItem(anonymousIdStorageKey, newId);
         return newId;
       } catch {
         return buildId("anon");
@@ -108,7 +108,7 @@ function hasAttributionValue(input: CustomerAnalyticsAttribution) {
 
 async function getRememberedAttribution() {
   try {
-    const rawValue = await secureStateStorage.getItem(attributionStorageKey);
+    const rawValue = await appStateStorage.getItem(attributionStorageKey);
     if (!rawValue) return null;
     const parsed = JSON.parse(rawValue) as CustomerAnalyticsAttribution;
     return hasAttributionValue(parsed) ? parsed : null;
@@ -123,7 +123,7 @@ export async function rememberCustomerAttribution(
   if (!hasAttributionValue(input)) return;
 
   try {
-    await secureStateStorage.setItem(
+    await appStateStorage.setItem(
       attributionStorageKey,
       JSON.stringify({
         ...input,

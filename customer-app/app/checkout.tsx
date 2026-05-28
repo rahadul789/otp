@@ -33,7 +33,10 @@ import { formatCurrency } from "@/src/lib/currency";
 import { formatDurationMinutes } from "@/src/lib/date-time";
 import { applyCurrentLocation } from "@/src/lib/current-location";
 import { getStableCustomerInstallId } from "@/src/lib/customer-install-id";
-import { formatCustomerAddressLine, formatDeliveryAddress } from "@/src/lib/location-address";
+import {
+  formatCustomerAddressLine,
+  formatDeliveryAddress,
+} from "@/src/lib/location-address";
 import { formatShortOrderIdLabel } from "@/src/lib/order-id";
 import {
   getRestaurantOutOfDeliveryAreaCopy,
@@ -47,6 +50,7 @@ import {
   useCartStore,
 } from "@/src/store/cart-store";
 import { useLocationStore } from "@/src/store/location-store";
+import { usePaymentPreferencesStore } from "@/src/store/payment-preferences-store";
 import { palette } from "@/src/theme/palette";
 
 type PaymentMethod = "Cash" | "Bkash";
@@ -61,7 +65,10 @@ function formatVoucherRetryDelay(milliseconds: number) {
 }
 
 function sanitizeCheckoutCode(value: string) {
-  return value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+  return value
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 16);
 }
 
 const paymentOptions: {
@@ -115,6 +122,7 @@ export default function CheckoutScreen() {
   const checkoutTrackedKeyRef = useRef("");
   const clientOrderIdRef = useRef(createClientOrderId());
   const voucherAttemptTimestampsRef = useRef<number[]>([]);
+  const hasInitializedPaymentMethodRef = useRef(false);
   const [bkashPayment, setBkashPayment] = useState<{
     sessionId: string;
     paymentID: string;
@@ -137,10 +145,12 @@ export default function CheckoutScreen() {
     [selectedLocation],
   );
   const selectedDeliveryAddressLine = useMemo(
-    () => formatCustomerAddressLine(selectedLocation?.address, "Selected location"),
+    () =>
+      formatCustomerAddressLine(selectedLocation?.address, "Selected location"),
     [selectedLocation?.address],
   );
-  const selectedDeliveryAddressDetails = selectedLocation?.addressDetails?.trim() || undefined;
+  const selectedDeliveryAddressDetails =
+    selectedLocation?.addressDetails?.trim() || undefined;
   const selectedDeliveryAddressPrimaryText =
     selectedDeliveryAddressDetails ||
     selectedLocation?.label ||
@@ -152,13 +162,21 @@ export default function CheckoutScreen() {
     selectedDeliveryAddressLine.trim().toLowerCase() !==
       selectedDeliveryAddressDetails?.trim().toLowerCase();
   const customer = useCustomerAuthStore((state) => state.customer);
+  const preferredPaymentMethod = usePaymentPreferencesStore(
+    (state) => state.preferredPaymentMethod,
+  );
+  const setPreferredPaymentMethod = usePaymentPreferencesStore(
+    (state) => state.setPreferredPaymentMethod,
+  );
   const isOnline = useIsOnline();
   const bkashWalletNumber = customer?.phone?.trim() ?? "";
   const placeOrderMutation = useCustomerPlaceOrderMutation();
   const applyReferralMutation = useCustomerApplyReferralCodeMutation();
   const bkashInitiateMutation = useBkashInitiateMutation();
   const paymentSettingsQuery = useCustomerPaymentSettingsQuery();
-  const referralSummaryQuery = useCustomerReferralSummaryQuery(Boolean(customer));
+  const referralSummaryQuery = useCustomerReferralSummaryQuery(
+    Boolean(customer),
+  );
   const referralSummary = referralSummaryQuery.data;
   const canApplyReferralCode = Boolean(referralSummary?.canApplyReferralCode);
   const shouldAttemptReferralCode =
@@ -173,8 +191,7 @@ export default function CheckoutScreen() {
     ? "New to Foodbela? You can also use a referral code here."
     : "";
   const incomingReferralCode = useMemo(
-    () =>
-      sanitizeCheckoutCode(String(params.ref ?? params.referralCode ?? "")),
+    () => sanitizeCheckoutCode(String(params.ref ?? params.referralCode ?? "")),
     [params.ref, params.referralCode],
   );
   const paymentSettings = paymentSettingsQuery.data ?? {
@@ -182,12 +199,16 @@ export default function CheckoutScreen() {
     bkashEnabled: false,
     bkashLabel: "bKash",
     bkashSubtitle: "Continue to the official hosted payment page.",
+    bkashRefundEtaMinutes: 60,
   };
   const visiblePaymentOptions = useMemo(
     () =>
       paymentOptions
         .filter(
-          (option) => option.id === "Cash" || paymentSettings.bkashEnabled,
+          (option) =>
+            option.id === "Cash"
+              ? paymentSettings.cashOnDeliveryEnabled || !paymentSettings.bkashEnabled
+              : paymentSettings.bkashEnabled,
         )
         .map((option) =>
           option.id === "Bkash"
@@ -199,11 +220,32 @@ export default function CheckoutScreen() {
             : option,
         ),
     [
+      paymentSettings.cashOnDeliveryEnabled,
       paymentSettings.bkashEnabled,
       paymentSettings.bkashLabel,
       paymentSettings.bkashSubtitle,
     ],
   );
+
+  useEffect(() => {
+    if (paymentSettingsQuery.isLoading || hasInitializedPaymentMethodRef.current) {
+      return;
+    }
+
+    const preferredIsAvailable = visiblePaymentOptions.some(
+      (option) => option.id === preferredPaymentMethod,
+    );
+    const nextPaymentMethod = preferredIsAvailable
+      ? preferredPaymentMethod
+      : visiblePaymentOptions[0]?.id ?? "Cash";
+
+    setPaymentMethod(nextPaymentMethod);
+    hasInitializedPaymentMethodRef.current = true;
+  }, [
+    paymentSettingsQuery.isLoading,
+    preferredPaymentMethod,
+    visiblePaymentOptions,
+  ]);
 
   const quoteQuery = useCustomerCartQuoteQuery({
     restaurantId: restaurant?.restaurantId,
@@ -286,8 +328,8 @@ export default function CheckoutScreen() {
       (hasQuoteIssues && !isServiceabilityBlocked) ||
       !isOnline ||
       paymentSettingsQuery.isLoading);
-  const isApplyingCode =
-    isApplyingVoucher || applyReferralMutation.isPending;
+  const isApplyingCode = isApplyingVoucher || applyReferralMutation.isPending;
+  const hasAppliedCode = Boolean(appliedVoucherCode || appliedReferralCode);
 
   const itemPayload = useMemo(
     () =>
@@ -391,7 +433,14 @@ export default function CheckoutScreen() {
         params: { redirectTo },
       });
     }
-  }, [customer, incomingReferralCode, isFocused, items.length, restaurant, router]);
+  }, [
+    customer,
+    incomingReferralCode,
+    isFocused,
+    items.length,
+    restaurant,
+    router,
+  ]);
 
   useEffect(() => {
     if (paymentMethod === "Bkash" && !paymentSettings.bkashEnabled) {
@@ -566,6 +615,8 @@ export default function CheckoutScreen() {
   function handleRemoveVoucher() {
     setVoucherCodeInput("");
     setAppliedVoucherCode("");
+    setAppliedReferralCode("");
+    setAppliedReferralName("");
     setVoucherFeedback(null);
     setBkashPayment(null);
     setPaymentError("");
@@ -621,6 +672,7 @@ export default function CheckoutScreen() {
     }
 
     setPaymentError("");
+    setPreferredPaymentMethod("Bkash");
 
     try {
       void trackCustomerEvent({
@@ -748,6 +800,7 @@ export default function CheckoutScreen() {
     }
 
     try {
+      setPreferredPaymentMethod(paymentMethod);
       if (paymentMethod === "Cash") {
         void trackCustomerEvent({
           eventType: "payment_initiated",
@@ -1005,7 +1058,8 @@ export default function CheckoutScreen() {
                   <Text style={styles.changePillText}>Change</Text>
                 </View>
               </View>
-              {selectedDeliveryAddressDetails && shouldShowMapAddressUnderManual ? (
+              {selectedDeliveryAddressDetails &&
+              shouldShowMapAddressUnderManual ? (
                 <Text numberOfLines={2} style={styles.addressLine}>
                   {selectedDeliveryAddressLine}
                 </Text>
@@ -1037,48 +1091,67 @@ export default function CheckoutScreen() {
                   if (appliedVoucherCode && nextCode !== appliedVoucherCode) {
                     setAppliedVoucherCode("");
                   }
+                  if (appliedReferralCode && nextCode !== appliedReferralCode) {
+                    setAppliedReferralCode("");
+                    setAppliedReferralName("");
+                  }
                 }}
                 placeholder={codeInputPlaceholder}
                 placeholderTextColor={palette.mutedForeground}
                 autoCapitalize="characters"
                 autoCorrect={false}
+                editable={!hasAppliedCode}
                 style={styles.voucherInput}
               />
-              <Pressable
-                style={[
-                  styles.voucherButton,
-                  isApplyingCode ? styles.voucherButtonDisabled : null,
-                ]}
-                onPress={handleApplyVoucher}
-                disabled={isApplyingCode}
-              >
-                {isApplyingCode ? (
-                  <ActivityIndicator size="small" color={palette.surface} />
-                ) : (
-                  <Text style={styles.voucherButtonText}>Apply</Text>
-                )}
-              </Pressable>
+              {hasAppliedCode ? null : (
+                <Pressable
+                  style={[
+                    styles.voucherButton,
+                    isApplyingCode ? styles.voucherButtonDisabled : null,
+                  ]}
+                  onPress={handleApplyVoucher}
+                  disabled={isApplyingCode}
+                >
+                  {isApplyingCode ? (
+                    <ActivityIndicator size="small" color={palette.surface} />
+                  ) : (
+                    <Text style={styles.voucherButtonText}>Apply</Text>
+                  )}
+                </Pressable>
+              )}
             </View>
             {voucherFeedback ? (
-              <Text
-                style={[
-                  styles.voucherFeedbackText,
-                  voucherFeedback.type === "error"
-                    ? styles.voucherFeedbackTextError
-                    : styles.voucherFeedbackTextSuccess,
-                ]}
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
               >
-                {voucherFeedback.message}
-              </Text>
+                <Text
+                  style={[
+                    styles.voucherFeedbackText,
+                    voucherFeedback.type === "error"
+                      ? styles.voucherFeedbackTextError
+                      : styles.voucherFeedbackTextSuccess,
+                  ]}
+                >
+                  {voucherFeedback.message}
+                </Text>
+
+                <Pressable onPress={handleRemoveVoucher}>
+                  <Text style={styles.voucherRemoveText}>Remove</Text>
+                </Pressable>
+              </View>
             ) : null}
             {appliedVoucherCode ? (
               <View style={styles.voucherAppliedRow}>
-                <Text style={styles.voucherAppliedText}>
+                {/* <Text style={styles.voucherAppliedText}>
                   Applied voucher: {appliedVoucherCode}
                 </Text>
                 <Pressable onPress={handleRemoveVoucher}>
                   <Text style={styles.voucherRemoveText}>Remove</Text>
-                </Pressable>
+                </Pressable> */}
               </View>
             ) : null}
             {appliedReferralCode ? (
@@ -1087,7 +1160,9 @@ export default function CheckoutScreen() {
                   Referral saved: {appliedReferralCode}
                   {appliedReferralName ? ` from ${appliedReferralName}` : ""}
                 </Text>
-                <Text style={styles.voucherSavedText}>Saved</Text>
+                <Pressable onPress={handleRemoveVoucher}>
+                  <Text style={styles.voucherRemoveText}>Remove</Text>
+                </Pressable>
               </View>
             ) : null}
           </View>
@@ -1112,6 +1187,7 @@ export default function CheckoutScreen() {
                   ]}
                   onPress={() => {
                     setPaymentMethod(option.id);
+                    setPreferredPaymentMethod(option.id);
                     setPaymentError("");
                   }}
                 >
@@ -1290,21 +1366,7 @@ export default function CheckoutScreen() {
               ? placeOrderMutation.error.message
               : "Could not place the order right now."}
           </Text>
-        ) : (
-          <Text style={styles.footerNote}>
-            {hasQuoteIssues
-              ? isServiceabilityBlocked
-                ? "Choose a delivery point inside this restaurant's delivery area."
-                : "Update your cart before you continue."
-              : !isOnline
-                ? "Reconnect to verify prices and place this order."
-                : paymentMethod === "Bkash"
-                  ? "You will continue to the bKash sandbox to confirm payment."
-                  : quoteQuery.isLoading
-                    ? "We are verifying the latest restaurant prices for this order."
-                    : "Your selected delivery point will be used for this delivery."}
-          </Text>
-        )}
+        ) : null}
       </View>
     </SafeAreaView>
   );

@@ -30,6 +30,12 @@ Notifications.setNotificationHandler({
 });
 
 const PUSH_AUTH_SETTLE_DELAY_MS = 700;
+const PUSH_DEBUG_ENABLED =
+  __DEV__ &&
+  Boolean(
+    (Constants.expoConfig?.extra as { enablePushDebug?: boolean } | undefined)
+      ?.enablePushDebug,
+  );
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,7 +59,7 @@ function isAuthError(error: unknown) {
 }
 
 function logPushDebug(message: string, details?: unknown) {
-  if (!__DEV__) return;
+  if (!PUSH_DEBUG_ENABLED) return;
   if (details === undefined) {
     console.log(message);
     return;

@@ -56,6 +56,11 @@ function sanitizePhone(phone: string) {
 
 const CUSTOMER_AUTH_OTP_CODE_LENGTH = 4;
 
+function shouldReplaceAuthStack(redirectTo?: string | null) {
+  const target = redirectTo?.trim().toLowerCase() ?? "";
+  return target === "/checkout" || target.startsWith("/checkout?");
+}
+
 type AuthStep = "phone" | "password" | "resetOtp" | "resetPassword";
 
 export default function SignInScreen() {
@@ -325,6 +330,11 @@ export default function SignInScreen() {
         redirectTo: params.redirectTo ?? "",
       },
     });
+    if (shouldReplaceAuthStack(params.redirectTo)) {
+      router.replace("/verify");
+      return;
+    }
+
     router.push("/verify");
   }
 

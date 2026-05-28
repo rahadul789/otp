@@ -1202,6 +1202,7 @@ function RestaurantDetailsSheet({
   const [payoutProviderTransactionId, setPayoutProviderTransactionId] = React.useState("")
   const [payoutPaymentProofUrl, setPayoutPaymentProofUrl] = React.useState("")
   const [payoutProcessingNote, setPayoutProcessingNote] = React.useState("")
+  const [payoutNotifyOwnerSms, setPayoutNotifyOwnerSms] = React.useState(false)
   const [payoutChecklist, setPayoutChecklist] = React.useState({
     methodVerified: false,
     amountMatched: false,
@@ -1435,6 +1436,7 @@ function RestaurantDetailsSheet({
     setPayoutProviderTransactionId("")
     setPayoutPaymentProofUrl("")
     setPayoutProcessingNote("")
+    setPayoutNotifyOwnerSms(false)
     setPayoutChecklist({
       methodVerified: false,
       amountMatched: false,
@@ -1455,6 +1457,8 @@ function RestaurantDetailsSheet({
         providerTransactionId: payoutProviderTransactionId || undefined,
         paymentProofUrl: payoutPaymentProofUrl || undefined,
         processingNote: payoutProcessingNote || undefined,
+        notifyOwnerSms:
+          payoutActionTarget.status === "completed" ? payoutNotifyOwnerSms : false,
         failureReason:
           payoutActionTarget.status === "failed"
             ? payoutProcessingNote || "Marked failed by admin"
@@ -1653,6 +1657,20 @@ function RestaurantDetailsSheet({
               }
             />
           </div>
+          {payoutActionTarget?.status === "completed" ? (
+            <label className="flex items-start gap-3 rounded-lg border bg-muted/30 p-3 text-sm">
+              <Checkbox
+                checked={payoutNotifyOwnerSms}
+                onCheckedChange={(checked) => setPayoutNotifyOwnerSms(checked === true)}
+              />
+              <span>
+                <span className="block font-medium">Also send SMS to owner</span>
+                <span className="text-muted-foreground">
+                  Owner app push is sent automatically. Enable SMS only when a phone message is needed.
+                </span>
+              </span>
+            </label>
+          ) : null}
         </div>
         <DialogFooter>
           <Button
@@ -3524,7 +3542,11 @@ function RestaurantDetailsContent({
               />
               <InfoRow
                 label="Number"
-                value={details.payoutMethod?.accountNumberMasked || "N/A"}
+                value={
+                  details.payoutMethod?.accountNumber ||
+                  details.payoutMethod?.accountNumberMasked ||
+                  "N/A"
+                }
               />
               <InfoRow
                 label="Verified"

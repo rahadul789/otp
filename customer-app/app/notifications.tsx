@@ -5,6 +5,7 @@ import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, View }
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { CardListSkeleton } from "@/src/components/loading-skeleton";
 import { Screen } from "@/src/components/screen";
 import {
   useCustomerNotificationsInfiniteQuery,
@@ -208,10 +209,7 @@ export default function NotificationsScreen() {
 
         {isInitialLoading ? (
           <View style={styles.feedbackWrap}>
-            <View style={styles.loadingCard}>
-              <ActivityIndicator size="small" color={palette.primary} />
-              <Text style={styles.loadingText}>Loading notifications...</Text>
-            </View>
+            <CardListSkeleton count={4} cardHeight={88} />
           </View>
         ) : notificationsQuery.isError ? (
           <View style={styles.feedbackWrap}>

@@ -1,5 +1,7 @@
 import { logger } from "../../config/logger";
 import { getRequestMonitorSnapshot } from "../../common/middleware/request-monitor";
+import { getBackgroundTaskQueueSnapshot } from "../../common/utils/background-task";
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
 import {
   TRACKING_STALE_AFTER_MS,
   decorateTrackingSnapshot,
@@ -45,6 +47,15 @@ type JobState = {
 };
 
 const schedulerJobs = new Map<string, JobState>();
+const adminOperationalHealthCache = createInMemoryAsyncCache<any>({
+  ttlMs: 5_000,
+  staleWhileRevalidateMs: 15_000,
+  maxEntries: 2,
+});
+
+export function invalidateAdminOperationalHealthCache() {
+  adminOperationalHealthCache.clear();
+}
 
 function databaseState() {
   const state = mongoose.connection.readyState;
@@ -171,25 +182,79 @@ async function getRealtimeOperationsSnapshot() {
     "riderTracking.isActive": true,
   };
   const staleCutoff = new Date(Date.now() - TRACKING_STALE_AFTER_MS);
-  const [activeShares, focusedShares, liveShares, staleShares, liveOrders] = await Promise.all([
-    OrderModel.countDocuments(liveTrackingQuery),
-    OrderModel.countDocuments({
-      ...liveTrackingQuery,
-      "riderTracking.isFocused": true,
-    }),
-    OrderModel.countDocuments({
-      ...liveTrackingQuery,
-      "riderTracking.lastUpdatedAt": { $gte: staleCutoff },
-    }),
-    OrderModel.countDocuments({
-      ...liveTrackingQuery,
-      "riderTracking.lastUpdatedAt": { $lt: staleCutoff },
-    }),
+  const [summaryRows, liveOrders] = await Promise.all([
+    OrderModel.aggregate<{
+      _id: null;
+      activeShares: number;
+      focusedShares: number;
+      liveShares: number;
+      staleShares: number;
+    }>([
+      { $match: liveTrackingQuery },
+      {
+        $group: {
+          _id: null,
+          activeShares: { $sum: 1 },
+          focusedShares: {
+            $sum: {
+              $cond: [{ $eq: ["$riderTracking.isFocused", true] }, 1, 0],
+            },
+          },
+          liveShares: {
+            $sum: {
+              $cond: [
+                {
+                  $gte: [
+                    { $ifNull: ["$riderTracking.lastUpdatedAt", new Date(0)] },
+                    staleCutoff,
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+          staleShares: {
+            $sum: {
+              $cond: [
+                {
+                  $lt: [
+                    { $ifNull: ["$riderTracking.lastUpdatedAt", new Date(0)] },
+                    staleCutoff,
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]),
     OrderModel.find(liveTrackingQuery)
       .sort({ "riderTracking.lastUpdatedAt": -1, updatedAt: -1 })
       .limit(100)
+      .select({
+        _id: 1,
+        orderNumber: 1,
+        status: 1,
+        restaurantId: 1,
+        customerId: 1,
+        riderId: 1,
+        customerSnapshot: 1,
+        riderSnapshot: 1,
+        riderTracking: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      })
       .lean(),
   ]);
+  const summary = summaryRows[0] ?? {
+    activeShares: 0,
+    focusedShares: 0,
+    liveShares: 0,
+    staleShares: 0,
+  };
   const orders = liveOrders.map((order) =>
     serializeLiveLocationOrder(order as Record<string, any>),
   );
@@ -197,10 +262,10 @@ async function getRealtimeOperationsSnapshot() {
   return {
     socket: getSocketConnectionSnapshot(),
     liveLocation: {
-      activeShares,
-      focusedShares,
-      liveShares,
-      staleShares,
+      activeShares: summary.activeShares,
+      focusedShares: summary.focusedShares,
+      liveShares: summary.liveShares,
+      staleShares: summary.staleShares,
       visibleLimit: 100,
       sampleSize: orders.length,
       orders,
@@ -275,100 +340,143 @@ export function markOperationalJobFinished(
 }
 
 export async function getAdminOperationalHealthSnapshot() {
-  const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const now = new Date();
-  const activeAlertQuery = {
-    isRead: { $ne: true },
-    resolvedAt: null,
-    $or: [{ snoozedUntil: null }, { snoozedUntil: { $lte: now } }],
-  };
+  return adminOperationalHealthCache.getOrSet("admin-operational-health", async () => {
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const activeAlertQuery = {
+      isRead: { $ne: true },
+      resolvedAt: null,
+      $or: [{ snoozedUntil: null }, { snoozedUntil: { $lte: now } }],
+    };
 
-  const [
-    recentEvents,
-    openCriticalAlerts,
-    openWarningAlerts,
-    openInfoAlerts,
-    activeAlerts,
-    eventsLast24h,
-    criticalEventsLast24h,
-    warningEventsLast24h,
-  ] = await Promise.all([
-    AdminBusinessEventModel.find().sort({ createdAt: -1 }).limit(80).lean(),
-    AdminOperationalAlertModel.countDocuments({
-      ...activeAlertQuery,
-      severity: "critical",
-    }),
-    AdminOperationalAlertModel.countDocuments({
-      ...activeAlertQuery,
-      severity: "warning",
-    }),
-    AdminOperationalAlertModel.countDocuments({
-      ...activeAlertQuery,
-      severity: "info",
-    }),
-    AdminOperationalAlertModel.find(activeAlertQuery)
-      .sort({ lastSeenAt: -1, createdAt: -1 })
-      .limit(20)
-      .lean(),
-    AdminBusinessEventModel.countDocuments({ createdAt: { $gte: since24h } }),
-    AdminBusinessEventModel.countDocuments({
-      createdAt: { $gte: since24h },
-      severity: "critical",
-    }),
-    AdminBusinessEventModel.countDocuments({
-      createdAt: { $gte: since24h },
-      severity: "warning",
-    }),
-  ]);
+    const [
+      recentEvents,
+      activeAlerts,
+      alertSummaryRows,
+      eventSummaryRows,
+      realtime,
+    ] = await Promise.all([
+      AdminBusinessEventModel.find().sort({ createdAt: -1 }).limit(80).lean(),
+      AdminOperationalAlertModel.find(activeAlertQuery)
+        .sort({ lastSeenAt: -1, createdAt: -1 })
+        .limit(20)
+        .lean(),
+      AdminOperationalAlertModel.aggregate<{
+        _id: null;
+        openCriticalAlerts: number;
+        openWarningAlerts: number;
+        openInfoAlerts: number;
+      }>([
+        { $match: activeAlertQuery },
+        {
+          $group: {
+            _id: null,
+            openCriticalAlerts: {
+              $sum: {
+                $cond: [{ $eq: ["$severity", "critical"] }, 1, 0],
+              },
+            },
+            openWarningAlerts: {
+              $sum: {
+                $cond: [{ $eq: ["$severity", "warning"] }, 1, 0],
+              },
+            },
+            openInfoAlerts: {
+              $sum: {
+                $cond: [{ $eq: ["$severity", "info"] }, 1, 0],
+              },
+            },
+          },
+        },
+      ]),
+      AdminBusinessEventModel.aggregate<{
+        _id: null;
+        eventsLast24h: number;
+        criticalEventsLast24h: number;
+        warningEventsLast24h: number;
+      }>([
+        { $match: { createdAt: { $gte: since24h } } },
+        {
+          $group: {
+            _id: null,
+            eventsLast24h: { $sum: 1 },
+            criticalEventsLast24h: {
+              $sum: {
+                $cond: [{ $eq: ["$severity", "critical"] }, 1, 0],
+              },
+            },
+            warningEventsLast24h: {
+              $sum: {
+                $cond: [{ $eq: ["$severity", "warning"] }, 1, 0],
+              },
+            },
+          },
+        },
+      ]),
+      getRealtimeOperationsSnapshot(),
+    ]);
 
-  const attentionScore =
-    openCriticalAlerts * 5 +
-    criticalEventsLast24h * 3 +
-    openWarningAlerts * 2 +
-    warningEventsLast24h;
+    const alertSummary = alertSummaryRows[0] ?? {
+      openCriticalAlerts: 0,
+      openWarningAlerts: 0,
+      openInfoAlerts: 0,
+    };
+    const eventSummary = eventSummaryRows[0] ?? {
+      eventsLast24h: 0,
+      criticalEventsLast24h: 0,
+      warningEventsLast24h: 0,
+    };
 
-  const systemStatus =
-    openCriticalAlerts > 0 || criticalEventsLast24h > 0
-      ? "needs_attention"
-      : openWarningAlerts > 0 || warningEventsLast24h > 0
-        ? "watching"
-        : "healthy";
+    const attentionScore =
+      alertSummary.openCriticalAlerts * 5 +
+      eventSummary.criticalEventsLast24h * 3 +
+      alertSummary.openWarningAlerts * 2 +
+      eventSummary.warningEventsLast24h;
 
-  return {
-    generatedAt: new Date().toISOString(),
-    systemStatus,
-    attentionScore,
-    runtime: getRuntimeSnapshot(),
-    requestMonitor: getRequestMonitorSnapshot(),
-    summary: {
-      openCriticalAlerts,
-      openWarningAlerts,
-      openInfoAlerts,
-      failedSchedules: 0,
-      pendingSchedules: 0,
-      eventsLast24h,
-      criticalEventsLast24h,
-      warningEventsLast24h,
-    },
-    schedulerJobs: Array.from(schedulerJobs.values()),
-    timeline: recentEvents.map((event) => serializeBusinessEvent(event)),
-    activeAlerts: activeAlerts.map((alert) => ({
-      id: String(alert._id ?? ""),
-      alertType: String(alert.alertType ?? ""),
-      severity: String(alert.severity ?? "warning"),
-      title: String(alert.title ?? ""),
-      description: String(alert.description ?? ""),
-      source: String(alert.source ?? "operations"),
-      entityType: String(alert.entityType ?? ""),
-      entityId: String(alert.entityId ?? ""),
-      path: String(alert.path ?? ""),
-      iconKey: String(alert.iconKey ?? "bell"),
-      lastSeenAt: serializeDate(alert.lastSeenAt),
-      createdAt: serializeDate(alert.createdAt),
-      resolvedAt: serializeDate(alert.resolvedAt),
-      snoozedUntil: serializeDate(alert.snoozedUntil),
-    })),
-    schedules: [],
-    realtime: await getRealtimeOperationsSnapshot(),
-  };
+    const systemStatus =
+      alertSummary.openCriticalAlerts > 0 || eventSummary.criticalEventsLast24h > 0
+        ? "needs_attention"
+        : alertSummary.openWarningAlerts > 0 || eventSummary.warningEventsLast24h > 0
+          ? "watching"
+          : "healthy";
+
+    return {
+      generatedAt: new Date().toISOString(),
+      systemStatus,
+      attentionScore,
+      runtime: getRuntimeSnapshot(),
+      backgroundTasks: getBackgroundTaskQueueSnapshot(),
+      requestMonitor: getRequestMonitorSnapshot(),
+      summary: {
+        openCriticalAlerts: alertSummary.openCriticalAlerts,
+        openWarningAlerts: alertSummary.openWarningAlerts,
+        openInfoAlerts: alertSummary.openInfoAlerts,
+        failedSchedules: 0,
+        pendingSchedules: 0,
+        eventsLast24h: eventSummary.eventsLast24h,
+        criticalEventsLast24h: eventSummary.criticalEventsLast24h,
+        warningEventsLast24h: eventSummary.warningEventsLast24h,
+      },
+      schedulerJobs: Array.from(schedulerJobs.values()),
+      timeline: recentEvents.map((event) => serializeBusinessEvent(event)),
+      activeAlerts: activeAlerts.map((alert) => ({
+        id: String(alert._id ?? ""),
+        alertType: String(alert.alertType ?? ""),
+        severity: String(alert.severity ?? "warning"),
+        title: String(alert.title ?? ""),
+        description: String(alert.description ?? ""),
+        source: String(alert.source ?? "operations"),
+        entityType: String(alert.entityType ?? ""),
+        entityId: String(alert.entityId ?? ""),
+        path: String(alert.path ?? ""),
+        iconKey: String(alert.iconKey ?? "bell"),
+        lastSeenAt: serializeDate(alert.lastSeenAt),
+        createdAt: serializeDate(alert.createdAt),
+        resolvedAt: serializeDate(alert.resolvedAt),
+        snoozedUntil: serializeDate(alert.snoozedUntil),
+      })),
+      schedules: [],
+      realtime,
+    };
+  });
 }

@@ -2,6 +2,7 @@ import { StatusCodes } from "http-status-codes"
 import type { Model } from "mongoose"
 
 import { AppError } from "../../common/utils/app-error"
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache"
 import {
   OwnerModel,
   RefreshTokenSessionModel,
@@ -72,6 +73,16 @@ const sessionConfigs: SessionConfig[] = [
     actorSelect: { fullName: 1, phone: 1, status: 1, lastLoginAt: 1 },
   },
 ]
+
+const adminSessionsCache = createInMemoryAsyncCache<any>({
+  ttlMs: 5_000,
+  staleWhileRevalidateMs: 15_000,
+  maxEntries: 24,
+})
+
+function invalidateAdminSessionsCache() {
+  adminSessionsCache.clear()
+}
 
 function getConfig(role: AdminSessionRole) {
   const config = sessionConfigs.find((item) => item.role === role)
@@ -242,39 +253,42 @@ export async function listAdminSessions(params: SessionListParams) {
       : [getConfig(params.role)]
   const status = params.status ?? "active"
   const fetchLimit = page * pageSize
+  const cacheKey = [roles.map((config) => config.role).join(","), status, page, pageSize].join("|")
 
-  const [itemsByRole, counts] = await Promise.all([
-    Promise.all(
-      roles.map((config) =>
-        listSessionsForConfig({
-          config,
-          status,
-          limit: fetchLimit,
-        })
+  return adminSessionsCache.getOrSet(cacheKey, async () => {
+    const [itemsByRole, counts] = await Promise.all([
+      Promise.all(
+        roles.map((config) =>
+          listSessionsForConfig({
+            config,
+            status,
+            limit: fetchLimit,
+          })
+        )
+      ),
+      Promise.all(
+        roles.map((config) => config.model.countDocuments(buildStatusQuery(status)))
+      ),
+    ])
+
+    const items = itemsByRole
+      .flat()
+      .sort(
+        (left, right) =>
+          new Date(right.createdAt ?? 0).getTime() -
+          new Date(left.createdAt ?? 0).getTime()
       )
-    ),
-    Promise.all(
-      roles.map((config) => config.model.countDocuments(buildStatusQuery(status)))
-    ),
-  ])
+    const total = counts.reduce((sum, count) => sum + count, 0)
+    const pagedItems = items.slice((page - 1) * pageSize, page * pageSize)
 
-  const items = itemsByRole
-    .flat()
-    .sort(
-      (left, right) =>
-        new Date(right.createdAt ?? 0).getTime() -
-        new Date(left.createdAt ?? 0).getTime()
-    )
-  const total = counts.reduce((sum, count) => sum + count, 0)
-  const pagedItems = items.slice((page - 1) * pageSize, page * pageSize)
-
-  return {
-    items: pagedItems,
-    total,
-    page,
-    pageSize,
-    summary: await buildSessionSummary(),
-  }
+    return {
+      items: pagedItems,
+      total,
+      page,
+      pageSize,
+      summary: await buildSessionSummary(),
+    }
+  })
 }
 
 export async function revokeAdminSession(params: {
@@ -292,6 +306,7 @@ export async function revokeAdminSession(params: {
     throw new AppError(StatusCodes.NOT_FOUND, "SESSION_NOT_FOUND", "Valid session not found")
   }
 
+  invalidateAdminSessionsCache()
   return { revoked: true }
 }
 
@@ -309,5 +324,8 @@ export async function revokeAdminActorSessions(params: {
     { $set: { revokedAt: new Date() } }
   )
 
+  if (result.modifiedCount > 0) {
+    invalidateAdminSessionsCache()
+  }
   return { revoked: result.modifiedCount }
 }

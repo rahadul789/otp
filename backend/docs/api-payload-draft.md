@@ -589,13 +589,8 @@ Rule:
 - if `accountNumber === owner.phone`, mark verified
 - else create pending verification session
 
-### POST `/owner/payouts/request`
-Request
-```json
-{
-  "amount": 15240
-}
-```
+Owner payout requests are disabled. Admin finance creates and completes payouts
+when restaurant earnings become eligible.
 
 ## Analytics
 

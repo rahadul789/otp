@@ -143,6 +143,7 @@ export default function LocationPickerScreen() {
   const pinBob = useRef(new Animated.Value(0)).current;
   const pinHalo = useRef(new Animated.Value(0)).current;
   const currentPulse = useRef(new Animated.Value(1)).current;
+  const manualFieldPulse = useRef(new Animated.Value(0)).current;
 
   const isConfirming = useMemo(
     () =>
@@ -379,6 +380,37 @@ export default function LocationPickerScreen() {
     pinPulseLoopRef.current.start();
   }
 
+  function pulseManualField() {
+    manualFieldPulse.stopAnimation();
+    manualFieldPulse.setValue(0);
+    Animated.sequence([
+      Animated.timing(manualFieldPulse, {
+        toValue: 1,
+        duration: 80,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }),
+      Animated.timing(manualFieldPulse, {
+        toValue: 0,
+        duration: 90,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: false,
+      }),
+      Animated.timing(manualFieldPulse, {
+        toValue: 1,
+        duration: 80,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }),
+      Animated.timing(manualFieldPulse, {
+        toValue: 0,
+        duration: 250,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }),
+    ]).start();
+  }
+
   function stopDraggingPin() {
     isDraggingRef.current = false;
     pinPulseLoopRef.current?.stop();
@@ -399,6 +431,7 @@ export default function LocationPickerScreen() {
   function handleRegionChangeComplete(nextRegion: Region) {
     stopDraggingPin();
     setRegion(nextRegion);
+    pulseManualField();
 
     if (reverseGeocodeTimerRef.current) {
       clearTimeout(reverseGeocodeTimerRef.current);
@@ -736,7 +769,7 @@ export default function LocationPickerScreen() {
                     />
                   ) : (
                     <Ionicons
-                      name="navigate"
+                      name="locate"
                       size={20}
                       color={palette.foreground}
                     />
@@ -829,10 +862,20 @@ export default function LocationPickerScreen() {
             <Text style={styles.manualFieldLabel}>
               Address details (optional)
             </Text>
-            <View
+            <Animated.View
               style={[
                 styles.manualFieldShell,
                 styles.manualFieldShellMultiline,
+                {
+                  borderColor: manualFieldPulse.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["#E7D8DF", palette.secondary],
+                  }),
+                  shadowOpacity: manualFieldPulse.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.08, 0.24],
+                  }),
+                },
               ]}
             >
               <View style={styles.manualFieldIcon}>
@@ -846,7 +889,7 @@ export default function LocationPickerScreen() {
                 value={manualNote}
                 onChangeText={setManualNote}
                 placeholder="Flat, floor, road, gate, or nearby landmark"
-                placeholderTextColor={palette.mutedForeground}
+                placeholderTextColor={palette.placeholder}
                 selectionColor={palette.secondary}
                 style={[
                   styles.manualFieldInput,
@@ -857,7 +900,7 @@ export default function LocationPickerScreen() {
                 textAlignVertical="top"
                 underlineColorAndroid="transparent"
               />
-            </View>
+            </Animated.View>
           </View>
 
           <Pressable

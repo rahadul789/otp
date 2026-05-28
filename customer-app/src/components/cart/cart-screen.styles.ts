@@ -532,8 +532,10 @@ export const styles = StyleSheet.create({
     overflow: "hidden",
     paddingHorizontal: 16,
     borderRadius: 999,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 8,
     backgroundColor: palette.surface,
   },
   checkoutButtonDisabled: {
@@ -552,5 +554,8 @@ export const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: "700",
     color: palette.secondary,
+  },
+  checkoutButtonSpinner: {
+    marginLeft: -2,
   },
 });

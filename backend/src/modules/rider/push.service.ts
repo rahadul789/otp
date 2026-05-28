@@ -1,5 +1,6 @@
 import mongoose from "mongoose"
 
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout"
 import { logger } from "../../config/logger"
 import { emitSocketEvent } from "../../config/socket"
 import { RiderModel } from "../auth/auth.model"
@@ -119,14 +120,22 @@ export async function sendPushToRider(params: {
       : {}),
   }))
 
-  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+  const response = await fetchWithTimeout("https://exp.host/--/api/v2/push/send", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json"
     },
-    body: JSON.stringify(messages)
+    body: JSON.stringify(messages),
+    timeoutMs: 3_000,
+  }).catch((error) => {
+    logger.warn({ error, riderId: params.riderId }, "Expo rider push send timed out or failed")
+    return null
   })
+
+  if (!response) {
+    return { sent: 0, disabled: 0, inAppCreated: 1 }
+  }
 
   if (!response.ok) {
     logger.error(

@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { Info, Plus } from "lucide-react"
+import { Plus } from "lucide-react"
 
 import {
   formatVoucherDiscount,
@@ -208,8 +208,9 @@ export function PromotionFormDialog({
     }
 
     if (form.type === "free-delivery" && form.discountValue.trim()) {
-      nextErrors.discountValue =
-        "Free delivery uses the delivery fee automatically. Leave this empty."
+      nextErrors.type = "Owner free-delivery offers are disabled."
+    } else if (form.type === "free-delivery") {
+      nextErrors.type = "Owner free-delivery offers are disabled."
     }
 
     setErrors(nextErrors)
@@ -318,9 +319,16 @@ export function PromotionFormDialog({
                 <SelectContent>
                   <SelectItem value="flat">Flat Discount</SelectItem>
                   <SelectItem value="percentage">Percentage Discount</SelectItem>
-                  <SelectItem value="free-delivery">Free Delivery</SelectItem>
+                  {form.type === "free-delivery" ? (
+                    <SelectItem value="free-delivery" disabled>
+                      Free Delivery unavailable
+                    </SelectItem>
+                  ) : null}
                 </SelectContent>
               </Select>
+              {errors.type ? (
+                <p className="text-sm text-destructive">{errors.type}</p>
+              ) : null}
             </div>
             {!isDiscountValueHidden(form.type) ? (
               <div className="space-y-2">
@@ -355,19 +363,6 @@ export function PromotionFormDialog({
               ) : null}
             </div>
           </div>
-
-          {form.type === "free-delivery" ? (
-            <div className="rounded-xl border border-sky-200 bg-sky-50/80 p-4 text-sm text-sky-900">
-              <div className="flex items-start gap-3">
-                <Info className="mt-0.5 size-4 shrink-0" />
-                <p>
-                  Free Delivery removes the customer&apos;s delivery charge. The
-                  waived delivery fee will be counted as discount cost for this
-                  voucher.
-                </p>
-              </div>
-            </div>
-          ) : null}
 
           <div className="grid gap-4 rounded-xl border p-4 md:grid-cols-3">
             <div className="space-y-2">
@@ -568,7 +563,7 @@ export function PromotionFormDialog({
               </Badge>
               <Badge variant="outline">
                 {form.type === "free-delivery"
-                  ? "Delivery fee becomes 0"
+                  ? "Unavailable"
                   : formatVoucherDiscount({
                       type: form.type,
                       discountValue: form.discountValue

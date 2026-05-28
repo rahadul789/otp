@@ -1,7 +1,7 @@
 import * as React from "react"
 import { useQueryClient } from "@tanstack/react-query"
 
-import { getOwnerAuthSession } from "@/lib/auth-session"
+import { getOwnerAuthSession, OWNER_ACCESS_TOKEN_UPDATED_EVENT } from "@/lib/auth-session"
 import { connectOwnerSocket, disconnectOwnerSocket, getOwnerSocket } from "@/lib/socket-client"
 import {
   mapOwnerNotification,
@@ -136,10 +136,12 @@ export function useOwnerSocketBridge() {
   const setOrders = useAppStore((state) => state.setOrders)
   const queryClient = useQueryClient()
   const joinedRef = React.useRef<string | null>(null)
+  const tokenRef = React.useRef<string | null>(null)
 
   React.useEffect(() => {
     if (!ownerAccount.isAuthenticated) {
       joinedRef.current = null
+      tokenRef.current = null
       disconnectOwnerSocket()
       return
     }
@@ -149,14 +151,29 @@ export function useOwnerSocketBridge() {
 
     const { ownerId, accessToken } = ownerSession
 
-    if (joinedRef.current !== ownerId) {
+    if (joinedRef.current !== ownerId || tokenRef.current !== accessToken) {
       connectOwnerSocket(ownerId, accessToken)
       joinedRef.current = ownerId
+      tokenRef.current = accessToken
     }
 
     const socket = getOwnerSocket()
     const ensureJoined = () => socket.emit("owner:join", ownerId)
+    const reconnectWithFreshToken = () => {
+      const latestSession = resolveOwnerSession()
+      if (!latestSession) {
+        joinedRef.current = null
+        tokenRef.current = null
+        disconnectOwnerSocket()
+        return
+      }
+
+      connectOwnerSocket(latestSession.ownerId, latestSession.accessToken)
+      joinedRef.current = latestSession.ownerId
+      tokenRef.current = latestSession.accessToken
+    }
     socket.on("connect", ensureJoined)
+    window.addEventListener(OWNER_ACCESS_TOKEN_UPDATED_EVENT, reconnectWithFreshToken)
 
     const handleNotification = (payload: OwnerNotificationResponse) => {
       const mapped = mapOwnerNotification(payload)
@@ -244,18 +261,41 @@ export function useOwnerSocketBridge() {
       void queryClient.invalidateQueries({ queryKey: ["owner", "store-settings"] })
       void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
     }
+    const handlePromotionUpdated = () => {
+      void queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+    }
+    const handlePayoutMethodUpdated = () => {
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "transactions"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+    }
+    const handlePayoutUpdated = () => {
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "transactions"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+    }
 
     socket.on("notification.created", handleNotification)
     socket.on("order.updated", handleOrderUpdated)
+    socket.on("payout.method.updated", handlePayoutMethodUpdated)
+    socket.on("payout.updated", handlePayoutUpdated)
     socket.on("menu.updated", handleMenuUpdated)
     socket.on("store.updated", handleStoreUpdated)
+    socket.on("promotion.updated", handlePromotionUpdated)
 
     return () => {
       socket.off("notification.created", handleNotification)
       socket.off("order.updated", handleOrderUpdated)
+      socket.off("payout.method.updated", handlePayoutMethodUpdated)
+      socket.off("payout.updated", handlePayoutUpdated)
       socket.off("menu.updated", handleMenuUpdated)
       socket.off("store.updated", handleStoreUpdated)
+      socket.off("promotion.updated", handlePromotionUpdated)
       socket.off("connect", ensureJoined)
+      window.removeEventListener(OWNER_ACCESS_TOKEN_UPDATED_EVENT, reconnectWithFreshToken)
     }
   }, [ownerAccount.isAuthenticated, queryClient, setNotifications, setOrders])
 }

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
 import { CustomerModel } from "../customer/customer.model";
 import {
   createCustomerNotification,
@@ -81,6 +82,15 @@ const MAX_PAGE_SIZE = 100;
 const MAX_NOTIFICATION_SOURCE_FETCH = 1000;
 const EMBEDDED_NOTIFICATION_SCAN_WINDOW = 100;
 const CUSTOMER_PROMO_TYPES = new Set(["promotion", "voucher", "campaign"]);
+const adminNotificationsCache = createInMemoryAsyncCache<any>({
+  ttlMs: 5_000,
+  staleWhileRevalidateMs: 15_000,
+  maxEntries: 64,
+});
+
+function invalidateAdminNotificationsCache() {
+  adminNotificationsCache.clear();
+}
 
 type NotificationListItem = Record<string, any>;
 type NotificationQueryResult = {
@@ -480,6 +490,10 @@ async function getRiderNotificationItems(
           },
         ],
         total: [{ $count: "count" }],
+        unread: [
+          { $match: { "notifications.isRead": { $ne: true } } },
+          { $count: "count" },
+        ],
       },
     },
   ]);
@@ -491,7 +505,7 @@ async function getRiderNotificationItems(
       createdAt: serializeDate(item.createdAt),
     })),
     total: Number(result?.total?.[0]?.count ?? 0),
-    unread: 0,
+    unread: Number(result?.unread?.[0]?.count ?? 0),
   };
 }
 
@@ -694,11 +708,20 @@ async function getScheduledItems() {
 
 export async function listAdminNotifications(params: ListParams = {}) {
   const { page, pageSize } = normalizePage(params);
-  const notificationSettings = await getAdminNotificationSettings();
-  const fetchLimit = Math.min(
-    MAX_NOTIFICATION_SOURCE_FETCH,
-    Math.max(page * pageSize + pageSize * 2, pageSize * 4),
-  );
+  const cacheKey = [
+    params.source ?? "all",
+    params.status ?? "all",
+    params.search?.trim().toLowerCase() ?? "",
+    page,
+    pageSize,
+  ].join("|");
+
+  return adminNotificationsCache.getOrSet(cacheKey, async () => {
+    const notificationSettings = await getAdminNotificationSettings();
+    const fetchLimit = Math.min(
+      MAX_NOTIFICATION_SOURCE_FETCH,
+      Math.max(page * pageSize + pageSize * 2, pageSize * 4),
+    );
   const [customerResult, ownerResult, riderResult, campaignItems, scheduledItems, opsItems, customerTokenSummary, riderTokenSummary] =
     await Promise.all([
       shouldLoadSource(params, "customer")
@@ -740,15 +763,15 @@ export async function listAdminNotifications(params: ListParams = {}) {
     });
 
   const ownerUnread = ownerResult.unread;
-  const visibleOpsItems = opsItems.filter((item) =>
+  const visibleOpsItems = opsItems.filter((item: NotificationListItem) =>
     isAdminNotificationItemEnabled(item, notificationSettings),
   );
-  const opsUnread = visibleOpsItems.filter((item) => !item.isRead).length;
+  const opsUnread = visibleOpsItems.filter((item: NotificationListItem) => !item.isRead).length;
   const allCampaignItems = [
     ...campaignItems,
-    ...scheduledItems.filter((item) => item.source === "campaign"),
+    ...scheduledItems.filter((item: NotificationListItem) => item.source === "campaign"),
   ];
-  const scheduledOnlyItems = scheduledItems.filter((item) => item.source === "scheduled");
+  const scheduledOnlyItems = scheduledItems.filter((item: NotificationListItem) => item.source === "scheduled");
   const campaignDelivered = allCampaignItems.reduce((total, item) => total + Number(item.sentCount ?? 0), 0);
   const campaignOpens = allCampaignItems.reduce((total, item) => total + Number(item.openCount ?? 0), 0);
   const campaignTargets = allCampaignItems.reduce((total, item) => total + Number(item.totalTargets ?? 0), 0);
@@ -774,6 +797,7 @@ export async function listAdminNotifications(params: ListParams = {}) {
       totalNotifications: customerResult.total + ownerResult.total + riderResult.total,
       customerUnread: customerResult.unread,
       ownerUnread: ownerUnread + opsUnread,
+      riderUnread: riderResult.unread,
       customerPushActiveTokens: customerTokenSummary.active,
       customerPushDisabledTokens: customerTokenSummary.disabled,
       riderPushActiveTokens: riderTokenSummary.active,
@@ -787,6 +811,7 @@ export async function listAdminNotifications(params: ListParams = {}) {
       opsUnread,
     },
   };
+  });
 }
 
 async function resolveCustomerTargets(params: SendParams) {
@@ -1322,6 +1347,7 @@ export async function refreshAdminNotificationCampaignConversions(campaignId: st
     conversions,
   };
   await schedule.save();
+  invalidateAdminNotificationsCache();
 
   return {
     refreshed: true,
@@ -1430,6 +1456,7 @@ export async function checkAdminNotificationCampaignReceipts(campaignId: string)
     receiptCheckedAt: checkedAt,
   };
   await schedule.save();
+  invalidateAdminNotificationsCache();
 
   return {
     checked: ticketIds.length,
@@ -1521,6 +1548,7 @@ export async function sendAdminNotification(params: SendParams) {
       status: "scheduled",
     });
 
+    invalidateAdminNotificationsCache();
     return {
       recipientType: params.recipientType,
       totalTargets: 0,
@@ -1662,6 +1690,7 @@ export async function sendAdminNotification(params: SendParams) {
       conversionWindowDays: params.conversionWindowDays ?? 7,
     };
     await recordInstantAdminNotificationCampaign(params, result, campaignId);
+    invalidateAdminNotificationsCache();
     return result;
   }
 
@@ -1689,6 +1718,7 @@ export async function sendAdminNotification(params: SendParams) {
       skippedCount: 0,
     };
     await recordInstantAdminNotificationCampaign(params, result, campaignId);
+    invalidateAdminNotificationsCache();
     return result;
   }
 
@@ -1727,6 +1757,7 @@ export async function sendAdminNotification(params: SendParams) {
     skippedCount: Math.max(riders.length - sentCount, 0),
   };
   await recordInstantAdminNotificationCampaign(params, result, campaignId);
+  invalidateAdminNotificationsCache();
   return result;
 }
 
@@ -1794,6 +1825,7 @@ export async function processDueAdminNotificationSchedules() {
           totalTargets: result.totalTargets,
         },
       });
+      invalidateAdminNotificationsCache();
     } catch (error) {
       schedule.status = "failed";
       schedule.failureReason = error instanceof Error ? error.message : "Scheduled notification failed";
@@ -1812,6 +1844,7 @@ export async function processDueAdminNotificationSchedules() {
           scheduledAt: schedule.scheduledAt,
         },
       });
+      invalidateAdminNotificationsCache();
     }
   }
 }
@@ -1823,7 +1856,9 @@ export async function markAdminNotificationRead(params: {
   const readAt = new Date();
 
   if (params.source === "ops") {
-    return markAdminOperationalAlertRead(params.id);
+    const result = await markAdminOperationalAlertRead(params.id);
+    if (result.updated) invalidateAdminNotificationsCache();
+    return result;
   }
 
   if (params.source === "customer") {
@@ -1836,6 +1871,7 @@ export async function markAdminNotificationRead(params: {
         },
       },
     );
+    if (result.modifiedCount > 0) invalidateAdminNotificationsCache();
     return { updated: result.modifiedCount > 0 };
   }
 
@@ -1849,6 +1885,7 @@ export async function markAdminNotificationRead(params: {
         },
       },
     );
+    if (result.modifiedCount > 0) invalidateAdminNotificationsCache();
     return { updated: result.modifiedCount > 0 };
   }
 
@@ -1857,6 +1894,7 @@ export async function markAdminNotificationRead(params: {
   notification.isRead = true;
   notification.readAt = readAt;
   await notification.save();
+  invalidateAdminNotificationsCache();
   return { updated: true };
 }
 
@@ -1901,13 +1939,15 @@ export async function markAllAdminNotificationsRead() {
     ),
     markAllAdminOperationalAlertsRead(),
   ]);
+  const updated =
+    customerResult.modifiedCount +
+    ownerResult.modifiedCount +
+    riderResult.modifiedCount +
+    opsResult.updated;
+  if (updated > 0) invalidateAdminNotificationsCache();
 
   return {
-    updated:
-      customerResult.modifiedCount +
-      ownerResult.modifiedCount +
-      riderResult.modifiedCount +
-      opsResult.updated,
+    updated,
     customerDocuments: customerResult.modifiedCount,
     ownerNotifications: ownerResult.modifiedCount,
     riderNotifications: riderResult.modifiedCount,
@@ -1924,6 +1964,7 @@ export async function cancelAdminNotificationSchedule(scheduleId: string) {
   schedule.status = "cancelled";
   schedule.failureReason = "";
   await schedule.save();
+  invalidateAdminNotificationsCache();
   return { updated: true, status: schedule.status };
 }
 
@@ -1996,6 +2037,7 @@ export async function retryAdminNotificationSchedule(scheduleId: string) {
         totalTargets: result.totalTargets,
       },
     });
+    invalidateAdminNotificationsCache();
     return { updated: true, status: schedule.status, result };
   } catch (error) {
     schedule.status = "failed";
@@ -2011,6 +2053,7 @@ export async function retryAdminNotificationSchedule(scheduleId: string) {
       entityType: "notification_schedule",
       entityId: String(schedule._id ?? ""),
     });
+    invalidateAdminNotificationsCache();
     return { updated: false, status: schedule.status, failureReason: schedule.failureReason };
   }
 }

@@ -1,24 +1,30 @@
 import type { LucideIcon } from "lucide-react"
 import {
   BarChart3,
+  CircleAlert,
   Bell,
+  BookOpenText,
   CreditCard,
   Gift,
   HeartPulse,
   Headphones,
   Image,
   KeyRound,
+  Landmark,
   LayoutDashboard,
-  LineChart,
   Map,
+  ReceiptText,
   Settings,
   ShoppingBag,
   Star,
   Store,
   Tags,
   TicketPercent,
+  RotateCcw,
   Truck,
   Users,
+  TrendingUp,
+  WalletCards,
 } from "lucide-react"
 
 export type AdminNavigationItem = {
@@ -62,7 +68,7 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
     ],
   },
   {
-    label: "Operations",
+    label: "Delivery",
     items: [
       {
         title: "Riders / Delivery",
@@ -70,9 +76,34 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         icon: Truck,
       },
       {
+        title: "Rider Payroll",
+        to: "/riders?tab=earnings",
+        icon: WalletCards,
+      },
+      {
         title: "Live Map",
         to: "/live-map",
         icon: Map,
+      },
+      {
+        title: "Dispatch Controls",
+        to: "/riders?tab=dispatch",
+        icon: HeartPulse,
+      },
+    ],
+  },
+  {
+    label: "Finance",
+    items: [
+      {
+        title: "Platform",
+        to: "/platform-finance",
+        icon: Landmark,
+      },
+      {
+        title: "Transactions",
+        to: "/transactions",
+        icon: ReceiptText,
       },
       {
         title: "Payments",
@@ -80,10 +111,50 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         icon: CreditCard,
       },
       {
+        title: "Payouts",
+        to: "/payouts",
+        icon: WalletCards,
+      },
+      {
+        title: "Ledger",
+        to: "/ledger",
+        icon: BookOpenText,
+      },
+      {
+        title: "Refunds",
+        to: "/refunds",
+        icon: RotateCcw,
+      },
+      {
+        title: "Reports",
+        to: "/reports",
+        icon: BarChart3,
+      },
+    ],
+  },
+  {
+    label: "Growth",
+    items: [
+      {
         title: "Coupons & Offers",
         to: "/coupons",
         icon: TicketPercent,
       },
+      {
+        title: "Customer Analytics",
+        to: "/customer-analytics",
+        icon: TrendingUp,
+      },
+      {
+        title: "Referrals",
+        to: "/referrals",
+        icon: Gift,
+      },
+    ],
+  },
+  {
+    label: "Content & Trust",
+    items: [
       {
         title: "Content / CMS",
         to: "/cms",
@@ -94,11 +165,6 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         to: "/categories",
         icon: Tags,
       },
-    ],
-  },
-  {
-    label: "Trust",
-    items: [
       {
         title: "Reviews",
         to: "/reviews",
@@ -110,26 +176,16 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         icon: Headphones,
         badgeKey: "complaints",
       },
-      {
-        title: "Reports",
-        to: "/reports",
-        icon: BarChart3,
-      },
-      {
-        title: "Customer Analytics",
-        to: "/customer-analytics",
-        icon: LineChart,
-      },
-      {
-        title: "Referrals",
-        to: "/referrals",
-        icon: Gift,
-      },
     ],
   },
   {
     label: "System",
     items: [
+      {
+        title: "Action Center",
+        to: "/action-center",
+        icon: CircleAlert,
+      },
       {
         title: "Operations Health",
         to: "/operations",

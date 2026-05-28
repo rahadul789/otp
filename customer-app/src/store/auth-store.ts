@@ -15,23 +15,6 @@ type CustomerProfile = {
     restaurantStatus?: boolean;
     reviewReplies?: boolean;
   };
-  accountRequest?: {
-    type?: "deactivate" | "delete" | null;
-    reason?: string;
-    reviewNote?: string;
-    reviewedByAdminId?: string | null;
-    reviewedByAdminName?: string;
-    status?: string;
-    requestedAt?: string | null;
-    reviewedAt?: string | null;
-    history?: {
-      action?: string;
-      note?: string;
-      actorId?: string;
-      actorName?: string;
-      createdAt?: string | null;
-    }[];
-  };
   previousPhones?: {
     phone: string;
     changedAt?: string | null;

@@ -3,6 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { getSocketBaseUrl } from "@/src/config/api";
 
 let ownerSocket: Socket | null = null;
+let ownerSocketAuthToken = "";
 
 export function getOwnerSocket() {
   if (!ownerSocket) {
@@ -17,7 +18,19 @@ export function getOwnerSocket() {
 
 export function connectOwnerSocket(ownerId: string, accessToken: string) {
   const socket = getOwnerSocket();
-  socket.auth = { token: accessToken };
+  const nextToken = accessToken.trim();
+
+  if (!ownerId || !nextToken) {
+    disconnectOwnerSocket();
+    return socket;
+  }
+
+  if (ownerSocketAuthToken !== nextToken && socket.connected) {
+    socket.disconnect();
+  }
+
+  ownerSocketAuthToken = nextToken;
+  socket.auth = { token: nextToken };
 
   if (!socket.connected) {
     socket.connect();

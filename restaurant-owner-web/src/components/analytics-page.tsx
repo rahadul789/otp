@@ -718,7 +718,7 @@ export function AnalyticsPage() {
       },
       {
         key: "revenue",
-        label: "Total Revenue",
+        label: "Food Sales",
         current: totalRevenue,
         previous: previousRevenue,
       },

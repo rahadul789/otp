@@ -92,6 +92,80 @@ const restaurantMetricsSchema = new Schema(
   { timestamps: true }
 )
 
+const platformFinanceEntrySchema = new Schema(
+  {
+    direction: {
+      type: String,
+      enum: ["credit", "debit"],
+      required: true
+    },
+    category: {
+      type: String,
+      enum: [
+        "online_payment",
+        "cod_deposit",
+        "restaurant_payout",
+        "customer_refund",
+        "rider_payroll",
+        "deploy_hosting",
+        "manual_expense",
+        "manual_income",
+        "adjustment",
+        "other"
+      ],
+      required: true
+    },
+    amount: { type: Number, required: true, min: 0 },
+    status: {
+      type: String,
+      enum: ["posted", "void"],
+      default: "posted"
+    },
+    sourceEntityType: { type: String, default: "" },
+    sourceEntityId: { type: String, default: "" },
+    paymentMethod: { type: String, default: "" },
+    reference: { type: String, default: "", trim: true },
+    proofUrl: { type: String, default: "", trim: true },
+    note: { type: String, default: "", trim: true },
+    createdByAdminId: { type: String, default: "" },
+    voidedByAdminId: { type: String, default: "" },
+    voidedAt: { type: Date, default: null },
+    occurredAt: { type: Date, default: Date.now }
+  },
+  { timestamps: true }
+)
+
+platformFinanceEntrySchema.index({ occurredAt: -1, createdAt: -1 })
+platformFinanceEntrySchema.index({ direction: 1, category: 1, occurredAt: -1 })
+platformFinanceEntrySchema.index({ status: 1, occurredAt: -1 })
+platformFinanceEntrySchema.index(
+  { sourceEntityType: 1, sourceEntityId: 1 },
+  {
+    partialFilterExpression: {
+      sourceEntityType: { $type: "string", $gt: "" },
+      sourceEntityId: { $type: "string", $gt: "" }
+    }
+  }
+)
+
+const dailyFinanceSnapshotSchema = new Schema(
+  {
+    dateKey: { type: String, required: true, unique: true },
+    rangeStart: { type: Date, required: true },
+    rangeEnd: { type: Date, required: true },
+    summary: { type: Schema.Types.Mixed, default: {} },
+    alerts: { type: [Schema.Types.Mixed], default: [] },
+    note: { type: String, default: "", trim: true },
+    closedByAdminId: { type: String, default: "" },
+    closedAt: { type: Date, default: Date.now }
+  },
+  { timestamps: true }
+)
+
+dailyFinanceSnapshotSchema.index({ closedAt: -1 })
+
 export const LedgerEntryModel = mongoose.model("LedgerEntry", ledgerEntrySchema)
 export const PayoutBatchModel = mongoose.model("PayoutBatch", payoutBatchSchema)
 export const RestaurantMetricsModel = mongoose.model("RestaurantMetrics", restaurantMetricsSchema)
+export const PlatformFinanceEntryModel = mongoose.model("PlatformFinanceEntry", platformFinanceEntrySchema)
+export const DailyFinanceSnapshotModel = mongoose.model("DailyFinanceSnapshot", dailyFinanceSnapshotSchema)

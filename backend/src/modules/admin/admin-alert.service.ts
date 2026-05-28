@@ -1,12 +1,23 @@
 import { emitSocketEvent } from "../../config/socket";
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
 import {
   classifyAdminAlertType,
   getAdminNotificationSettings,
   isAdminNotificationCategoryEnabled,
 } from "./admin-notification-settings";
+import { invalidateAdminOperationalHealthCache } from "./business-event.service";
 import { AdminOperationalAlertModel } from "./admin-alert.model";
 
 const RESOLVED_ALERT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const adminOperationalAlertsCache = createInMemoryAsyncCache<any>({
+  ttlMs: 5_000,
+  staleWhileRevalidateMs: 15_000,
+  maxEntries: 2,
+});
+
+function invalidateAdminOperationalAlertsCache() {
+  adminOperationalAlertsCache.clear();
+}
 
 type AdminOperationalAlertInput = {
   alertType: string;
@@ -91,6 +102,8 @@ export async function createAdminOperationalAlert(
   const existing = await updateExistingAlert(input);
 
   if (existing) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
     return { alert: serializeAlert(existing.toObject()), created: false };
   }
 
@@ -119,16 +132,20 @@ export async function createAdminOperationalAlert(
   const payload = serializeAlert(alert.toObject());
 
   emitSocketEvent("admin:ops", "admin.notification.created", payload);
+  invalidateAdminOperationalAlertsCache();
+  invalidateAdminOperationalHealthCache();
   return { alert: payload, created: true };
 }
 
 export async function listAdminOperationalAlerts() {
-  const rows = await AdminOperationalAlertModel.find()
-    .sort({ createdAt: -1 })
-    .limit(500)
-    .lean();
+  return adminOperationalAlertsCache.getOrSet("admin-operational-alerts", async () => {
+    const rows = await AdminOperationalAlertModel.find()
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .lean();
 
-  return rows.map((row) => serializeAlert(row));
+    return rows.map((row) => serializeAlert(row));
+  });
 }
 
 export async function markAdminOperationalAlertRead(alertId: string) {
@@ -136,6 +153,10 @@ export async function markAdminOperationalAlertRead(alertId: string) {
     { _id: alertId },
     { $set: { isRead: true, readAt: new Date() } },
   );
+  if (result.modifiedCount > 0) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
+  }
   return { updated: result.modifiedCount > 0 };
 }
 
@@ -152,6 +173,30 @@ export async function resolveAdminOperationalAlert(alertId: string) {
       },
     },
   );
+  if (result.modifiedCount > 0) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
+  }
+  return { updated: result.modifiedCount > 0 };
+}
+
+export async function resolveAdminOperationalAlertByDedupeKey(dedupeKey: string) {
+  const resolvedAt = new Date();
+  const result = await AdminOperationalAlertModel.updateOne(
+    { dedupeKey, resolvedAt: null },
+    {
+      $set: {
+        isRead: true,
+        readAt: resolvedAt,
+        resolvedAt,
+        snoozedUntil: null,
+      },
+    },
+  );
+  if (result.modifiedCount > 0) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
+  }
   return { updated: result.modifiedCount > 0 };
 }
 
@@ -166,6 +211,10 @@ export async function snoozeAdminOperationalAlert(alertId: string, minutes: numb
       },
     },
   );
+  if (result.modifiedCount > 0) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
+  }
   return {
     updated: result.modifiedCount > 0,
     snoozedUntil: snoozedUntil.toISOString(),
@@ -177,6 +226,10 @@ export async function markAllAdminOperationalAlertsRead() {
     { isRead: { $ne: true } },
     { $set: { isRead: true, readAt: new Date() } },
   );
+  if (result.modifiedCount > 0) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
+  }
   return { updated: result.modifiedCount };
 }
 
@@ -185,5 +238,9 @@ export async function pruneAdminOperationalAlerts() {
   const result = await AdminOperationalAlertModel.deleteMany({
     resolvedAt: { $lte: cutoff },
   });
+  if ((result.deletedCount ?? 0) > 0) {
+    invalidateAdminOperationalAlertsCache();
+    invalidateAdminOperationalHealthCache();
+  }
   return { deleted: result.deletedCount ?? 0 };
 }

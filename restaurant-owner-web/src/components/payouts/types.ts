@@ -14,6 +14,9 @@ export type PayoutMethod = {
   verifiedAt?: string | null
   pendingAccountName?: string
   pendingAccountNumber?: string
+  pendingVerificationStatus?: "otp_pending" | "admin_pending" | "rejected" | null
+  pendingVerifiedAt?: string | null
+  pendingAdminNote?: string
   verificationSource?: "onboarding" | "settings" | "payouts" | null
 }
 
@@ -81,6 +84,9 @@ export const initialPayoutMethod: PayoutMethod = {
   verifiedAt: "2026-03-01T11:00:00.000Z",
   pendingAccountName: "",
   pendingAccountNumber: "",
+  pendingVerificationStatus: null,
+  pendingVerifiedAt: null,
+  pendingAdminNote: "",
   verificationSource: null,
 }
 

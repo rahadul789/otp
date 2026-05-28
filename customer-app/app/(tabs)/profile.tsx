@@ -1,36 +1,54 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
-import { useMemo } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { ShimmerBlock } from "@/src/components/loading-skeleton";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import { Screen } from "@/src/components/screen";
 import {
   useCustomerFavoriteRestaurantIdsQuery,
   useCustomerLogoutMutation,
   useCustomerNotificationsQuery,
+  useCustomerPaymentSettingsQuery,
   useCustomerProfileQuery,
+  useCustomerReferralSummaryQuery,
 } from "@/src/hooks/use-customer-api";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
 import { formatDeliveryAddress } from "@/src/lib/location-address";
 import { useIsOnline } from "@/src/hooks/use-network-status";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { useLocationStore } from "@/src/store/location-store";
+import {
+  usePaymentPreferencesStore,
+} from "@/src/store/payment-preferences-store";
 import { palette } from "@/src/theme/palette";
 
 export default function ProfileScreen() {
   const router = useRouter();
+  const [logoutConfirmVisible, setLogoutConfirmVisible] = useState(false);
   const customer = useCustomerAuthStore((state) => state.customer);
   useCustomerProfileQuery();
   const logoutMutation = useCustomerLogoutMutation();
   const notificationsQuery = useCustomerNotificationsQuery();
   const favoriteRestaurantIdsQuery = useCustomerFavoriteRestaurantIdsQuery();
+  const paymentSettingsQuery = useCustomerPaymentSettingsQuery();
+  const referralSummaryQuery = useCustomerReferralSummaryQuery(Boolean(customer));
   const selectedLocation = useLocationStore((state) => state.selectedLocation);
+  const preferredPaymentMethod = usePaymentPreferencesStore(
+    (state) => state.preferredPaymentMethod,
+  );
   const isOnline = useIsOnline();
   const unreadCount = notificationsQuery.data?.unreadCount ?? 0;
   const favoriteCount = favoriteRestaurantIdsQuery.data?.length ?? 0;
+  const referralSummary = referralSummaryQuery.data;
+  const isReferralSummaryLoading = Boolean(customer) && referralSummaryQuery.isLoading;
+  const shouldShowReferral = referralSummary?.enabled === true;
+  const referralRewardLabel = referralSummary
+    ? `Tk ${Math.round(referralSummary.rewardAmount)}`
+    : "Reward";
 
   const displayName = useMemo(() => customer?.fullName || "Customer", [customer?.fullName]);
   const heroLocationText = useMemo(() => {
@@ -51,6 +69,13 @@ export default function ProfileScreen() {
     if (base) return base;
     return customer?.phone?.slice(-2) ?? "CU";
   }, [customer?.phone, displayName]);
+  const paymentSettings = paymentSettingsQuery.data ?? {
+    cashOnDeliveryEnabled: true,
+    bkashEnabled: false,
+    bkashLabel: "bKash",
+    bkashSubtitle: "Continue to the official hosted payment page.",
+    bkashRefundEtaMinutes: 60,
+  };
 
   return (
     <Screen>
@@ -163,14 +188,19 @@ export default function ProfileScreen() {
                   tint="#FFF1C9"
                   onPress={() => router.push("/favorite-restaurants")}
                 />
-                <OverviewCard
-                  icon="gift-outline"
-                  label="Refer"
-                  value="Tk 50"
-                  caption="Per reward"
-                  tint="#F0F7FF"
-                  onPress={() => router.push("/referrals")}
-                />
+                {isReferralSummaryLoading ? (
+                  <ReferralOverviewCardSkeleton />
+                ) : shouldShowReferral ? (
+                  <OverviewCard
+                    icon="gift-outline"
+                    label="Refer"
+                    value={referralRewardLabel}
+                    caption="Per reward"
+                    tint="#F0F7FF"
+                    highlight
+                    onPress={() => router.push("/referrals")}
+                  />
+                ) : null}
                 <OverviewCard
                   icon="help-circle-outline"
                   label="Help center"
@@ -190,6 +220,17 @@ export default function ProfileScreen() {
 
               <View style={styles.cardStack}>
                 <ProfileNavCard
+                  icon={preferredPaymentMethod === "Bkash" ? "phone-portrait-outline" : "cash-outline"}
+                  tint="#FFF0F6"
+                  title="Default payment method"
+                  caption={
+                    preferredPaymentMethod === "Bkash"
+                      ? paymentSettings.bkashLabel
+                      : "Cash on delivery"
+                  }
+                  onPress={() => router.push("/payment-preferences")}
+                />
+                <ProfileNavCard
                   icon="person-outline"
                   tint="#FFE7F1"
                   title="Personal info"
@@ -207,12 +248,18 @@ export default function ProfileScreen() {
                   title={customer.hasPassword ? "Change password" : "Add password"}
                   onPress={() => router.push("/profile-password")}
                 />
-                <ProfileNavCard
-                  icon="gift-outline"
-                  tint="#F0F7FF"
-                  title="Refer & earn"
-                  onPress={() => router.push("/referrals")}
-                />
+                {isReferralSummaryLoading ? (
+                  <ReferralNavCardSkeleton />
+                ) : shouldShowReferral ? (
+                  <ProfileNavCard
+                    icon="gift-outline"
+                    tint="#F0F7FF"
+                    title="Refer & earn"
+                    caption={`${referralRewardLabel} reward available`}
+                    highlight
+                    onPress={() => router.push("/referrals")}
+                  />
+                ) : null}
                 <ProfileNavCard
                   icon="notifications-outline"
                   tint="#EEF5FF"
@@ -230,12 +277,6 @@ export default function ProfileScreen() {
                   tint="#EEF8F2"
                   title="Privacy policy"
                   onPress={() => router.push("/privacy-policy")}
-                />
-                <ProfileNavCard
-                  icon="document-text-outline"
-                  tint="#EEF8F2"
-                  title="Account requests"
-                  onPress={() => router.push("/account-request")}
                 />
               </View>
             </View>
@@ -276,7 +317,14 @@ export default function ProfileScreen() {
                 subtitle="Sign out when you want to return to guest browsing."
               />
               <View style={styles.cardStack}>
-                <Pressable style={styles.logoutCard} onPress={() => logoutMutation.mutate()}>
+                <Pressable
+                  style={[
+                    styles.logoutCard,
+                    logoutMutation.isPending ? styles.disabledCard : null,
+                  ]}
+                  disabled={logoutMutation.isPending}
+                  onPress={() => setLogoutConfirmVisible(true)}
+                >
                   <View style={styles.logoutIconWrap}>
                     {logoutMutation.isPending ? (
                       <ActivityIndicator size="small" color={palette.primary} />
@@ -294,6 +342,52 @@ export default function ProfileScreen() {
           </>
         )}
       </ScrollView>
+
+      <Modal
+        visible={logoutConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogoutConfirmVisible(false)}
+      >
+        <View style={styles.confirmOverlay}>
+          <Pressable
+            style={styles.confirmBackdrop}
+            onPress={() => setLogoutConfirmVisible(false)}
+          />
+          <View style={styles.confirmCard}>
+            <View style={styles.confirmIconWrap}>
+              <Ionicons name="log-out-outline" size={26} color={palette.primary} />
+            </View>
+            <Text style={styles.confirmTitle}>Sign out?</Text>
+            <Text style={styles.confirmText}>
+              You can still browse restaurants as a guest. Sign in again when
+              you want to checkout or view orders.
+            </Text>
+            <View style={styles.confirmActions}>
+              <Pressable
+                style={styles.confirmSecondaryButton}
+                onPress={() => setLogoutConfirmVisible(false)}
+              >
+                <Text style={styles.confirmSecondaryText}>Stay signed in</Text>
+              </Pressable>
+              <Pressable
+                style={styles.confirmPrimaryButton}
+                disabled={logoutMutation.isPending}
+                onPress={() => {
+                  setLogoutConfirmVisible(false);
+                  logoutMutation.mutate();
+                }}
+              >
+                {logoutMutation.isPending ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.confirmPrimaryText}>Sign out</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
     </Screen>
   );
@@ -358,6 +452,7 @@ function OverviewCard({
   tint,
   wide = false,
   onPress,
+  highlight = false,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
@@ -366,8 +461,14 @@ function OverviewCard({
   tint: string;
   wide?: boolean;
   onPress?: () => void;
+  highlight?: boolean;
 }) {
-  const cardStyle = [styles.overviewCard, wide ? styles.overviewCardWide : null, { backgroundColor: tint }];
+  const cardStyle = [
+    styles.overviewCard,
+    wide ? styles.overviewCardWide : null,
+    highlight ? styles.overviewCardHighlighted : null,
+    { backgroundColor: tint },
+  ];
 
   if (!onPress) {
     return (
@@ -405,27 +506,59 @@ function OverviewCard({
   );
 }
 
+function ReferralOverviewCardSkeleton() {
+  return (
+    <View style={[styles.overviewCard, styles.referralSkeletonCard]}>
+      <ShimmerBlock style={styles.referralSkeletonIcon} />
+      <ShimmerBlock style={styles.referralSkeletonValue} />
+      <ShimmerBlock style={styles.referralSkeletonLabel} />
+      <ShimmerBlock style={styles.referralSkeletonCaption} />
+    </View>
+  );
+}
+
 function ProfileNavCard({
   icon,
   tint,
   title,
+  caption,
   onPress,
+  highlight = false,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   tint: string;
   title: string;
+  caption?: string;
   onPress: () => void;
+  highlight?: boolean;
 }) {
   return (
-    <Pressable style={styles.navCard} onPress={onPress}>
+    <Pressable
+      style={[styles.navCard, highlight ? styles.navCardHighlighted : null]}
+      onPress={onPress}
+    >
       <View style={[styles.navIconWrap, { backgroundColor: tint }]}>
         <Ionicons name={icon} size={18} color={palette.foreground} />
       </View>
       <View style={styles.navCopy}>
         <Text style={styles.navTitle}>{title}</Text>
+        {caption ? <Text style={styles.navCaption}>{caption}</Text> : null}
       </View>
       <Ionicons name="chevron-forward" size={18} color={palette.mutedForeground} />
     </Pressable>
+  );
+}
+
+function ReferralNavCardSkeleton() {
+  return (
+    <View style={[styles.navCard, styles.navCardHighlighted]}>
+      <ShimmerBlock style={styles.referralNavSkeletonIcon} />
+      <View style={styles.navCopy}>
+        <ShimmerBlock style={styles.referralNavSkeletonTitle} />
+        <ShimmerBlock style={styles.referralNavSkeletonCaption} />
+      </View>
+      <ShimmerBlock style={styles.referralNavSkeletonChevron} />
+    </View>
   );
 }
 
@@ -642,6 +775,33 @@ const styles = StyleSheet.create({
     width: "100%",
     minHeight: 112,
   },
+  overviewCardHighlighted: {
+    borderWidth: 1,
+    borderColor: "rgba(216, 27, 96, 0.24)",
+  },
+  referralSkeletonCard: {
+    backgroundColor: "#F0F7FF",
+  },
+  referralSkeletonIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  referralSkeletonValue: {
+    width: "52%",
+    height: 22,
+    borderRadius: 11,
+  },
+  referralSkeletonLabel: {
+    width: "46%",
+    height: 15,
+    borderRadius: 8,
+  },
+  referralSkeletonCaption: {
+    width: "64%",
+    height: 12,
+    borderRadius: 6,
+  },
   overviewIconWrap: {
     width: 40,
     height: 40,
@@ -753,6 +913,32 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
   },
+  navCardHighlighted: {
+    borderWidth: 1,
+    borderColor: "rgba(216, 27, 96, 0.22)",
+    backgroundColor: "#FFF7FB",
+  },
+  referralNavSkeletonIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+  },
+  referralNavSkeletonTitle: {
+    width: "46%",
+    height: 16,
+    borderRadius: 8,
+  },
+  referralNavSkeletonCaption: {
+    marginTop: 4,
+    width: "62%",
+    height: 12,
+    borderRadius: 6,
+  },
+  referralNavSkeletonChevron: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+  },
   navIconWrap: {
     width: 42,
     height: 42,
@@ -769,6 +955,13 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: "700",
     color: palette.foreground,
+  },
+  navCaption: {
+    marginTop: 2,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+    color: palette.mutedForeground,
   },
   historyCard: {
     borderRadius: 28,
@@ -823,6 +1016,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
   },
+  disabledCard: {
+    opacity: 0.65,
+  },
   logoutIconWrap: {
     width: 42,
     height: 42,
@@ -839,5 +1035,83 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: "700",
     color: palette.foreground,
+  },
+  confirmOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  confirmBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(31, 36, 48, 0.42)",
+  },
+  confirmCard: {
+    width: "100%",
+    maxWidth: 360,
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 24,
+    backgroundColor: palette.surface,
+    padding: 20,
+    shadowColor: palette.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  confirmIconWrap: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFEAF3",
+  },
+  confirmTitle: {
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  confirmText: {
+    textAlign: "center",
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "500",
+    color: palette.mutedForeground,
+  },
+  confirmActions: {
+    width: "100%",
+    gap: 10,
+    marginTop: 4,
+  },
+  confirmSecondaryButton: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: palette.border,
+    backgroundColor: palette.surface,
+  },
+  confirmSecondaryText: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  confirmPrimaryButton: {
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+    backgroundColor: palette.primary,
+  },
+  confirmPrimaryText: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: "#fff",
   },
 });

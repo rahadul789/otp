@@ -1690,10 +1690,22 @@ export function CustomerHomeCmsSection({
             ) : null}
             <LinkToggleField
               label="Button link"
-              helper="Turn this off to hide the modal button."
+              helper="Turn this off to hide the modal button. Supports app routes and full https links."
               value={cms.modal.ctaPath}
               onChange={(value) => updateModal("ctaPath", value)}
+              placeholder="/(tabs)/browse or https://www.youtube.com/watch?v=..."
             />
+            <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+              <Label>Button label</Label>
+              <Input
+                value={cms.modal.ctaLabel}
+                onChange={(event) => updateModal("ctaLabel", event.target.value)}
+                placeholder="Explore now"
+              />
+              <p className="text-xs text-muted-foreground">
+                This text appears on the modal button when the button link is active.
+              </p>
+            </div>
             <Input type="number" min="0" max="3600" value={cms.modal.delaySeconds} onChange={(event) => updateModal("delaySeconds", Number(event.target.value || 0))} />
             <Select value={cms.modal.frequency} onValueChange={(value) => updateModal("frequency", value as typeof cms.modal.frequency)}>
               <SelectTrigger><SelectValue /></SelectTrigger>

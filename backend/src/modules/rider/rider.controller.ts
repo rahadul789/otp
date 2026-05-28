@@ -7,8 +7,10 @@ import { sendSuccess } from "../../common/utils/api-response"
 import {
   acceptRiderOrder,
   activateRiderTrackingOrder,
+  getRiderLiveMap,
   deliverRiderOrder,
   getRiderOrderDetails,
+  getRiderPerformanceSummary,
   getRiderProfile,
   listRiderOrders,
   logoutRiderSession,
@@ -61,7 +63,8 @@ const refreshSchema = z.object({
 })
 
 const logoutSchema = z.object({
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1),
+  expoPushToken: z.string().min(1).optional()
 })
 
 const riderOrdersQuerySchema = z.object({
@@ -199,7 +202,10 @@ export const refreshRiderAuth = asyncHandler(async (req: Request, res: Response)
 
 export const logoutRiderAuth = asyncHandler(async (req: Request, res: Response) => {
   const payload = logoutSchema.parse(req.body)
-  const data = await logoutRiderSession(payload.refreshToken)
+  const data = await logoutRiderSession({
+    refreshToken: payload.refreshToken,
+    expoPushToken: payload.expoPushToken
+  })
 
   return sendSuccess(res, {
     message: "Rider signed out successfully",
@@ -268,6 +274,14 @@ export const deleteRiderPushToken = asyncHandler(async (req: Request, res: Respo
   })
 })
 
+export const getRiderOrdersSummary = asyncHandler(async (req: Request, res: Response) => {
+  const data = await getRiderPerformanceSummary({
+    riderId: req.user?.id ?? ""
+  })
+
+  return sendSuccess(res, { data })
+})
+
 export const getRiderOrders = asyncHandler(async (req: Request, res: Response) => {
   const query = riderOrdersQuerySchema.parse(req.query)
   const data = await listRiderOrders({
@@ -275,6 +289,14 @@ export const getRiderOrders = asyncHandler(async (req: Request, res: Response) =
     scope: query.scope,
     page: query.page,
     pageSize: query.pageSize
+  })
+
+  return sendSuccess(res, { data })
+})
+
+export const getRiderLiveMapView = asyncHandler(async (req: Request, res: Response) => {
+  const data = await getRiderLiveMap({
+    riderId: req.user?.id ?? ""
   })
 
   return sendSuccess(res, { data })
@@ -346,6 +368,7 @@ export const postRiderOrderLocation = asyncHandler(async (req: Request, res: Res
   })
 
   return sendSuccess(res, {
+    statusCode: StatusCodes.ACCEPTED,
     message: "Rider location updated successfully",
     data
   })

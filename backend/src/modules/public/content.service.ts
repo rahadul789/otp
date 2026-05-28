@@ -3,11 +3,37 @@ import { StatusCodes } from "http-status-codes"
 
 import { AdminModel } from "../admin/admin.model"
 import { AppError } from "../../common/utils/app-error"
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout"
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache"
 import { CustomerModel } from "../customer/customer.model"
 import { sendPushToCustomer } from "../customer/push.service"
 import { OrderModel } from "../owner/operational.model"
 import { PublicContentModel } from "./content.model"
 import { platformContent } from "./content"
+
+export const defaultAuthRateLimitSettings = {
+  signinAttemptsPerWindow: 10,
+  signupAttemptsPerWindow: 5,
+  otpSendPerPhoneWindow: 5,
+  otpSendPerIpWindow: 12,
+  otpVerifyAttemptsPerWindow: 8,
+  passwordRecoveryPerWindow: 5,
+  refreshPerWindow: 30,
+  paymentInitiatePerWindow: 8,
+  orderPlacePerWindow: 12,
+  orderActionPerWindow: 10,
+  cartQuotePerWindow: 300,
+  supportWritePerWindow: 20,
+  analyticsEventsPerWindow: 240,
+  riderLocationPerWindow: 900,
+  adminWritePerWindow: 240,
+  ownerWritePerWindow: 240,
+  otpPhoneHourlySendLimit: 5,
+  otpPhoneDailySendLimit: 15,
+  otpIpDailySendLimit: 60,
+  otpFailedVerifyLimit: 5,
+  otpVerifyLockMinutes: 15,
+}
 
 const helpArticleSectionSchema = z.object({
   title: z.string().trim().min(1),
@@ -221,10 +247,12 @@ const platformContentSchema = z.object({
           .max(500)
           .optional()
           .default("http://localhost:5173"),
+        showCustomerPhoneNumbers: z.boolean().optional().default(true),
       })
       .optional()
       .default({
         webDashboardUrl: "http://localhost:5173",
+        showCustomerPhoneNumbers: true,
       }),
     serviceArea: z.object({
       name: z.string().trim().min(1),
@@ -256,16 +284,29 @@ const platformContentSchema = z.object({
         .max(120)
         .optional()
         .default("Continue to the official hosted payment page."),
+      bkashRefundEtaMinutes: z.number().int().min(1).max(24 * 60).optional().default(60),
+      bkashRefundSmsEnabled: z.boolean().optional().default(true),
+      bkashRefundSmsTemplate: z
+        .string()
+        .trim()
+        .min(20)
+        .max(320)
+        .optional()
+        .default(
+          "{{platformName}}: Refund completed for {{orderNumber}}. Amount {{amount}}. Ref {{refundReference}}."
+        ),
     }),
     finance: z
       .object({
         settlementDelayDays: z.number().int().min(0).max(30).optional().default(3),
-        minimumPayoutAmountTaka: z.number().int().min(1).max(100000).optional().default(500),
+        minimumPayoutAmountEnabled: z.boolean().optional().default(true),
+        minimumPayoutAmountTaka: z.number().int().min(0).max(100000).optional().default(500),
         oneActivePayoutRequest: z.boolean().optional().default(true),
       })
       .optional()
       .default({
         settlementDelayDays: 3,
+        minimumPayoutAmountEnabled: true,
         minimumPayoutAmountTaka: 500,
         oneActivePayoutRequest: true,
       }),
@@ -277,6 +318,7 @@ const platformContentSchema = z.object({
         preparationDelays: z.boolean().optional().default(true),
         riderDelays: z.boolean().optional().default(true),
         deliveryDelays: z.boolean().optional().default(true),
+        paymentExceptions: z.boolean().optional().default(true),
         payoutRequests: z.boolean().optional().default(true),
         support: z.boolean().optional().default(true),
         security: z.boolean().optional().default(true),
@@ -290,6 +332,7 @@ const platformContentSchema = z.object({
         preparationDelays: true,
         riderDelays: true,
         deliveryDelays: true,
+        paymentExceptions: true,
         payoutRequests: true,
         support: true,
         security: true,
@@ -349,10 +392,12 @@ const platformContentSchema = z.object({
       deliveryWatchAfterPickupMinutes: z.number().int().min(1).max(240).optional().default(20),
       deliveryLateAfterPickupMinutes: z.number().int().min(1).max(240).optional().default(25),
       deliveryCriticalAfterPickupMinutes: z.number().int().min(1).max(240).optional().default(30),
+      riderEtaSpeedKmph: z.number().min(6).max(45).optional().default(24),
+      riderEtaRouteFactor: z.number().min(1).max(2).optional().default(1.1),
       retryCooldownMinutes: z.number().int().min(1).max(60),
       surgeReadyOrderThreshold: z.number().int().min(1).max(100),
       surgeUnassignedOrderThreshold: z.number().int().min(1).max(100),
-      autoCancelUnacceptedOrdersEnabled: z.boolean().optional().default(false),
+      autoCancelUnacceptedOrdersEnabled: z.boolean().optional().default(true),
       autoCancelAfterMinutes: z.number().int().min(2).max(240).optional().default(12),
       autoCancelNotifyBeforeMinutes: z.number().int().min(1).max(60).optional().default(3),
     }),
@@ -370,6 +415,32 @@ const platformContentSchema = z.object({
           message: "OTP message template must include {{code}}",
         }),
     }),
+    rateLimits: z
+      .object({
+        signinAttemptsPerWindow: z.number().int().min(2).max(100).optional().default(10),
+        signupAttemptsPerWindow: z.number().int().min(1).max(50).optional().default(5),
+        otpSendPerPhoneWindow: z.number().int().min(1).max(30).optional().default(5),
+        otpSendPerIpWindow: z.number().int().min(3).max(100).optional().default(12),
+        otpVerifyAttemptsPerWindow: z.number().int().min(3).max(30).optional().default(8),
+        passwordRecoveryPerWindow: z.number().int().min(1).max(30).optional().default(5),
+        refreshPerWindow: z.number().int().min(10).max(300).optional().default(30),
+        paymentInitiatePerWindow: z.number().int().min(2).max(60).optional().default(8),
+        orderPlacePerWindow: z.number().int().min(2).max(100).optional().default(12),
+        orderActionPerWindow: z.number().int().min(2).max(100).optional().default(10),
+        cartQuotePerWindow: z.number().int().min(60).max(1000).optional().default(300),
+        supportWritePerWindow: z.number().int().min(5).max(200).optional().default(20),
+        analyticsEventsPerWindow: z.number().int().min(60).max(2000).optional().default(240),
+        riderLocationPerWindow: z.number().int().min(120).max(3000).optional().default(900),
+        adminWritePerWindow: z.number().int().min(60).max(1000).optional().default(240),
+        ownerWritePerWindow: z.number().int().min(60).max(1000).optional().default(240),
+        otpPhoneHourlySendLimit: z.number().int().min(1).max(60).optional().default(5),
+        otpPhoneDailySendLimit: z.number().int().min(1).max(200).optional().default(15),
+        otpIpDailySendLimit: z.number().int().min(5).max(1000).optional().default(60),
+        otpFailedVerifyLimit: z.number().int().min(3).max(20).optional().default(5),
+        otpVerifyLockMinutes: z.number().int().min(5).max(1440).optional().default(15),
+      })
+      .optional()
+      .default(defaultAuthRateLimitSettings),
   }),
   supportContact: z.object({
     email: z.string().trim().email(),
@@ -445,6 +516,7 @@ const platformContentSchema = z.object({
 type PlatformContent = z.infer<typeof platformContentSchema>
 const defaultPlatformContent = platformContentSchema.parse(platformContent)
 export type OperationalFinanceSettings = PlatformContent["operations"]["finance"]
+export type AuthRateLimitSettings = PlatformContent["auth"]["rateLimits"]
 type AdminEditablePlatformContent = {
   content: PlatformContent
   meta: {
@@ -491,10 +563,15 @@ function deepMerge<T>(base: T, override: unknown): T {
 const CONTENT_KEY = "platform-content"
 const platformContentCacheTtlMs = 30_000
 const platformContentHistoryLimit = 6
-let platformContentCache: { content: PlatformContent; expiresAt: number } | null = null
-let adminEditablePlatformContentCache:
-  | { content: AdminEditablePlatformContent; expiresAt: number }
-  | null = null
+const platformContentCache = createInMemoryAsyncCache<PlatformContent>({
+  ttlMs: platformContentCacheTtlMs,
+  maxEntries: 1,
+})
+const adminEditablePlatformContentCache =
+  createInMemoryAsyncCache<AdminEditablePlatformContent>({
+    ttlMs: platformContentCacheTtlMs,
+    maxEntries: 1,
+  })
 
 const SECTION_LABELS = {
   branding: "Branding",
@@ -623,66 +700,59 @@ function mapAdminEditablePlatformContent(
 }
 
 export async function getPlatformContent() {
-  if (platformContentCache && platformContentCache.expiresAt > Date.now()) {
-    return platformContentCache.content
-  }
+  return platformContentCache.getOrSet(CONTENT_KEY, async () => {
+    const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
+      .select({ content: 1 })
+      .lean()
+    return contentDoc?.content
+      ? deepMerge(defaultPlatformContent, contentDoc.content)
+      : defaultPlatformContent
+  })
+}
 
-  const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
-    .select({ content: 1 })
-    .lean()
-  const content = contentDoc?.content
-    ? deepMerge(defaultPlatformContent, contentDoc.content)
-    : defaultPlatformContent
-
-  platformContentCache = {
-    content,
-    expiresAt: Date.now() + platformContentCacheTtlMs
-  }
-
-  return content
+export async function getAuthRateLimitSettings(): Promise<AuthRateLimitSettings> {
+  const content = await getPlatformContent()
+  return content.auth.rateLimits
 }
 
 export async function getOperationalFinanceSettings(): Promise<OperationalFinanceSettings> {
   const content = await getPlatformContent()
-  return content.operations.finance
+  const finance = content.operations.finance
+  return {
+    ...finance,
+    minimumPayoutAmountTaka:
+      finance.minimumPayoutAmountEnabled === false
+        ? 0
+        : Math.max(0, finance.minimumPayoutAmountTaka ?? 0),
+  }
 }
 
 export async function getAdminEditablePlatformContent() {
-  if (
-    adminEditablePlatformContentCache &&
-    adminEditablePlatformContentCache.expiresAt > Date.now()
-  ) {
-    return adminEditablePlatformContentCache.content
-  }
+  return adminEditablePlatformContentCache.getOrSet(CONTENT_KEY, async () => {
+    const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
+      .select({
+        content: 1,
+        updatedAt: 1,
+        updatedByAdminId: 1,
+        updatedByAdminName: 1,
+        history: 1,
+      })
+      .slice("history", -platformContentHistoryLimit)
+      .lean()
+    const content = contentDoc?.content
+      ? deepMerge(defaultPlatformContent, contentDoc.content)
+      : defaultPlatformContent
 
-  const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
-    .select({
-      content: 1,
-      updatedAt: 1,
-      updatedByAdminId: 1,
-      updatedByAdminName: 1,
-      history: 1,
-    })
-    .slice("history", -platformContentHistoryLimit)
-    .lean()
-  const content = contentDoc?.content
-    ? deepMerge(defaultPlatformContent, contentDoc.content)
-    : defaultPlatformContent
-
-  const mapped = mapAdminEditablePlatformContent(content, contentDoc)
-  adminEditablePlatformContentCache = {
-    content: mapped,
-    expiresAt: Date.now() + platformContentCacheTtlMs,
-  }
-  return mapped
+    return mapAdminEditablePlatformContent(content, contentDoc)
+  })
 }
 
 export async function updatePlatformContent(params: {
   content: unknown
   adminId: string
 }) {
-  platformContentCache = null
-  adminEditablePlatformContentCache = null
+  platformContentCache.clear()
+  adminEditablePlatformContentCache.clear()
   const parsed = platformContentSchema.parse(params.content)
   const [admin, currentDoc] = await Promise.all([
     AdminModel.findById(params.adminId).select({ fullName: 1 }).lean(),
@@ -730,14 +800,8 @@ export async function updatePlatformContent(params: {
     updatedByAdminName: adminName,
     history: [nextHistoryEntry],
   })
-  adminEditablePlatformContentCache = {
-    content: mapped,
-    expiresAt: Date.now() + platformContentCacheTtlMs,
-  }
-  platformContentCache = {
-    content: parsed,
-    expiresAt: Date.now() + platformContentCacheTtlMs,
-  }
+  adminEditablePlatformContentCache.clear()
+  platformContentCache.clear()
   return mapped
 }
 
@@ -1195,13 +1259,14 @@ export async function checkCustomerHomeCmsPushReceipts(params: { adminId: string
     }
   }
 
-  const response = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+  const response = await fetchWithTimeout("https://exp.host/--/api/v2/push/getReceipts", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
     },
     body: JSON.stringify({ ids: ticketIds.slice(0, 1000) }),
+    timeoutMs: 5_000,
   })
 
   if (!response.ok) {
@@ -1512,8 +1577,8 @@ export async function rollbackPlatformContent(params: {
   updatedAt: string
   adminId: string
 }) {
-  adminEditablePlatformContentCache = null
-  platformContentCache = null
+  adminEditablePlatformContentCache.clear()
+  platformContentCache.clear()
   const rollbackUpdatedAt = new Date(params.updatedAt)
   if (Number.isNaN(rollbackUpdatedAt.getTime())) {
     throw new AppError(
@@ -1601,13 +1666,7 @@ export async function rollbackPlatformContent(params: {
     updatedByAdminName: adminName,
     history: [nextHistoryEntry],
   })
-  adminEditablePlatformContentCache = {
-    content: mapped,
-    expiresAt: Date.now() + platformContentCacheTtlMs,
-  }
-  platformContentCache = {
-    content: restoredContent,
-    expiresAt: Date.now() + platformContentCacheTtlMs,
-  }
+  adminEditablePlatformContentCache.clear()
+  platformContentCache.clear()
   return mapped
 }

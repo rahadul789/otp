@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Redirect, router } from "expo-router";
+import { Redirect, router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -42,6 +42,24 @@ function formatCountdown(seconds: number) {
   const remainingSeconds = seconds % 60;
   if (minutes <= 0) return `${remainingSeconds}s`;
   return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function resolveAuthRedirectTarget(value?: string | string[]) {
+  const redirectTo = Array.isArray(value) ? value[0] : value;
+  if (typeof redirectTo !== "string") return "/(app)/available";
+
+  if (
+    redirectTo === "/(app)/available" ||
+    redirectTo === "/(app)/active" ||
+    redirectTo === "/(app)/map" ||
+    redirectTo === "/(app)/history" ||
+    redirectTo === "/(app)/profile" ||
+    /^\/orders\/[A-Za-z0-9_-]{6,80}$/.test(redirectTo)
+  ) {
+    return redirectTo;
+  }
+
+  return "/(app)/available";
 }
 
 function OtpCodeInput({
@@ -109,6 +127,7 @@ function OtpCodeInput({
 }
 
 export default function VerifyScreen() {
+  const params = useLocalSearchParams<{ redirectTo?: string }>();
   const [otpCode, setOtpCode] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -152,7 +171,7 @@ export default function VerifyScreen() {
   }, []);
 
   if (rider) {
-    return <Redirect href="/(app)/available" />;
+    return <Redirect href={resolveAuthRedirectTarget(params.redirectTo) as never} />;
   }
 
   if (!pendingPhoneAuth) {
@@ -180,7 +199,7 @@ export default function VerifyScreen() {
         otpCode,
       });
 
-      router.replace("/(app)/available");
+      router.replace(resolveAuthRedirectTarget(params.redirectTo) as never);
     } catch (mutationError) {
       setOtpCode("");
       setError(getDeliveryAuthErrorMessage(mutationError, copy.verify.error));

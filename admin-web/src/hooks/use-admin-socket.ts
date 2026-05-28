@@ -19,6 +19,7 @@ function invalidateAdminRealtimeQueries(
   payload?: Partial<AdminNotificationCenterItem>
 ) {
   void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
+  void queryClient.invalidateQueries({ queryKey: ["admin-action-center"] })
   void queryClient.invalidateQueries({ queryKey: ["admin-dashboard-orders"] })
 
   if (payload?.entityType === "support_case" || payload?.path?.startsWith("/support")) {
@@ -28,7 +29,18 @@ function invalidateAdminRealtimeQueries(
     void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
     void queryClient.invalidateQueries({ queryKey: ["admin-orders-monitor"] })
     void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-bkash-payment-attempts"] })
     void queryClient.invalidateQueries({ queryKey: ["admin-operational-health"] })
+  }
+  if (payload?.entityType === "bkash_payment_attempt" || payload?.path?.startsWith("/payments")) {
+    void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-bkash-payment-attempts"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-action-center"] })
+  }
+  if (payload?.entityType === "payout_method" || payload?.path?.startsWith("/payouts")) {
+    void queryClient.invalidateQueries({ queryKey: ["admin-payout-method-approvals"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-finance-payouts"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-action-center"] })
   }
 }
 
@@ -39,7 +51,11 @@ function resolveAdminNotificationPath(payload: Partial<AdminNotificationCenterIt
     payload.path?.startsWith("/reviews") ||
     payload.path?.startsWith("/restaurants") ||
     payload.path?.startsWith("/riders") ||
-    payload.path?.startsWith("/payments")
+    payload.path?.startsWith("/payments") ||
+    payload.path?.startsWith("/payouts") ||
+    payload.path?.startsWith("/ledger") ||
+    payload.path?.startsWith("/refunds") ||
+    payload.path?.startsWith("/reports")
   ) {
     return payload.path
   }
@@ -47,7 +63,12 @@ function resolveAdminNotificationPath(payload: Partial<AdminNotificationCenterIt
 }
 
 function canMarkNotificationRead(payload: Partial<AdminNotificationCenterItem>) {
-  return payload.source === "customer" || payload.source === "owner" || payload.source === "ops"
+  return (
+    payload.source === "customer" ||
+    payload.source === "owner" ||
+    payload.source === "rider" ||
+    payload.source === "ops"
+  )
 }
 
 export function useAdminSocketBridge(enabled: boolean) {
@@ -86,7 +107,7 @@ export function useAdminSocketBridge(enabled: boolean) {
           onClick: () => {
             if (!payload.isRead && payload.id && canMarkNotificationRead(payload)) {
               void markAdminNotificationRead({
-                source: payload.source as "customer" | "owner" | "ops",
+                source: payload.source as "customer" | "owner" | "rider" | "ops",
                 id: payload.id,
               }).finally(() => {
                 void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })

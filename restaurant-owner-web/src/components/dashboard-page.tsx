@@ -26,13 +26,14 @@ import {
   BadgeDollarSign,
   Ban,
   CheckCircle2,
+  ClipboardList,
   Clock3,
-  ImageIcon,
   LoaderCircle,
+  MessageSquareText,
+  PackageOpen,
   Percent,
   ShoppingBag,
   Star,
-  Store,
   Tags,
   UtensilsCrossed,
   Wallet,
@@ -67,13 +68,10 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  calculateProfileCompletion,
-  getStoreCoverSrc,
-  getStoreLogoSrc,
-} from "@/lib/store-profile"
+import { calculateProfileCompletion } from "@/lib/store-profile"
 import { formatHourLabel12 } from "@/lib/time"
 import { cn } from "@/lib/utils"
+import { patchOwnerOrderQueryCaches } from "@/lib/owner-order-cache"
 import { calculateEarningsSummary } from "@/domain/financials"
 import { getStoreOperationalStatus } from "@/domain/store-runtime"
 import { useAppStore } from "@/store/app-store"
@@ -135,7 +133,7 @@ function createDashboardTrendSeed(interval: { start: Date; end: Date }) {
   const useWeeklyBuckets = days > 45
   const trendByKey = new Map<
     string,
-    { label: string; orders: number; revenue: number }
+    DashboardTrendPoint
   >()
 
   eachDayOfInterval(interval).forEach((day) => {
@@ -145,11 +143,20 @@ function createDashboardTrendSeed(interval: { start: Date; end: Date }) {
         ? startOfWeek(day, { weekStartsOn: 1 })
         : day
       trendByKey.set(key, {
+        date: key,
         label: useWeeklyBuckets
           ? `Wk ${format(bucketDate, "dd MMM")}`
           : format(day, "dd MMM"),
         orders: 0,
         revenue: 0,
+        placedValue: 0,
+        deliveredValue: 0,
+        netEarnings: 0,
+        activeOrders: 0,
+        failedOrders: 0,
+        failedValue: 0,
+        cancelledOrders: 0,
+        rejectedOrders: 0,
       })
     }
   })
@@ -158,6 +165,109 @@ function createDashboardTrendSeed(interval: { start: Date; end: Date }) {
     useWeeklyBuckets,
     trendByKey,
   }
+}
+
+type DashboardTrendPoint = {
+  date?: string
+  label: string
+  orders: number
+  revenue: number
+  placedValue?: number
+  deliveredValue?: number
+  netEarnings?: number
+  activeOrders?: number
+  failedOrders?: number
+  failedValue?: number
+  cancelledOrders?: number
+  rejectedOrders?: number
+}
+
+function normalizeDashboardTrendSeries(
+  interval: { start: Date; end: Date },
+  rawSeries: DashboardTrendPoint[]
+) {
+  const sourceInterval = rawSeries.length > 1
+    ? interval
+    : { start: subDays(startOfDay(interval.end), 6), end: startOfDay(interval.end) }
+  const { trendByKey, useWeeklyBuckets } = createDashboardTrendSeed(sourceInterval)
+
+  rawSeries.forEach((entry) => {
+    const key = entry.date
+      ? getDashboardTrendKey(new Date(`${entry.date}T00:00:00`), useWeeklyBuckets)
+      : entry.label
+    const target = trendByKey.get(key) ?? {
+      date: key,
+      label: entry.label,
+      orders: 0,
+      revenue: 0,
+      placedValue: 0,
+      deliveredValue: 0,
+      netEarnings: 0,
+      activeOrders: 0,
+      failedOrders: 0,
+      failedValue: 0,
+      cancelledOrders: 0,
+      rejectedOrders: 0,
+    }
+
+    target.orders += entry.orders ?? 0
+    target.revenue += entry.revenue ?? 0
+    target.placedValue = (target.placedValue ?? 0) + (entry.placedValue ?? 0)
+    target.deliveredValue = (target.deliveredValue ?? 0) + (entry.deliveredValue ?? entry.revenue ?? 0)
+    target.netEarnings = (target.netEarnings ?? 0) + (entry.netEarnings ?? 0)
+    target.activeOrders = (target.activeOrders ?? 0) + (entry.activeOrders ?? 0)
+    target.failedOrders = (target.failedOrders ?? 0) + (entry.failedOrders ?? 0)
+    target.failedValue = (target.failedValue ?? 0) + (entry.failedValue ?? 0)
+    target.cancelledOrders = (target.cancelledOrders ?? 0) + (entry.cancelledOrders ?? 0)
+    target.rejectedOrders = (target.rejectedOrders ?? 0) + (entry.rejectedOrders ?? 0)
+    trendByKey.set(key, target)
+  })
+
+  return Array.from(trendByKey.values())
+}
+
+function trendAxisMax(dataMax: number) {
+  if (!Number.isFinite(dataMax) || dataMax <= 0) return 1000
+  return Math.max(1000, Math.ceil(dataMax / 250) * 250)
+}
+
+function buildKpiSparklineData(
+  rows: DashboardTrendPoint[],
+  chartKey: string,
+  fallbackValue = 0
+) {
+  const data = rows.map((row) => ({
+    label: row.label,
+    value: Number.isFinite(Number(row[chartKey as keyof DashboardTrendPoint]))
+      ? Number(row[chartKey as keyof DashboardTrendPoint])
+      : 0,
+  }))
+  const hasValue = data.some((entry) => entry.value > 0)
+
+  if (!hasValue && fallbackValue > 0) {
+    const fallbackRows = data.length
+      ? [...data]
+      : [
+          { label: "Start", value: 0 },
+          { label: "Mid", value: 0 },
+          { label: "Near now", value: Math.max(1, Math.round(fallbackValue * 0.45)) },
+          { label: "Now", value: fallbackValue },
+        ]
+    const lastIndex = fallbackRows.length - 1
+    fallbackRows[lastIndex] = {
+      ...fallbackRows[lastIndex],
+      value: fallbackValue,
+    }
+    return fallbackRows
+  }
+
+  return data
+}
+
+function profileSectionRoute(sectionId: string) {
+  if (sectionId === "payoutSetup") return "/payouts"
+  if (sectionId === "openingHours") return "/hours"
+  return "/store-settings"
 }
 
 function DashboardSkeleton() {
@@ -178,6 +288,35 @@ function DashboardSkeleton() {
           <Skeleton key={index} className="h-[340px] rounded-2xl" />
         ))}
       </div>
+    </div>
+  )
+}
+
+function DashboardEmptyState({
+  icon: Icon,
+  title,
+  description,
+  action,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  description: string
+  action?: { label: string; to: string }
+}) {
+  return (
+    <div className="flex min-h-36 flex-col items-center justify-center rounded-xl border border-dashed bg-muted/20 px-4 py-8 text-center">
+      <div className="flex size-11 items-center justify-center rounded-2xl bg-background shadow-sm">
+        <Icon className="size-5 text-muted-foreground" />
+      </div>
+      <div className="mt-3 text-sm font-semibold">{title}</div>
+      <div className="mt-1 max-w-sm text-xs leading-5 text-muted-foreground">
+        {description}
+      </div>
+      {action ? (
+        <Button variant="outline" size="sm" className="mt-4" asChild>
+          <Link to={action.to}>{action.label}</Link>
+        </Button>
+      ) : null}
     </div>
   )
 }
@@ -316,7 +455,13 @@ export function DashboardPage() {
           getDashboardTrendKey(placedAt, useWeeklyBuckets)
         )
         if (trendEntry) {
-          trendEntry.orders += 1
+          if (order.currentStatus !== "Cancelled" && order.currentStatus !== "Rejected") {
+            trendEntry.orders += 1
+            trendEntry.placedValue = (trendEntry.placedValue ?? 0) + order.total
+          }
+          if (liveOrderStatuses.includes(order.currentStatus)) {
+            trendEntry.activeOrders = (trendEntry.activeOrders ?? 0) + 1
+          }
         }
       }
 
@@ -328,6 +473,38 @@ export function DashboardPage() {
           )
           if (deliveredTrendEntry) {
             deliveredTrendEntry.revenue += order.total
+            deliveredTrendEntry.deliveredValue =
+              (deliveredTrendEntry.deliveredValue ?? 0) + order.total
+            deliveredTrendEntry.netEarnings =
+              (deliveredTrendEntry.netEarnings ?? 0) + order.total
+          }
+        }
+      }
+
+      if (order.currentStatus === "Cancelled" && order.timestamps.cancelledAt) {
+        const cancelledAt = new Date(order.timestamps.cancelledAt)
+        if (isWithinInterval(cancelledAt, currentInterval)) {
+          const failedTrendEntry = trendByKey.get(
+            getDashboardTrendKey(cancelledAt, useWeeklyBuckets)
+          )
+          if (failedTrendEntry) {
+            failedTrendEntry.failedOrders = (failedTrendEntry.failedOrders ?? 0) + 1
+            failedTrendEntry.cancelledOrders = (failedTrendEntry.cancelledOrders ?? 0) + 1
+            failedTrendEntry.failedValue = (failedTrendEntry.failedValue ?? 0) + order.total
+          }
+        }
+      }
+
+      if (order.currentStatus === "Rejected" && order.timestamps.rejectedAt) {
+        const rejectedAt = new Date(order.timestamps.rejectedAt)
+        if (isWithinInterval(rejectedAt, currentInterval)) {
+          const failedTrendEntry = trendByKey.get(
+            getDashboardTrendKey(rejectedAt, useWeeklyBuckets)
+          )
+          if (failedTrendEntry) {
+            failedTrendEntry.failedOrders = (failedTrendEntry.failedOrders ?? 0) + 1
+            failedTrendEntry.rejectedOrders = (failedTrendEntry.rejectedOrders ?? 0) + 1
+            failedTrendEntry.failedValue = (failedTrendEntry.failedValue ?? 0) + order.total
           }
         }
       }
@@ -338,10 +515,18 @@ export function DashboardPage() {
     })
 
     return {
-      orderTrend: Array.from(trendByKey.values()).map(({ label, orders, revenue }) => ({
+      orderTrend: Array.from(trendByKey.values()).map(({ label, orders, revenue, placedValue, deliveredValue, netEarnings, activeOrders, failedOrders, failedValue, cancelledOrders, rejectedOrders }) => ({
         label,
         orders,
         revenue,
+        placedValue,
+        deliveredValue,
+        netEarnings,
+        activeOrders,
+        failedOrders,
+        failedValue,
+        cancelledOrders,
+        rejectedOrders,
       })),
       todayHourCounts,
     }
@@ -439,13 +624,13 @@ export function DashboardPage() {
   const kpis = [
     {
       key: "placed",
-      label: "Placed order value",
+      label: "Placed food sales",
       value: formatCompactMoney(currentPlacedValue),
       trend: getTrendLabel(currentPlacedValue, previousPlacedValue),
       trendTone: getTrendMeta(currentPlacedValue, previousPlacedValue).tone,
       icon: ShoppingBag,
-      helper: "Excludes cancelled and rejected orders",
-      chartKey: "orders",
+      helper: "Food subtotal minus owner discounts",
+      chartKey: "placedValue",
     },
     {
       key: "delivered",
@@ -455,7 +640,7 @@ export function DashboardPage() {
       trendTone: getTrendMeta(currentRevenue, previousRevenue).tone,
       icon: BadgeDollarSign,
       helper: "Only successfully delivered orders",
-      chartKey: "revenue",
+      chartKey: "deliveredValue",
     },
     {
       key: "net",
@@ -465,7 +650,7 @@ export function DashboardPage() {
       trendTone: getTrendMeta(currentNet, previousNet).tone,
       icon: Wallet,
       helper: "After commission and owner discounts",
-      chartKey: "revenue",
+      chartKey: "netEarnings",
     },
     {
       key: "active",
@@ -475,7 +660,8 @@ export function DashboardPage() {
       trendTone: "flat" as const,
       icon: Clock3,
       helper: "Needs kitchen or delivery attention",
-      chartKey: "orders",
+      chartKey: "activeOrders",
+      chartFallbackValue: currentPending,
     },
     {
       key: "cancelled",
@@ -491,7 +677,8 @@ export function DashboardPage() {
       ).tone,
       icon: Ban,
       helper: `${formatCompactMoney(currentFailedValue)} failed order value`,
-      chartKey: "orders",
+      chartKey: "failedOrders",
+      chartFallbackValue: currentFailedOrders,
     },
   ]
 
@@ -500,7 +687,7 @@ export function DashboardPage() {
     ? [
         {
           key: "placed",
-          label: "Placed order value",
+          label: "Placed food sales",
           value: formatCompactMoney(dashboardSummary.metrics.placedOrderValue),
           trend: getTrendLabel(
             dashboardSummary.metrics.placedOrderValue,
@@ -511,8 +698,8 @@ export function DashboardPage() {
             dashboardSummary.metrics.previousPlacedOrderValue
           ).tone,
           icon: ShoppingBag,
-          helper: "Excludes cancelled and rejected orders",
-          chartKey: "orders",
+          helper: "Food subtotal minus owner discounts",
+          chartKey: "placedValue",
         },
         {
           key: "delivered",
@@ -528,7 +715,7 @@ export function DashboardPage() {
           ).tone,
           icon: BadgeDollarSign,
           helper: "Only successfully delivered orders",
-          chartKey: "revenue",
+          chartKey: "deliveredValue",
         },
         {
           key: "net",
@@ -544,7 +731,7 @@ export function DashboardPage() {
           ).tone,
           icon: Wallet,
           helper: "After commission and owner discounts",
-          chartKey: "revenue",
+          chartKey: "netEarnings",
         },
         {
           key: "active",
@@ -554,7 +741,8 @@ export function DashboardPage() {
           trendTone: "flat" as const,
           icon: Clock3,
           helper: "Needs kitchen or delivery attention",
-          chartKey: "orders",
+          chartKey: "activeOrders",
+          chartFallbackValue: dashboardSummary.metrics.pendingOrders,
         },
         {
           key: "cancelled",
@@ -580,14 +768,23 @@ export function DashboardPage() {
             dashboardSummary.metrics.cancelledOrderValue +
               (dashboardSummary.metrics.rejectedOrderValue ?? 0)
           )} failed order value`,
-          chartKey: "orders",
+          chartKey: "failedOrders",
+          chartFallbackValue:
+            dashboardSummary.metrics.cancelledOrders +
+            dashboardSummary.metrics.rejectedOrders,
         },
       ]
     : kpis
 
   const orderTrend = React.useMemo(
-    () => todayAndTrendMetrics.orderTrend,
-    [todayAndTrendMetrics]
+    () =>
+      normalizeDashboardTrendSeries(
+        currentInterval,
+        dashboardSummary?.salesTrend?.length
+          ? dashboardSummary.salesTrend
+          : todayAndTrendMetrics.orderTrend
+      ),
+    [currentInterval, dashboardSummary?.salesTrend, todayAndTrendMetrics]
   )
 
   const peakHours = React.useMemo(
@@ -628,6 +825,45 @@ export function DashboardPage() {
         )
         .slice(0, 4),
     [reviews]
+  )
+  const liveOrdersToRender = React.useMemo(
+    () =>
+      dashboardSummary?.liveOrders?.length
+        ? dashboardSummary.liveOrders
+        : liveOrders.map((order) => ({
+            id: order.id,
+            orderNumber: order.orderNumber,
+            customerName: order.customer.name,
+            status: order.currentStatus,
+            placedAt: order.timestamps.placedAt,
+            value: order.total,
+          })),
+    [dashboardSummary, liveOrders]
+  )
+  const topItemsToRender = React.useMemo(
+    () =>
+      dashboardSummary?.topItems?.length
+        ? dashboardSummary.topItems
+        : topItems.map((item) => ({
+            id: item.name,
+            name: item.name,
+            quantity: item.quantity,
+            revenue: item.revenue,
+          })),
+    [dashboardSummary, topItems]
+  )
+  const recentReviewsToRender = React.useMemo(
+    () =>
+      dashboardSummary?.recentReviews?.length
+        ? dashboardSummary.recentReviews
+        : recentReviews.map((review) => ({
+            id: review.id,
+            customerName: review.user.name,
+            rating: review.rating,
+            comment: review.comment,
+            createdAt: review.createdAt,
+          })),
+    [dashboardSummary, recentReviews]
   )
 
   const voucherSnapshot = React.useMemo(() => {
@@ -682,7 +918,8 @@ export function DashboardPage() {
         actor: "owner",
       },
       {
-        onSuccess: () => {
+        onSuccess: (updated) => {
+          patchOwnerOrderQueryCaches(queryClient, updated)
           queryClient.invalidateQueries({ queryKey: ["owner", "orders"] })
           queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
           queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
@@ -742,7 +979,14 @@ export function DashboardPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        {kpisToRender.map((kpi) => (
+        {kpisToRender.map((kpi) => {
+          const sparklineData = buildKpiSparklineData(
+            orderTrend,
+            kpi.chartKey,
+            kpi.chartFallbackValue
+          )
+
+          return (
           <Card key={kpi.key} className="rounded-2xl shadow-sm">
             <CardHeader className="flex flex-row items-start justify-between space-y-0">
               <div className="space-y-1">
@@ -771,13 +1015,17 @@ export function DashboardPage() {
               </div>
               <div className="mt-3 h-10">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={orderTrend}>
+                  <AreaChart data={sparklineData}>
+                    <YAxis hide domain={[0, trendAxisMax]} />
                     <Area
                       type="monotone"
-                      dataKey={kpi.chartKey}
+                      dataKey="value"
                       stroke="#0f766e"
                       fill="#ccfbf1"
                       strokeWidth={2}
+                      dot={false}
+                      activeDot={false}
+                      isAnimationActive={false}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -794,7 +1042,8 @@ export function DashboardPage() {
               </Button>
             </CardContent>
           </Card>
-        ))}
+          )
+        })}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
@@ -811,7 +1060,11 @@ export function DashboardPage() {
                 <AreaChart data={orderTrend}>
                   <CartesianGrid vertical={false} strokeDasharray="3 3" />
                   <XAxis dataKey="label" tickLine={false} axisLine={false} />
-                  <YAxis tickLine={false} axisLine={false} />
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    domain={[0, trendAxisMax]}
+                  />
                   <Tooltip />
                   <Area
                     type="monotone"
@@ -819,6 +1072,9 @@ export function DashboardPage() {
                     stroke="#2563eb"
                     fill="#dbeafe"
                     strokeWidth={2.5}
+                    dot={false}
+                    activeDot={{ r: 4 }}
+                    isAnimationActive={false}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -883,29 +1139,35 @@ export function DashboardPage() {
             <div className="rounded-xl border bg-muted/20 p-4">
               <div className="mb-2 text-sm font-medium">Peak Hours Today</div>
               <div className="space-y-2">
-                {peakHours.slice(0, 4).map((entry) => (
-                  <div key={entry.label} className="space-y-1">
-                    <div className="flex items-center justify-between text-sm">
-                      <span>{entry.label}</span>
-                      <span>{entry.orders} orders</span>
+                {peakHours.length ? (
+                  peakHours.slice(0, 4).map((entry) => (
+                    <div key={entry.label} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span>{entry.label}</span>
+                        <span>{entry.orders} orders</span>
+                      </div>
+                      <Progress
+                        value={
+                          peakHours[0]?.orders
+                            ? (entry.orders / peakHours[0].orders) * 100
+                            : 0
+                        }
+                        className="h-2"
+                      />
                     </div>
-                    <Progress
-                      value={
-                        peakHours[0]?.orders
-                          ? (entry.orders / peakHours[0].orders) * 100
-                          : 0
-                      }
-                      className="h-2"
-                    />
+                  ))
+                ) : (
+                  <div className="rounded-lg border border-dashed bg-background px-3 py-4 text-xs text-muted-foreground">
+                    Peak hour data will appear after today&apos;s first order.
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+      <div>
         <Card className="rounded-2xl shadow-sm">
           <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
@@ -968,79 +1230,13 @@ export function DashboardPage() {
                         </div>
                       </div>
                       <Button size="sm" variant="outline" asChild>
-                        <Link to="/store-settings">Update</Link>
+                        <Link to={profileSectionRoute(section.id)}>Update</Link>
                       </Button>
                     </div>
                   ))}
                 </div>
               </div>
             ) : null}
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-2xl shadow-sm">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Store className="size-4 text-muted-foreground" />
-              Storefront Preview
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="overflow-hidden rounded-2xl border bg-card">
-                <div className="border-b px-3 py-2 text-xs font-medium text-muted-foreground">
-                  Current storefront
-                </div>
-                <div className="relative h-24 bg-muted">
-                  <img
-                    src={getStoreCoverSrc(storeSettings.coverImageUrl)}
-                    alt="Current storefront cover"
-                    className="h-full w-full object-cover"
-                  />
-                </div>
-                <div className="px-3 pb-3">
-                  <div className="-mt-7 flex size-14 items-center justify-center overflow-hidden rounded-2xl border-4 border-background bg-background shadow-sm">
-                    <img
-                      src={getStoreLogoSrc(storeSettings.logoUrl)}
-                      alt="Current storefront logo"
-                      className="h-full w-full object-cover"
-                    />
-                  </div>
-                  <div className="mt-3 font-medium">
-                    {storeSettings.name || "Your store"}
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {storeSettings.description ||
-                      "Add a short description so customers understand what you serve."}
-                  </div>
-                </div>
-              </div>
-
-              <div className="overflow-hidden rounded-2xl border bg-emerald-50">
-                <div className="border-b border-emerald-200 px-3 py-2 text-xs font-medium text-emerald-900">
-                  Completed look
-                </div>
-                <div className="relative h-24 bg-gradient-to-r from-emerald-500 to-teal-500" />
-                <div className="px-3 pb-3">
-                  <div className="-mt-7 flex size-14 items-center justify-center rounded-2xl border-4 border-white bg-white shadow-sm">
-                    <ImageIcon className="size-6 text-emerald-600" />
-                  </div>
-                  <div className="mt-3 font-medium text-emerald-950">
-                    Richer brand presentation
-                  </div>
-                  <div className="mt-1 text-xs text-emerald-900/70">
-                    Custom logo and cover make the storefront feel more trusted
-                    at a glance.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-xl border bg-muted/20 p-4 text-sm text-muted-foreground">
-              {storeSettings.logoUrl || storeSettings.coverImageUrl
-                ? "You already have visuals in place. Update them any time from Store Settings."
-                : "Your store still uses default placeholder visuals. Add your own logo and cover whenever you're ready."}
-            </div>
           </CardContent>
         </Card>
       </div>
@@ -1057,7 +1253,8 @@ export function DashboardPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
-            {liveOrders.map((order) => (
+            {liveOrdersToRender.length ? (
+              liveOrdersToRender.map((order) => (
               <div
                 key={order.id}
                 className="flex flex-col gap-3 rounded-xl border bg-muted/20 p-4 lg:flex-row lg:items-center lg:justify-between"
@@ -1066,15 +1263,17 @@ export function DashboardPage() {
                   <div>
                     <div className="font-medium">{order.orderNumber}</div>
                     <div className="text-xs text-muted-foreground">
-                      {format(new Date(order.timestamps.placedAt), "hh:mm a")}
+                      {format(new Date(order.placedAt), "hh:mm a")}
                     </div>
                   </div>
-                  <div className="font-medium">{order.customer.name}</div>
-                  <div>{formatCompactMoney(order.total)}</div>
-                  <Badge variant="outline">{orderStatusLabels[order.currentStatus]}</Badge>
+                  <div className="font-medium">{order.customerName}</div>
+                  <div>{formatCompactMoney(order.value)}</div>
+                  <Badge variant="outline">
+                    {orderStatusLabels[order.status as keyof typeof orderStatusLabels] ?? order.status}
+                  </Badge>
                 </div>
                 <div className="flex gap-2">
-                  {order.currentStatus === "New" ? (
+                  {order.status === "New" ? (
                     <Button
                       size="sm"
                       onClick={() => handleAcceptOrder(order.id)}
@@ -1100,7 +1299,15 @@ export function DashboardPage() {
                   </Button>
                 </div>
               </div>
-            ))}
+              ))
+            ) : (
+              <DashboardEmptyState
+                icon={ClipboardList}
+                title="No live orders right now"
+                description="New, accepted, preparing, ready, and picked-up orders will appear here immediately."
+                action={{ label: "Open orders", to: "/orders" }}
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -1165,9 +1372,10 @@ export function DashboardPage() {
             <Badge variant="outline">{menuItems.length} menu items</Badge>
           </CardHeader>
           <CardContent className="space-y-3">
-            {topItems.map((item) => (
+            {topItemsToRender.length ? (
+              topItemsToRender.map((item) => (
               <div
-                key={item.name}
+                key={item.id || item.name}
                 className="flex items-center justify-between rounded-xl border bg-muted/20 px-3 py-2"
               >
                 <div>
@@ -1180,7 +1388,15 @@ export function DashboardPage() {
                   {formatCompactMoney(item.revenue)}
                 </div>
               </div>
-            ))}
+              ))
+            ) : (
+              <DashboardEmptyState
+                icon={PackageOpen}
+                title="No item sales yet"
+                description="Top items will rank themselves here after customers place orders in this date range."
+                action={{ label: "Review menu", to: "/menu" }}
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -1192,10 +1408,11 @@ export function DashboardPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-3">
-            {recentReviews.map((review) => (
+            {recentReviewsToRender.length ? (
+              recentReviewsToRender.map((review) => (
               <div key={review.id} className="rounded-xl border bg-muted/20 p-3">
                 <div className="flex items-center justify-between">
-                  <div className="font-medium">{review.user.name}</div>
+                  <div className="font-medium">{review.customerName}</div>
                   <div className="inline-flex items-center gap-1 text-amber-600">
                     <Star className="size-4 fill-current" />
                     {review.rating}
@@ -1205,7 +1422,15 @@ export function DashboardPage() {
                   {review.comment || "Customer left a rating without comment."}
                 </div>
               </div>
-            ))}
+              ))
+            ) : (
+              <DashboardEmptyState
+                icon={MessageSquareText}
+                title="No recent reviews"
+                description="Customer ratings and review comments will appear here after delivered orders are reviewed."
+                action={{ label: "Open reviews", to: "/reviews" }}
+              />
+            )}
           </CardContent>
         </Card>
 

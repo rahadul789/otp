@@ -378,18 +378,21 @@ export function PromotionsPage() {
           current.map((voucher) => (voucher.id === id ? mapped : voucher))
         )
         toast.success("Voucher updated.")
-        return
+        void queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] })
+        return true
       }
 
       const created = await createVoucherMutation.mutateAsync(requestPayload)
       const mapped = mapOwnerVoucher(created)
       setVouchers((current) => [mapped, ...current])
       toast.success("Voucher created.")
-      queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] })
+      void queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] })
+      return true
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unable to save voucher."
       toast.error("Save failed", { description: message })
+      return false
     } finally {
       setPendingVoucherAction(null)
     }
@@ -539,7 +542,7 @@ export function PromotionsPage() {
         items={itemOptions}
         onSubmitVoucher={(payload) => {
           if (!editingVoucher) return
-          upsertVoucher(payload, editingVoucher.id)
+          return upsertVoucher(payload, editingVoucher.id)
         }}
         isSubmitting={pendingVoucherAction?.type === "submit" && pendingVoucherAction.id === editingVoucher?.id}
       />
@@ -626,7 +629,6 @@ export function PromotionsPage() {
                 <SelectItem value="all">All Types</SelectItem>
                 <SelectItem value="flat">Flat Discount</SelectItem>
                 <SelectItem value="percentage">Percentage Discount</SelectItem>
-                <SelectItem value="free-delivery">Free Delivery</SelectItem>
               </SelectContent>
             </Select>
             <Select

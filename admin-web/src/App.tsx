@@ -10,6 +10,7 @@ import {
   Headphones,
   Loader2,
   Megaphone,
+  MessageSquareText,
   Moon,
   Plus,
   RefreshCcw,
@@ -77,6 +78,7 @@ import { Switch } from "@/components/ui/switch"
 import {
   bootstrapAdmin,
   getAdminReports,
+  getAdminSmsBalance,
   listAdminOrders,
   listAdminNotifications,
   listAdminRestaurants,
@@ -119,6 +121,7 @@ type DashboardDrawerKey =
   | "riders"
   | "lateOrders"
   | "finance"
+  | "smsBalance"
   | "orderStatus"
   | "topRestaurants"
   | "restaurantActivity"
@@ -141,6 +144,7 @@ type ModuleConfig = {
 }
 
 const AdminAuthContext = React.createContext<AdminAuthContextValue | null>(null)
+const ADMIN_DOCUMENT_TITLE = "Foodbela Admin"
 const NAV_NOTIFICATION_INITIAL_LIMIT = 15
 const NAV_NOTIFICATION_LOAD_STEP = 15
 const RestaurantsPage = React.lazy(() =>
@@ -171,6 +175,31 @@ const LiveMapPage = React.lazy(() =>
 const PaymentsPage = React.lazy(() =>
   import("@/components/payments-page").then((module) => ({
     default: module.PaymentsPage,
+  }))
+)
+const FinancePlatformPage = React.lazy(() =>
+  import("@/components/finance-platform-page").then((module) => ({
+    default: module.FinancePlatformPage,
+  }))
+)
+const FinanceTransactionsPage = React.lazy(() =>
+  import("@/components/finance-transactions-page").then((module) => ({
+    default: module.FinanceTransactionsPage,
+  }))
+)
+const FinancePayoutsPage = React.lazy(() =>
+  import("@/components/finance-payouts-page").then((module) => ({
+    default: module.FinancePayoutsPage,
+  }))
+)
+const FinanceLedgerPage = React.lazy(() =>
+  import("@/components/finance-ledger-page").then((module) => ({
+    default: module.FinanceLedgerPage,
+  }))
+)
+const FinanceRefundsPage = React.lazy(() =>
+  import("@/components/finance-refunds-page").then((module) => ({
+    default: module.FinanceRefundsPage,
   }))
 )
 const CouponsPage = React.lazy(() =>
@@ -231,6 +260,11 @@ const SessionsPage = React.lazy(() =>
 const OperationsHealthPage = React.lazy(() =>
   import("@/components/operations-health-page").then((module) => ({
     default: module.OperationsHealthPage,
+  }))
+)
+const ActionCenterPage = React.lazy(() =>
+  import("@/components/action-center-page").then((module) => ({
+    default: module.ActionCenterPage,
   }))
 )
 
@@ -296,13 +330,11 @@ const moduleConfigs: Record<string, ModuleConfig> = {
       { label: "Active users", value: "0" },
       { label: "Blocked users", value: "0" },
       { label: "New signups", value: "0" },
-      { label: "Account requests", value: "0" },
     ],
     capabilities: [
       "Customer list",
       "User block/unblock",
       "User details view",
-      "Account request review",
     ],
     queue: [
       "Customer profile table",
@@ -615,8 +647,23 @@ const moduleConfigs: Record<string, ModuleConfig> = {
 
 void moduleConfigs
 
+const SMS_PRICE_PACKAGES = [
+  { name: "Basic", recharge: 1500, nonMasking: 0.4, masking: 0.64, validity: "6 months" },
+  { name: "Standard", recharge: 10000, nonMasking: 0.38, masking: 0.62, validity: "6 months" },
+  { name: "Business", recharge: 22000, nonMasking: 0.35, masking: 0.6, validity: "1 year" },
+  { name: "Enterprise", recharge: 50000, nonMasking: 0.33, masking: 0.56, validity: "1 year" },
+  { name: "Platinum", recharge: 90000, nonMasking: 0.31, masking: 0.55, validity: "1 year" },
+]
+
 function formatDashboardCurrency(value?: number) {
   return `Tk ${Math.round(value || 0).toLocaleString()}`
+}
+
+function formatDashboardCurrencyPrecise(value?: number) {
+  return `Tk ${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
 }
 
 function formatDashboardNumber(value?: number) {
@@ -794,7 +841,12 @@ function resolveAdminNotificationPath(item: AdminNotificationCenterItem) {
     item.path?.startsWith("/reviews") ||
     item.path?.startsWith("/restaurants") ||
     item.path?.startsWith("/riders") ||
-    item.path?.startsWith("/payments")
+    item.path?.startsWith("/payments") ||
+    item.path?.startsWith("/transactions") ||
+    item.path?.startsWith("/payouts") ||
+    item.path?.startsWith("/ledger") ||
+    item.path?.startsWith("/refunds") ||
+    item.path?.startsWith("/reports")
   ) {
     return item.path
   }
@@ -802,7 +854,34 @@ function resolveAdminNotificationPath(item: AdminNotificationCenterItem) {
 }
 
 function canMarkNavNotificationRead(item: AdminNotificationCenterItem) {
-  return item.source === "customer" || item.source === "owner" || item.source === "ops"
+  return (
+    item.source === "customer" ||
+    item.source === "owner" ||
+    item.source === "rider" ||
+    item.source === "ops"
+  )
+}
+
+function resolveAdminPageTitle(pathname: string, search: string) {
+  const fullPath = `${pathname}${search}`
+  if (adminRouteTitleByPath[fullPath]) return adminRouteTitleByPath[fullPath]
+  if (pathname === "/riders") {
+    const tab = new URLSearchParams(search).get("tab")
+    if (tab === "earnings") return "Rider Payroll"
+    if (tab === "dispatch") return "Dispatch Controls"
+  }
+  return adminRouteTitleByPath[pathname] ?? "Dashboard"
+}
+
+function formatTitleUnreadCount(count: number) {
+  return count > 99 ? "99+" : `${count}`
+}
+
+function buildAdminDocumentTitle(pageTitle: string, unreadCount = 0) {
+  const suffix = `${pageTitle} - ${ADMIN_DOCUMENT_TITLE}`
+  return unreadCount > 0
+    ? `(${formatTitleUnreadCount(unreadCount)}) ${suffix}`
+    : suffix
 }
 
 const adminSearchItems = adminSidebarGroups.flatMap((group) =>
@@ -947,6 +1026,59 @@ function AdminLayout() {
   })
   useAdminSocketBridge(Boolean(adminProfile))
 
+  const pageTitle = resolveAdminPageTitle(location.pathname, location.search)
+  const isFullBleedRoute = location.pathname === "/live-map"
+  const navNotificationItems = navNotificationsQuery.data?.items ?? []
+  const navNotificationTotal = navNotificationsQuery.data?.total ?? 0
+  const canLoadMoreNavNotifications =
+    navNotificationItems.length < navNotificationTotal
+  const navUnreadCount =
+    (navNotificationsQuery.data?.summary.customerUnread ?? 0) +
+    (navNotificationsQuery.data?.summary.ownerUnread ?? 0) +
+    (navNotificationsQuery.data?.summary.riderUnread ?? 0)
+  const navBadgeLabel = navUnreadCount > 99 ? "99+" : `${navUnreadCount}`
+
+  React.useEffect(() => {
+    let blinkTimer: number | undefined
+    let showAlertTitle = true
+    const baseTitle = buildAdminDocumentTitle(pageTitle, navUnreadCount)
+    const alertTitle =
+      navUnreadCount > 0
+        ? `(${formatTitleUnreadCount(navUnreadCount)}) New notification - ${ADMIN_DOCUMENT_TITLE}`
+        : baseTitle
+
+    function applyTitle() {
+      if (document.hidden && navUnreadCount > 0) {
+        document.title = showAlertTitle ? alertTitle : baseTitle
+        return
+      }
+      document.title = baseTitle
+    }
+
+    function syncTitleMode() {
+      if (blinkTimer) {
+        window.clearInterval(blinkTimer)
+        blinkTimer = undefined
+      }
+      showAlertTitle = true
+      applyTitle()
+      if (document.hidden && navUnreadCount > 0) {
+        blinkTimer = window.setInterval(() => {
+          showAlertTitle = !showAlertTitle
+          applyTitle()
+        }, 1200)
+      }
+    }
+
+    syncTitleMode()
+    document.addEventListener("visibilitychange", syncTitleMode)
+
+    return () => {
+      document.removeEventListener("visibilitychange", syncTitleMode)
+      if (blinkTimer) window.clearInterval(blinkTimer)
+    }
+  }, [pageTitle, navUnreadCount])
+
   if (!adminProfile) {
     return <Navigate to="/auth/signin" replace state={{ from: location }} />
   }
@@ -955,16 +1087,6 @@ function AdminLayout() {
     theme === "dark" ||
     (theme === "system" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches)
-  const pageTitle = adminRouteTitleByPath[location.pathname] ?? "Dashboard"
-  const isFullBleedRoute = location.pathname === "/live-map"
-  const navNotificationItems = navNotificationsQuery.data?.items ?? []
-  const navNotificationTotal = navNotificationsQuery.data?.total ?? 0
-  const canLoadMoreNavNotifications =
-    navNotificationItems.length < navNotificationTotal
-  const navUnreadCount =
-    (navNotificationsQuery.data?.summary.customerUnread ?? 0) +
-    (navNotificationsQuery.data?.summary.ownerUnread ?? 0)
-  const navBadgeLabel = navUnreadCount > 99 ? "99+" : `${navUnreadCount}`
 
   async function handleLogout() {
     await signOut()
@@ -975,7 +1097,7 @@ function AdminLayout() {
     const path = resolveAdminNotificationPath(item)
     if (!item.isRead && canMarkNavNotificationRead(item)) {
       markNotificationReadMutation.mutate({
-        source: item.source as "customer" | "owner" | "ops",
+        source: item.source as "customer" | "owner" | "rider" | "ops",
         id: item.id,
       })
     }
@@ -1195,10 +1317,10 @@ function AdminLayout() {
           <section className="flex-1 overflow-auto">
             <div
               className={cn(
-                "mx-auto flex w-full flex-col gap-6",
+                "flex w-full min-w-0 flex-col gap-6",
                 isFullBleedRoute
-                  ? "max-w-none gap-0 px-0 py-0"
-                  : "max-w-7xl px-4 py-5 sm:px-6"
+                  ? "gap-0 px-0 py-0"
+                  : "px-4 py-5 sm:px-6"
               )}
             >
               <Outlet />
@@ -1219,6 +1341,10 @@ function SignInPage() {
   const [authError, setAuthError] = React.useState("")
   const isBootstrapEnabled = import.meta.env.VITE_ENABLE_ADMIN_BOOTSTRAP === "true"
   const isRateLimitError = /^too many /i.test(authError.trim())
+
+  React.useEffect(() => {
+    document.title = `Sign In - ${ADMIN_DOCUMENT_TITLE}`
+  }, [])
 
   const signInMutation = useMutation({
     mutationFn: () => signinAdmin(email, password),
@@ -1381,6 +1507,11 @@ function DashboardPage() {
       }),
     staleTime: 30_000,
   })
+  const smsBalanceQuery = useQuery({
+    queryKey: ["admin-dashboard-sms-balance"],
+    queryFn: getAdminSmsBalance,
+    staleTime: 60_000,
+  })
   const data = dashboardQuery.data
   const orders = ordersQuery.data?.items ?? []
   const restaurants = restaurantsQuery.data?.items ?? []
@@ -1408,6 +1539,7 @@ function DashboardPage() {
   const topRestaurants = data?.restaurants.slice(0, 5) ?? []
   const topItems = data?.topItems.slice(0, 5) ?? []
   const marginIsNegative = (data?.overview.estimatedPlatformMargin ?? 0) < 0
+  const smsBalance = smsBalanceQuery.data
   const riderCapacityRisk =
     liveOrders > 0 &&
     (ridersSummary.availableRiders ?? 0) > 0 &&
@@ -1477,6 +1609,27 @@ function DashboardPage() {
             ? "text-rose-600 bg-rose-50"
             : "text-violet-600 bg-violet-50",
           drawer: "finance",
+        },
+        {
+          label: "SMS balance",
+          value:
+            smsBalance?.status === "ok" && typeof smsBalance.balance === "number"
+              ? formatDashboardCurrency(smsBalance.balance)
+              : smsBalance?.status === "not_configured"
+                ? "Not set"
+                : smsBalanceQuery.isFetching
+                  ? "Checking..."
+                  : "Check",
+          helper:
+            smsBalance?.status === "ok"
+              ? "sms.bd account balance"
+              : smsBalance?.message || "SMS provider status",
+          icon: MessageSquareText,
+          tone:
+            smsBalance?.status === "ok"
+              ? "text-emerald-600 bg-emerald-50"
+              : "text-amber-600 bg-amber-50",
+          drawer: "smsBalance",
         },
       ]
     : dashboardMetrics
@@ -1588,19 +1741,22 @@ function DashboardPage() {
     dashboardQuery.isFetching ||
     ordersQuery.isFetching ||
     restaurantsQuery.isFetching ||
-    ridersQuery.isFetching
+    ridersQuery.isFetching ||
+    smsBalanceQuery.isFetching
   const lastUpdatedAt = Math.max(
     dashboardQuery.dataUpdatedAt,
     ordersQuery.dataUpdatedAt,
     restaurantsQuery.dataUpdatedAt,
-    ridersQuery.dataUpdatedAt
+    ridersQuery.dataUpdatedAt,
+    smsBalanceQuery.dataUpdatedAt
   )
   const refreshDashboard = React.useCallback(() => {
     void dashboardQuery.refetch()
     void ordersQuery.refetch()
     void restaurantsQuery.refetch()
     void ridersQuery.refetch()
-  }, [dashboardQuery, ordersQuery, restaurantsQuery, ridersQuery])
+    void smsBalanceQuery.refetch()
+  }, [dashboardQuery, ordersQuery, restaurantsQuery, ridersQuery, smsBalanceQuery])
 
   React.useEffect(() => {
     if (!autoRefresh) return
@@ -1646,6 +1802,13 @@ function DashboardPage() {
         "Selected timeframe finance, refunds, payroll, and reconciliation.",
       route: "/reports",
       routeLabel: "Open reports",
+    },
+    smsBalance: {
+      title: "SMS balance",
+      description:
+        "sms.bd balance, package pricing, and estimated remaining message capacity.",
+      route: "/settings",
+      routeLabel: "Open SMS settings",
     },
     orderStatus: {
       title: "Order status breakdown",
@@ -1859,6 +2022,103 @@ function DashboardPage() {
             <p className="mt-1 text-xs text-muted-foreground">
               {data?.reconciliation.message ?? "Finance data is loading."}
             </p>
+          </div>
+        </div>
+      )
+    }
+    if (drawer === "smsBalance") {
+      const balance =
+        smsBalance?.status === "ok" && typeof smsBalance.balance === "number"
+          ? smsBalance.balance
+          : null
+      return (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <DashboardDrawerRow
+              title="Provider"
+              description={smsBalance?.message || "sms.bd status"}
+              value={smsBalance?.provider || "sms.bd"}
+              badge={
+                <Badge
+                  variant={
+                    smsBalance?.status === "ok"
+                      ? "default"
+                      : smsBalance?.status === "not_configured"
+                        ? "outline"
+                        : "destructive"
+                  }
+                >
+                  {smsBalance?.status || "loading"}
+                </Badge>
+              }
+            />
+            <DashboardDrawerRow
+              title="Current balance"
+              description={`Checked ${formatDashboardDateTime(smsBalanceQuery.dataUpdatedAt)}`}
+              value={
+                balance !== null
+                  ? formatDashboardCurrencyPrecise(balance)
+                  : "Unavailable"
+              }
+            />
+            <DashboardDrawerRow
+              title="Sender ID"
+              description="Masking sender id env status"
+              value={
+                smsBalance?.senderIdConfigured ? "Configured" : "Not configured"
+              }
+            />
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Remaining message estimate</CardTitle>
+              <CardDescription>
+                sms.bd package rates vary by recharge slab. Counts below are calculated from the current balance and published package rates.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead className="bg-muted/50 text-left">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Package</th>
+                      <th className="px-3 py-2 font-medium">Min recharge</th>
+                      <th className="px-3 py-2 font-medium">Non-masking</th>
+                      <th className="px-3 py-2 font-medium">Can send</th>
+                      <th className="px-3 py-2 font-medium">Masking</th>
+                      <th className="px-3 py-2 font-medium">Can send</th>
+                      <th className="px-3 py-2 font-medium">Validity</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {SMS_PRICE_PACKAGES.map((row) => (
+                      <tr key={row.name} className="border-t">
+                        <td className="px-3 py-2 font-medium">{row.name}</td>
+                        <td className="px-3 py-2">{formatDashboardCurrency(row.recharge)}</td>
+                        <td className="px-3 py-2">{formatDashboardCurrencyPrecise(row.nonMasking)}</td>
+                        <td className="px-3 py-2 font-semibold">
+                          {balance !== null
+                            ? formatDashboardNumber(Math.floor(balance / row.nonMasking))
+                            : "N/A"}
+                        </td>
+                        <td className="px-3 py-2">{formatDashboardCurrencyPrecise(row.masking)}</td>
+                        <td className="px-3 py-2 font-semibold">
+                          {balance !== null
+                            ? formatDashboardNumber(Math.floor(balance / row.masking))
+                            : "N/A"}
+                        </td>
+                        <td className="px-3 py-2">{row.validity}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Useful next step: store the actual package slab selected for your account in Settings, then dashboard can show one exact remaining count instead of all package estimates.
           </div>
         </div>
       )
@@ -2698,6 +2958,46 @@ const router = createBrowserRouter([
         ),
       },
       {
+        path: "platform-finance",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <FinancePlatformPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "transactions",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <FinanceTransactionsPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "payouts",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <FinancePayoutsPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "ledger",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <FinanceLedgerPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "refunds",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <FinanceRefundsPage />
+          </React.Suspense>
+        ),
+      },
+      {
         path: "coupons",
         element: (
           <React.Suspense fallback={<RouteLoading />}>
@@ -2770,6 +3070,14 @@ const router = createBrowserRouter([
         element: (
           <React.Suspense fallback={<RouteLoading />}>
             <SessionsPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "action-center",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <ActionCenterPage />
           </React.Suspense>
         ),
       },

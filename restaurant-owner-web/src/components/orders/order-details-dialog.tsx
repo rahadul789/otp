@@ -23,6 +23,8 @@ import {
   type OrderOperationalTiming,
   type OrderStatus,
   formatOrderMoney,
+  getOwnerOrderNetSales,
+  getOwnerOrderSubtotal,
   getOrderItemsCount,
   orderStatusLabels,
 } from "@/components/orders/types"
@@ -181,7 +183,9 @@ export function OrderDetailsDialog({
             )
             .join("")}
           <hr />
-          <p><strong>Total:</strong> ${formatOrderMoney(currentOrder.total)}</p>
+          <p><strong>Restaurant sales:</strong> ${formatOrderMoney(
+            getOwnerOrderNetSales(currentOrder)
+          )}</p>
         </body>
       </html>
     `
@@ -209,6 +213,9 @@ export function OrderDetailsDialog({
                   className={getStatusBadgeClass(currentOrder.currentStatus)}
                 >
                   {orderStatusLabels[currentOrder.currentStatus]}
+                </Badge>
+                <Badge variant="secondary">
+                  {getPaymentMethodLabel(currentOrder.paymentMethod)}
                 </Badge>
               </div>
               <SheetDescription>
@@ -326,10 +333,12 @@ export function OrderDetailsDialog({
                   Customer Details
                 </div>
                 <div className="font-medium">{currentOrder.customer.name}</div>
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Phone className="size-4" />
-                  {currentOrder.customer.phone}
-                </div>
+                {currentOrder.customer.phone ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Phone className="size-4" />
+                    {currentOrder.customer.phone}
+                  </div>
+                ) : null}
                 <div className="flex items-start gap-2 text-muted-foreground">
                   <MapPin className="mt-0.5 size-4 shrink-0" />
                   <span>{currentOrder.customer.address}</span>
@@ -436,27 +445,42 @@ export function OrderDetailsDialog({
           <section className="rounded-2xl border bg-muted/20 p-4">
             <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
               <Package className="size-4 text-muted-foreground" />
-              Payment Summary
+              Restaurant Summary
             </div>
             <div className="space-y-3 text-sm">
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Subtotal</span>
-                <span>{formatOrderMoney(currentOrder.subtotal)}</span>
+                <span className="text-muted-foreground">Food subtotal</span>
+                <span>{formatOrderMoney(getOwnerOrderSubtotal(currentOrder))}</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Delivery Fee</span>
-                <span>{formatOrderMoney(currentOrder.deliveryFee)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Discount</span>
-                <span>-{formatOrderMoney(currentOrder.discount)}</span>
-              </div>
+              {currentOrder.ownerDiscountCost > 0 ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Owner voucher/discount</span>
+                  <span>-{formatOrderMoney(currentOrder.ownerDiscountCost)}</span>
+                </div>
+              ) : null}
               <Separator />
               <div className="flex items-center justify-between font-semibold">
-                <span>Total</span>
-                <span>{formatOrderMoney(currentOrder.total)}</span>
+                <span>Restaurant net sales</span>
+                <span>{formatOrderMoney(getOwnerOrderNetSales(currentOrder))}</span>
               </div>
             </div>
+            {currentOrder.appliedVouchers.length ? (
+              <div className="mt-4 space-y-2 rounded-xl bg-background/70 p-3 text-xs">
+                {currentOrder.appliedVouchers.map((voucher, index) => (
+                  <div
+                    key={`${voucher.id ?? voucher.code ?? voucher.name ?? "voucher"}-${index}`}
+                    className="flex items-center justify-between gap-3"
+                  >
+                    <span className="truncate text-muted-foreground">
+                      {voucher.name || voucher.code || "Owner voucher"}
+                    </span>
+                    <span className="font-medium">
+                      -{formatOrderMoney(voucher.ownerDiscountCost ?? voucher.discountAmount ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </section>
 
           <section className="rounded-2xl border bg-muted/20 p-4">
@@ -501,12 +525,14 @@ export function OrderDetailsDialog({
         </div>
         <SheetFooter className="sticky bottom-0 z-10 border-t bg-popover/95 px-6 py-4 backdrop-blur">
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button asChild variant="outline">
-              <a href={`tel:${currentOrder.customer.phone}`}>
-                <Phone className="size-4" />
-                Call Customer
-              </a>
-            </Button>
+            {currentOrder.customer.phone ? (
+              <Button asChild variant="outline">
+                <a href={`tel:${currentOrder.customer.phone}`}>
+                  <Phone className="size-4" />
+                  Call Customer
+                </a>
+              </Button>
+            ) : null}
             <Button variant="outline" onClick={handlePrint}>
               <Printer className="size-4" />
               Print Receipt

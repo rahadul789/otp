@@ -5,6 +5,8 @@ import {
   Animated,
   Easing,
   Image,
+  Linking,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -15,6 +17,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
+import { AppBottomSheet } from "@/src/components/app-bottom-sheet";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import {
   CampaignPlacementCard,
@@ -52,28 +55,44 @@ import type {
   DiscoverableRestaurant,
 } from "@/src/types/restaurant";
 
+function isExternalHttpUrl(value?: string | null) {
+  return typeof value === "string" && /^https?:\/\//i.test(value.trim());
+}
+
 function getOfferLabel(offer: CustomerVoucherOffer) {
+  let value = "Offer available";
+
   if (offer.type === "free_delivery") {
-    return "Free delivery";
+    value = "Free delivery";
+  } else if (
+    offer.type === "percentage" &&
+    typeof offer.discountValue === "number"
+  ) {
+    value = `${offer.discountValue}% off`;
+  } else if (typeof offer.discountValue === "number") {
+    value = `Tk ${offer.discountValue} off`;
   }
 
-  if (offer.type === "percentage" && typeof offer.discountValue === "number") {
-    return `${offer.discountValue}% off`;
-  }
-
-  if (typeof offer.discountValue === "number") {
-    return `Tk ${offer.discountValue} off`;
-  }
-
-  return "Offer available";
+  return offer.code ? `${offer.code} - ${value}` : value;
 }
 
 function buildRestaurantOfferMap(offers: CustomerVoucherOffer[]) {
-  return new Map(
-    offers
-      .filter((offer) => offer.restaurantId)
-      .map((offer) => [offer.restaurantId as string, getOfferLabel(offer)])
-  );
+  const next = new Map<string, string>();
+
+  for (const offer of offers) {
+    const restaurantIds = [
+      ...(offer.restaurantIds ?? []),
+      offer.restaurantId ?? "",
+    ].filter(Boolean);
+
+    for (const restaurantId of restaurantIds) {
+      if (!next.has(restaurantId)) {
+        next.set(restaurantId, getOfferLabel(offer));
+      }
+    }
+  }
+
+  return next;
 }
 
 function NearbyHeaderSpinner({ visible }: { visible: boolean }) {
@@ -186,7 +205,10 @@ function HomeHeroSkeleton({
       <View style={styles.skeletonChipRow}>
         <ShimmerBlock translateX={translateX} style={styles.skeletonChipWide} />
         <ShimmerBlock translateX={translateX} style={styles.skeletonChip} />
-        <ShimmerBlock translateX={translateX} style={styles.skeletonChipSmall} />
+        <ShimmerBlock
+          translateX={translateX}
+          style={styles.skeletonChipSmall}
+        />
       </View>
     </View>
   );
@@ -199,19 +221,40 @@ function RestaurantCardSkeleton({
 }) {
   return (
     <View style={styles.restaurantSkeletonCard}>
-      <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonImage} />
+      <ShimmerBlock
+        translateX={translateX}
+        style={styles.restaurantSkeletonImage}
+      />
       <View style={styles.restaurantSkeletonCopy}>
         <View style={styles.restaurantSkeletonTitleRow}>
           <View style={styles.restaurantSkeletonTitleBlock}>
-            <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonTitle} />
-            <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonSubtitle} />
+            <ShimmerBlock
+              translateX={translateX}
+              style={styles.restaurantSkeletonTitle}
+            />
+            <ShimmerBlock
+              translateX={translateX}
+              style={styles.restaurantSkeletonSubtitle}
+            />
           </View>
-          <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonPrice} />
+          <ShimmerBlock
+            translateX={translateX}
+            style={styles.restaurantSkeletonPrice}
+          />
         </View>
         <View style={styles.restaurantSkeletonMetricRow}>
-          <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonMetric} />
-          <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonMetric} />
-          <ShimmerBlock translateX={translateX} style={styles.restaurantSkeletonMetricSmall} />
+          <ShimmerBlock
+            translateX={translateX}
+            style={styles.restaurantSkeletonMetric}
+          />
+          <ShimmerBlock
+            translateX={translateX}
+            style={styles.restaurantSkeletonMetric}
+          />
+          <ShimmerBlock
+            translateX={translateX}
+            style={styles.restaurantSkeletonMetricSmall}
+          />
         </View>
       </View>
     </View>
@@ -271,7 +314,8 @@ function mapRestaurantCardSubtitle(restaurant: DiscoverableRestaurant) {
 export default function HomeScreen() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
-  const [modalCampaign, setModalCampaign] = useState<CustomerCampaignPlacement | null>(null);
+  const [modalCampaign, setModalCampaign] =
+    useState<CustomerCampaignPlacement | null>(null);
   const [showHomeCmsModal, setShowHomeCmsModal] = useState(false);
   const [homeCmsModalShown, setHomeCmsModalShown] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -288,7 +332,7 @@ export default function HomeScreen() {
   const [pendingLocationUpdateKey, setPendingLocationUpdateKey] = useState("");
   const isOnline = useIsOnline();
   const addRecentVisitedRestaurant = useBrowseHistoryStore(
-    (state) => state.addRecentVisitedRestaurant
+    (state) => state.addRecentVisitedRestaurant,
   );
   const permissionGranted = useLocationStore(
     (state) => state.permissionGranted,
@@ -309,7 +353,9 @@ export default function HomeScreen() {
     radiusKm: DELIVERY_RADIUS_KM,
   });
   const favoriteRestaurantIdsQuery = useCustomerFavoriteRestaurantIdsQuery();
-  const orderPresenceQuery = useCustomerOrderPresenceQuery(isAuthenticated && !isSearching);
+  const orderPresenceQuery = useCustomerOrderPresenceQuery(
+    isAuthenticated && !isSearching,
+  );
   const toggleFavoriteMutation = useCustomerToggleFavoriteRestaurantMutation();
 
   const nearbyRestaurants = useMemo(
@@ -321,28 +367,34 @@ export default function HomeScreen() {
   const homeCms = !isSearching ? (homeFeed?.homeCms ?? null) : null;
   const activeOffers = useMemo(
     () => (!isSearching ? (homeFeed?.activeOffers ?? []) : []),
-    [homeFeed?.activeOffers, isSearching]
+    [homeFeed?.activeOffers, isSearching],
   );
   const campaignPlacements = useMemo(
     () => (!isSearching ? (homeFeed?.campaignPlacements ?? []) : []),
-    [homeFeed?.campaignPlacements, isSearching]
+    [homeFeed?.campaignPlacements, isSearching],
   );
   const stripOffers = useMemo(
     () =>
-      homeCms?.offerStrip.isActive && homeCms.offerStrip.mode === "voucher_strip"
+      homeCms?.offerStrip.isActive &&
+      homeCms.offerStrip.mode === "voucher_strip"
         ? activeOffers
         : homeCms?.offerStrip.showVoucherStrip
-        ? activeOffers
-        : [],
-    [activeOffers, homeCms?.offerStrip.isActive, homeCms?.offerStrip.mode, homeCms?.offerStrip.showVoucherStrip]
+          ? activeOffers
+          : [],
+    [
+      activeOffers,
+      homeCms?.offerStrip.isActive,
+      homeCms?.offerStrip.mode,
+      homeCms?.offerStrip.showVoucherStrip,
+    ],
   );
   const offerLabelByRestaurantId = useMemo(
     () => buildRestaurantOfferMap(activeOffers),
-    [activeOffers]
+    [activeOffers],
   );
   const favoriteRestaurantIdsSet = useMemo(
     () => new Set(favoriteRestaurantIdsQuery.data ?? []),
-    [favoriteRestaurantIdsQuery.data]
+    [favoriteRestaurantIdsQuery.data],
   );
   const favoritePendingRestaurantId = toggleFavoriteMutation.isPending
     ? toggleFavoriteMutation.variables
@@ -360,7 +412,8 @@ export default function HomeScreen() {
 
     return initials || "CU";
   }, [customer?.fullName]);
-  const selectedDeliveryAddressTop = selectedLocation?.addressDetails?.trim() || "";
+  const selectedDeliveryAddressTop =
+    selectedLocation?.addressDetails?.trim() || "";
   const selectedDeliveryAddressBottom = formatCustomerAddressLine(
     selectedLocation?.address,
     "Select your exact delivery point",
@@ -397,7 +450,8 @@ export default function HomeScreen() {
     return (filtered.length ? filtered : nearbyRestaurants).slice(0, 8);
   }, [featuredRestaurants, nearbyRestaurants, offerRestaurants]);
 
-  const shouldShowHomeFeedSkeleton = !isSearching && homeQuery.isLoading && !homeFeed;
+  const shouldShowHomeFeedSkeleton =
+    !isSearching && homeQuery.isLoading && !homeFeed;
   const shouldShowSearchSkeleton =
     isSearching &&
     Boolean(selectedLocation) &&
@@ -409,7 +463,9 @@ export default function HomeScreen() {
     nearbyRestaurantsQuery.isLoading &&
     nearbyRestaurants.length === 0;
   const shimmerTranslateX = useHomeShimmer(
-    shouldShowHomeFeedSkeleton || shouldShowSearchSkeleton || shouldShowNearbySkeleton,
+    shouldShowHomeFeedSkeleton ||
+      shouldShowSearchSkeleton ||
+      shouldShowNearbySkeleton,
   );
 
   const bannerTone = getBannerToneStyle(homeBanner?.tone ?? null);
@@ -421,11 +477,11 @@ export default function HomeScreen() {
         !orderPresenceQuery.data.hasCompletedOrders));
   const isUpdatingLocationResults = Boolean(
     pendingLocationUpdateKey &&
-      selectedLocation &&
-      isOnline &&
-      !isRefreshing &&
-      !isSearching &&
-      (nearbyRestaurantsQuery.isFetching || homeQuery.isFetching),
+    selectedLocation &&
+    isOnline &&
+    !isRefreshing &&
+    !isSearching &&
+    (nearbyRestaurantsQuery.isFetching || homeQuery.isFetching),
   );
 
   useEffect(() => {
@@ -479,12 +535,16 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!homeCms?.modal.isActive || isSearching) return;
-    if (homeCms.modal.frequency === "once_per_session" && homeCmsModalShown) return;
-    const timer = setTimeout(() => {
-      setShowHomeCmsModal(true);
-      setHomeCmsModalShown(true);
-      recordHomeCmsEvent("modal_impression");
-    }, Math.max(homeCms.modal.delaySeconds ?? 0, 0) * 1000);
+    if (homeCms.modal.frequency === "once_per_session" && homeCmsModalShown)
+      return;
+    const timer = setTimeout(
+      () => {
+        setShowHomeCmsModal(true);
+        setHomeCmsModalShown(true);
+        recordHomeCmsEvent("modal_impression");
+      },
+      Math.max(homeCms.modal.delaySeconds ?? 0, 0) * 1000,
+    );
 
     return () => clearTimeout(timer);
   }, [
@@ -528,7 +588,9 @@ export default function HomeScreen() {
         homeQuery.refetch(),
         nearbyRestaurantsQuery.refetch(),
         favoriteRestaurantIdsQuery.refetch(),
-        ...(isAuthenticated && !isSearching ? [orderPresenceQuery.refetch()] : []),
+        ...(isAuthenticated && !isSearching
+          ? [orderPresenceQuery.refetch()]
+          : []),
       ]);
     } finally {
       setIsRefreshing(false);
@@ -589,6 +651,25 @@ export default function HomeScreen() {
     openLocationPicker();
   };
 
+  const canOpenCustomerTarget = (target?: string | null) =>
+    Boolean(
+      resolveCustomerRoute(target, null) ||
+        (target?.trim() ? isExternalHttpUrl(target) : false),
+    );
+
+  const openCustomerTarget = async (target?: string | null) => {
+    const safeRoute = resolveCustomerRoute(target, null);
+    if (safeRoute) {
+      router.push(safeRoute as never);
+      return;
+    }
+
+    const externalUrl = target?.trim() ?? "";
+    if (isExternalHttpUrl(externalUrl)) {
+      await Linking.openURL(externalUrl);
+    }
+  };
+
   return (
     <Screen>
       <ScrollView
@@ -637,11 +718,7 @@ export default function HomeScreen() {
                 onPress={() => router.push("/(tabs)/cart")}
                 style={styles.cartBubble}
               >
-                <Ionicons
-                  name="bag-handle-outline"
-                  size={18}
-                  color="#fff"
-                />
+                <Ionicons name="bag-handle-outline" size={18} color="#fff" />
                 {cartItemCount > 0 ? (
                   <View style={styles.cartCounter}>
                     <Text style={styles.cartCounterText}>{cartItemCount}</Text>
@@ -776,7 +853,9 @@ export default function HomeScreen() {
               />
             ))}
 
-          {!isSearching && homeCms?.offerStrip.isActive && homeCms.offerStrip.mode === "promo_block" ? (
+          {!isSearching &&
+          homeCms?.offerStrip.isActive &&
+          homeCms.offerStrip.mode === "promo_block" ? (
             <HomeCmsPromoBlock cms={homeCms} />
           ) : null}
 
@@ -792,11 +871,7 @@ export default function HomeScreen() {
                   style={styles.offerChip}
                   onPress={() => recordHomeCmsEvent("strip_click")}
                 >
-                  <Ionicons
-                    name="pricetag-outline"
-                    size={14}
-                    color="#FF5C93"
-                  />
+                  <Ionicons name="pricetag-outline" size={14} color="#FF5C93" />
                   <Text numberOfLines={1} style={styles.offerChipText}>
                     {getOfferLabel(offer)}
                   </Text>
@@ -804,10 +879,11 @@ export default function HomeScreen() {
               ))}
             </ScrollView>
           ) : null}
-
         </View>
 
-        {shouldShowHowToOrderGuide && homeCms && homeCms.howToOrderGuide?.placement !== "before_restaurants" ? (
+        {shouldShowHowToOrderGuide &&
+        homeCms &&
+        homeCms.howToOrderGuide?.placement !== "before_restaurants" ? (
           <HowToOrderGuideBlock cms={homeCms} />
         ) : null}
 
@@ -818,8 +894,8 @@ export default function HomeScreen() {
                 title="Search results"
                 subtitle={
                   selectedLocation
-                    ? `${nearbyRestaurants.length} restaurants found for "${searchQuery.trim()}"`
-                    : "Choose a location first to search nearby restaurants"
+                    ? `${nearbyRestaurants.length} places found for "${searchQuery.trim()}"`
+                    : "Set your delivery point first, then search nearby places"
                 }
               />
             </View>
@@ -831,14 +907,19 @@ export default function HomeScreen() {
                     ? "Location permission is needed"
                     : "Choose your location first"
                 }
-                description="Pick your delivery point to search restaurants that really serve your area."
+                description="Set your delivery point so we can show places that deliver to you."
                 actionLabel={
-                  permissionGranted === false ? "Allow location" : "Choose location"
+                  permissionGranted === false
+                    ? "Allow location"
+                    : "Choose location"
                 }
                 onPress={handleMissingLocationPress}
               />
             ) : shouldShowSearchSkeleton ? (
-              <RestaurantListSkeleton translateX={shimmerTranslateX} count={3} />
+              <RestaurantListSkeleton
+                translateX={shimmerTranslateX}
+                count={3}
+              />
             ) : nearbyRestaurants.length > 0 ? (
               <View style={styles.verticalList}>
                 {nearbyRestaurants.map((restaurant) => (
@@ -878,7 +959,9 @@ export default function HomeScreen() {
           </View>
         ) : (
           <>
-            {shouldShowHowToOrderGuide && homeCms && homeCms.howToOrderGuide?.placement === "before_restaurants" ? (
+            {shouldShowHowToOrderGuide &&
+            homeCms &&
+            homeCms.howToOrderGuide?.placement === "before_restaurants" ? (
               <HowToOrderGuideBlock cms={homeCms} />
             ) : null}
 
@@ -887,7 +970,7 @@ export default function HomeScreen() {
                 <View style={styles.sectionHeaderWrap}>
                   <SectionHeader
                     title="Featured restaurants"
-                    subtitle="Featured restaurants worth checking first."
+                    subtitle="Popular places picked for quick ordering."
                   />
                 </View>
                 {shouldShowHomeFeedSkeleton ? (
@@ -903,7 +986,10 @@ export default function HomeScreen() {
                     contentContainerStyle={styles.horizontalRow}
                   >
                     {featuredRestaurants.map((restaurant) => (
-                      <View key={restaurant._id} style={styles.featuredCardWrap}>
+                      <View
+                        key={restaurant._id}
+                        style={styles.featuredCardWrap}
+                      >
                         <RestaurantHeroCard
                           name={restaurant.name}
                           subtitle={mapRestaurantCardSubtitle(restaurant)}
@@ -916,12 +1002,16 @@ export default function HomeScreen() {
                           distanceKm={restaurant.distanceKm}
                           avgRating={restaurant.avgRating}
                           reviewCount={restaurant.reviewCount}
-                          offerLabel={offerLabelByRestaurantId.get(restaurant._id)}
+                          offerLabel={offerLabelByRestaurantId.get(
+                            restaurant._id,
+                          )}
                           lowestMenuPrice={restaurant.lowestMenuPrice}
                           preparationTimeMinutes={
                             restaurant.preparationTimeMinutes
                           }
-                          isFavorite={favoriteRestaurantIdsSet.has(restaurant._id)}
+                          isFavorite={favoriteRestaurantIdsSet.has(
+                            restaurant._id,
+                          )}
                           favoriteDisabled={
                             favoritePendingRestaurantId === restaurant._id
                           }
@@ -942,7 +1032,7 @@ export default function HomeScreen() {
                 <View style={styles.sectionHeaderWrap}>
                   <SectionHeader
                     title="Offers for you"
-                    subtitle="Restaurants with active savings right now."
+                    subtitle="Places with deals you can use today."
                   />
                 </View>
                 <ScrollView
@@ -964,12 +1054,16 @@ export default function HomeScreen() {
                         distanceKm={restaurant.distanceKm}
                         avgRating={restaurant.avgRating}
                         reviewCount={restaurant.reviewCount}
-                        offerLabel={offerLabelByRestaurantId.get(restaurant._id)}
+                        offerLabel={offerLabelByRestaurantId.get(
+                          restaurant._id,
+                        )}
                         lowestMenuPrice={restaurant.lowestMenuPrice}
                         preparationTimeMinutes={
                           restaurant.preparationTimeMinutes
                         }
-                        isFavorite={favoriteRestaurantIdsSet.has(restaurant._id)}
+                        isFavorite={favoriteRestaurantIdsSet.has(
+                          restaurant._id,
+                        )}
                         favoriteDisabled={
                           favoritePendingRestaurantId === restaurant._id
                         }
@@ -991,8 +1085,8 @@ export default function HomeScreen() {
                     title="Nearby"
                     subtitle={
                       selectedLocation
-                        ? `${nearbyRestaurants.length} restaurants around your selected pin`
-                        : "Choose a location to unlock restaurants near you"
+                        ? `${nearbyRestaurants.length} places deliver near your selected pin`
+                        : "Set your location to see places near you"
                     }
                   />
                 </View>
@@ -1006,29 +1100,34 @@ export default function HomeScreen() {
                       ? "Location permission is needed"
                       : "Choose your location first"
                   }
-                  description="Pick your delivery point to unlock restaurants that really serve your area."
+                  description="Set your delivery point so we can show places that deliver to you."
                   actionLabel={
-                    permissionGranted === false ? "Allow location" : "Choose location"
+                    permissionGranted === false
+                      ? "Allow location"
+                      : "Choose location"
                   }
                   onPress={handleMissingLocationPress}
                 />
               ) : shouldShowNearbySkeleton ? (
-                <RestaurantListSkeleton translateX={shimmerTranslateX} count={3} />
+                <RestaurantListSkeleton
+                  translateX={shimmerTranslateX}
+                  count={3}
+                />
               ) : nearbyRestaurantsQuery.isError ? (
                 isOnline ? (
                   <EmptyStateCard
                     title="We could not load nearby restaurants"
-                    description="Please try again after a moment. Your selected location is still saved."
+                    description="Please try again in a moment. Your saved location is still ready."
                     actionLabel="Try again"
                     onPress={() => nearbyRestaurantsQuery.refetch()}
                   />
                 ) : (
                   <EmptyStateCard
                     title="Nearby restaurants are unavailable offline"
-                    description="Check your internet connection to refresh restaurants that serve your selected area."
+                    description="Connect to the internet to refresh places near your delivery point."
                   />
                 )
-            ) : nearbyRestaurantsForSection.length > 0 ? (
+              ) : nearbyRestaurantsForSection.length > 0 ? (
                 <>
                   <View style={styles.verticalList}>
                     {nearbyRestaurantsForSection.map((restaurant) => (
@@ -1045,12 +1144,16 @@ export default function HomeScreen() {
                         distanceKm={restaurant.distanceKm}
                         avgRating={restaurant.avgRating}
                         reviewCount={restaurant.reviewCount}
-                        offerLabel={offerLabelByRestaurantId.get(restaurant._id)}
+                        offerLabel={offerLabelByRestaurantId.get(
+                          restaurant._id,
+                        )}
                         lowestMenuPrice={restaurant.lowestMenuPrice}
                         preparationTimeMinutes={
                           restaurant.preparationTimeMinutes
                         }
-                        isFavorite={favoriteRestaurantIdsSet.has(restaurant._id)}
+                        isFavorite={favoriteRestaurantIdsSet.has(
+                          restaurant._id,
+                        )}
                         favoriteDisabled={
                           favoritePendingRestaurantId === restaurant._id
                         }
@@ -1076,41 +1179,45 @@ export default function HomeScreen() {
                     />
                   </Pressable>
                 </>
-              ) : (
-                isUpdatingLocationResults ? null : (
-                  <EmptyStateCard
-                    title={
-                      isOnline
-                        ? "No nearby restaurants yet"
-                        : "Nearby restaurants are unavailable offline"
-                    }
-                    description={
-                      isOnline
-                        ? "We could not find any active restaurant inside your delivery area right now."
-                        : "Check your internet connection to load restaurants for your selected delivery area."
-                    }
-                    actionLabel={isOnline ? "Change location" : undefined}
-                    onPress={isOnline ? openLocationPicker : undefined}
-                  />
-                )
+              ) : isUpdatingLocationResults ? null : (
+                <EmptyStateCard
+                  title={
+                    isOnline
+                      ? "No nearby restaurants yet"
+                      : "Nearby restaurants are unavailable offline"
+                  }
+                  description={
+                    isOnline
+                      ? "No active place is delivering to your selected point right now."
+                      : "Connect to the internet to load places near your delivery point."
+                  }
+                  actionLabel={isOnline ? "Change location" : undefined}
+                  onPress={isOnline ? openLocationPicker : undefined}
+                />
               )}
             </View>
           </>
         )}
       </ScrollView>
-      {modalCampaign ? (
-        <View style={styles.campaignModalOverlay}>
-          <Pressable style={styles.campaignModalBackdrop} onPress={() => setModalCampaign(null)} />
-          <View style={styles.campaignModalCard}>
+      <AppBottomSheet
+        visible={Boolean(modalCampaign)}
+        onClose={() => setModalCampaign(null)}
+        title={
+          modalCampaign?.display.title || modalCampaign?.name || "Campaign"
+        }
+        subtitle={modalCampaign?.display.subtitle || "Limited time campaign"}
+        leadingIcon="sparkles-outline"
+        snapPoints={[0.7, 0.9]}
+        initialSnapPoint={0.7}
+      >
+        {modalCampaign ? (
+          <>
             {modalCampaign.display.imageUrl ? (
-              <Image source={{ uri: modalCampaign.display.imageUrl }} style={styles.campaignModalImage} />
+              <Image
+                source={{ uri: modalCampaign.display.imageUrl }}
+                style={styles.campaignModalImage}
+              />
             ) : null}
-            <Text style={styles.campaignModalTitle}>
-              {modalCampaign.display.title || modalCampaign.name}
-            </Text>
-            <Text style={styles.campaignModalSubtitle}>
-              {modalCampaign.display.subtitle || "Limited time campaign"}
-            </Text>
             {resolveCustomerRoute(modalCampaign.display.ctaPath, null) ? (
               <Pressable
                 style={styles.campaignModalAction}
@@ -1129,59 +1236,99 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             ) : null}
-          </View>
-        </View>
-      ) : null}
+          </>
+        ) : null}
+      </AppBottomSheet>
 
-      {showHomeCmsModal && homeCms?.modal.isActive ? (
-        <View style={styles.campaignModalOverlay}>
-          <Pressable
-            style={styles.campaignModalBackdrop}
-            onPress={() => setShowHomeCmsModal(false)}
-          />
-          <View
-            style={[
-              styles.campaignModalCard,
-              { backgroundColor: homeCms.modal.backgroundColor || palette.surface },
-            ]}
-          >
+      <Modal
+        visible={Boolean(showHomeCmsModal && homeCms?.modal.isActive)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowHomeCmsModal(false)}
+      >
+        {homeCms?.modal.isActive ? (
+          <View style={styles.campaignModalOverlay}>
             <Pressable
-              style={styles.campaignModalClose}
+              style={styles.campaignModalBackdrop}
               onPress={() => setShowHomeCmsModal(false)}
+            />
+            <View
+              style={[
+                styles.homeModalCard,
+                {
+                  backgroundColor:
+                    homeCms.modal.backgroundColor || palette.surface,
+                },
+              ]}
             >
-              <Ionicons name="close" size={18} color={homeCms.modal.textColor || palette.foreground} />
-            </Pressable>
-            {homeCms.modal.imageUrl ? (
-              <Image source={{ uri: homeCms.modal.imageUrl }} style={styles.campaignModalImage} />
-            ) : null}
-            {homeCms.modal.title.trim() ? (
-              <Text style={[styles.campaignModalTitle, { color: homeCms.modal.textColor || palette.foreground }]}>
-                {homeCms.modal.title}
-              </Text>
-            ) : null}
-            {homeCms.modal.subtitle.trim() ? (
-              <Text style={[styles.campaignModalSubtitle, { color: homeCms.modal.textColor || palette.mutedForeground }]}>
-                {homeCms.modal.subtitle}
-              </Text>
-            ) : null}
-            {resolveCustomerRoute(homeCms.modal.ctaPath, null) ? (
               <Pressable
-                style={[styles.campaignModalAction, { backgroundColor: homeCms.modal.accentColor || palette.primary }]}
-                onPress={() => {
-                  recordHomeCmsEvent("modal_click");
-                  const path = resolveCustomerRoute(homeCms.modal.ctaPath, null);
-                  setShowHomeCmsModal(false);
-                  if (path) router.push(path as never);
-                }}
+                style={styles.campaignModalClose}
+                onPress={() => setShowHomeCmsModal(false)}
               >
-                <Text style={styles.campaignModalActionText}>
-                  {homeCms.modal.ctaLabel || "Explore now"}
-                </Text>
+                <Ionicons name="close" size={18} color={palette.foreground} />
               </Pressable>
-            ) : null}
+
+              {homeCms.modal.imageUrl ? (
+                <Image
+                  source={{ uri: homeCms.modal.imageUrl }}
+                  style={[
+                    styles.homeModalImage,
+                    !homeCms.modal.title.trim() &&
+                    !homeCms.modal.subtitle.trim()
+                      ? styles.homeModalImageOnly
+                      : null,
+                  ]}
+                />
+              ) : null}
+
+              {homeCms.modal.title.trim() ? (
+                <Text
+                  style={[
+                    styles.campaignModalTitle,
+                    { color: homeCms.modal.textColor || palette.foreground },
+                  ]}
+                >
+                  {homeCms.modal.title.trim()}
+                </Text>
+              ) : null}
+              {homeCms.modal.subtitle.trim() ? (
+                <Text
+                  style={[
+                    styles.campaignModalSubtitle,
+                    {
+                      color:
+                        homeCms.modal.textColor || palette.mutedForeground,
+                    },
+                  ]}
+                >
+                  {homeCms.modal.subtitle.trim()}
+                </Text>
+              ) : null}
+
+              {canOpenCustomerTarget(homeCms.modal.ctaPath) ? (
+                <Pressable
+                  style={[
+                    styles.campaignModalAction,
+                    {
+                      backgroundColor:
+                        homeCms.modal.accentColor || palette.primary,
+                    },
+                  ]}
+                  onPress={() => {
+                    recordHomeCmsEvent("modal_click");
+                    setShowHomeCmsModal(false);
+                    void openCustomerTarget(homeCms.modal.ctaPath);
+                  }}
+                >
+                  <Text style={styles.campaignModalActionText}>
+                    {homeCms.modal.ctaLabel || "Explore now"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
-        </View>
-      ) : null}
+        ) : null}
+      </Modal>
     </Screen>
   );
 }

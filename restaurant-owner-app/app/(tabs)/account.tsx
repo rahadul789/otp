@@ -2,26 +2,23 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
-  Alert,
-  Linking,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { OwnerStatusBadge } from "@/src/components/owner-status-badge";
 import { Screen } from "@/src/components/screen";
-import { StatusPill } from "@/src/components/status-pill";
 import {
   useOwnerLogoutMutation,
-  useOwnerPlatformContentQuery,
+  useOwnerPayoutSummaryQuery,
   useOwnerStoreSettingsQuery,
-  useUpdateOwnerStoreSettingsMutation,
+  type OwnerPayoutSummary,
 } from "@/src/hooks/use-owner-api";
 import { useOwnerAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
@@ -31,82 +28,44 @@ export default function AccountScreen() {
   const owner = useOwnerAuthStore((state) => state.owner);
   const lifecycleStatus = useOwnerAuthStore((state) => state.restaurantLifecycleStatus);
   const storeQuery = useOwnerStoreSettingsQuery();
-  const platformContentQuery = useOwnerPlatformContentQuery();
+  const payoutQuery = useOwnerPayoutSummaryQuery();
   const logoutMutation = useOwnerLogoutMutation();
-  const updateStoreSettingsMutation = useUpdateOwnerStoreSettingsMutation();
-  const [isWebLinkVisible, setIsWebLinkVisible] = useState(false);
-  const [contactPhone, setContactPhone] = useState("");
+  const [logoutConfirmVisible, setLogoutConfirmVisible] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const store = storeQuery.data;
-  const webDashboardUrl =
-    platformContentQuery.data?.operations?.ownerApp?.webDashboardUrl?.trim() || "";
-
-  useEffect(() => {
-    setContactPhone(store?.contact?.phone ?? "");
-  }, [store?.contact?.phone]);
+  const payoutMethod = payoutQuery.data?.payoutMethod;
+  const payoutMethodStatus = getPayoutMethodStatus(payoutMethod);
+  const ownerName = owner?.fullName || "Owner";
+  const restaurantName = store?.name || "Restaurant";
+  const initials = restaurantName
+    .split(" ")
+    .map((part) => part.trim().charAt(0))
+    .join("")
+    .slice(0, 2)
+    .toUpperCase() || "OW";
 
   async function refreshAccount() {
     setIsRefreshing(true);
     try {
-      await Promise.all([storeQuery.refetch(), platformContentQuery.refetch()]);
+      await Promise.all([
+        storeQuery.refetch(),
+        payoutQuery.refetch(),
+      ]);
     } finally {
       setIsRefreshing(false);
     }
   }
 
-  function confirmLogout() {
-    Alert.alert("Sign out?", "You can sign in again with your owner account.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Sign out",
-        style: "destructive",
-        onPress: async () => {
-          await logoutMutation.mutateAsync();
-          router.replace("/sign-in" as never);
-        },
-      },
-    ]);
-  }
-
-  async function openWebDashboard() {
-    if (!webDashboardUrl) {
-      Alert.alert("Link not configured", "Ask admin to add the owner dashboard URL.");
-      return;
-    }
-
-    const canOpen = await Linking.canOpenURL(webDashboardUrl);
-    if (!canOpen) {
-      Alert.alert("Cannot open link", webDashboardUrl);
-      return;
-    }
-
-    await Linking.openURL(webDashboardUrl);
-  }
-
-  async function saveRestaurantContact() {
-    const cleanPhone = contactPhone.replace(/\D/g, "").slice(0, 11);
-    setContactPhone(cleanPhone);
-
-    if (!/^01\d{9}$/.test(cleanPhone)) {
-      Alert.alert("Invalid phone number", "Enter a valid 11-digit restaurant contact number.");
-      return;
-    }
-
-    try {
-      await updateStoreSettingsMutation.mutateAsync({ phone: cleanPhone });
-      Alert.alert("Contact updated", "Riders will see this restaurant contact number.");
-    } catch (error) {
-      Alert.alert(
-        "Unable to update contact",
-        error instanceof Error ? error.message : "Please try again.",
-      );
-    }
+  async function signOut() {
+    await logoutMutation.mutateAsync();
+    router.replace("/sign-in" as never);
   }
 
   return (
     <Screen>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={styles.container}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={isRefreshing}
@@ -115,350 +74,682 @@ export default function AccountScreen() {
           />
         }
       >
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>Account</Text>
-            <Text style={styles.subtitle}>Owner access and restaurant status.</Text>
+        <View style={styles.hero}>
+          <View style={styles.heroTopRow}>
+            <Text style={styles.kicker}>Account</Text>
+            <OwnerStatusBadge isOnline={store?.runtime?.isOnline} />
           </View>
-          <OwnerStatusBadge isOnline={store?.runtime?.isOnline} />
-        </View>
 
-        <View style={styles.profileCard}>
-          <Text style={styles.profileName}>{owner?.fullName ?? "Owner"}</Text>
-          <Text style={styles.profilePhone}>{owner?.phone ?? "Phone not available"}</Text>
-          <View style={styles.pillRow}>
-            <StatusPill
-              label={owner?.isPhoneVerified ? "Phone verified" : "Phone pending"}
-              tone={owner?.isPhoneVerified ? "success" : "warning"}
-            />
-            <StatusPill
-              label={lifecycleStatus || "Restaurant status"}
-              tone={lifecycleStatus === "approved" ? "success" : "info"}
-            />
-          </View>
-        </View>
-
-        <View style={styles.sectionCard}>
-          <View style={styles.restaurantTop}>
-            <View style={styles.restaurantIcon}>
-              <Ionicons name="restaurant-outline" size={19} color={palette.primary} />
+          <View style={styles.identityCard}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{initials}</Text>
             </View>
-            <View style={styles.restaurantTextWrap}>
-              <Text numberOfLines={1} style={styles.restaurantName}>
-                {store?.name ?? "Restaurant"}
+            <View style={styles.identityCopy}>
+              <Text numberOfLines={2} style={styles.name}>
+                {restaurantName}
               </Text>
-              <Text style={styles.restaurantMeta}>
-                {store?.runtime?.isOnline ? "Online for orders" : "Offline now"}
+              <Text numberOfLines={1} style={styles.accountHolder}>
+                Account holder: {ownerName}
               </Text>
-            </View>
-            <StatusPill
-              label={store?.runtime?.isOnline ? "Online" : "Offline"}
-              tone={store?.runtime?.isOnline ? "success" : "danger"}
-            />
-          </View>
-        </View>
-
-        <View style={styles.contactCard}>
-          <View style={styles.contactHeader}>
-            <View style={styles.restaurantIcon}>
-              <Ionicons name="call-outline" size={19} color={palette.primary} />
-            </View>
-            <View style={styles.restaurantTextWrap}>
-              <Text style={styles.restaurantName}>Restaurant contact</Text>
-              <Text style={styles.restaurantMeta}>Shown to riders for pickup and order help.</Text>
-            </View>
-          </View>
-          <View style={styles.phoneInputShell}>
-            <Ionicons name="call-outline" size={17} color={palette.mutedForeground} />
-            <TextInput
-              value={contactPhone}
-              onChangeText={(value) => setContactPhone(value.replace(/\D/g, "").slice(0, 11))}
-              placeholder="01XXXXXXXXX"
-              placeholderTextColor="#9A8D91"
-              keyboardType="phone-pad"
-              style={styles.phoneInput}
-              maxLength={11}
-            />
-          </View>
-          <Pressable
-            style={[
-              styles.saveContactButton,
-              updateStoreSettingsMutation.isPending ? styles.disabled : null,
-            ]}
-            onPress={saveRestaurantContact}
-            disabled={updateStoreSettingsMutation.isPending}
-          >
-            {updateStoreSettingsMutation.isPending ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <>
-                <Text style={styles.saveContactText}>Save contact</Text>
-                <Ionicons name="checkmark-circle-outline" size={17} color="#FFFFFF" />
-              </>
-            )}
-          </Pressable>
-        </View>
-
-        <View style={styles.infoCard}>
-          <Ionicons name="desktop-outline" size={19} color={palette.primary} />
-          <View style={styles.infoTextWrap}>
-            <Text style={styles.infoTitle}>Use web for setup</Text>
-            <Text style={styles.infoText}>
-              Menu creation, full restaurant settings, reports, and advanced analytics stay on
-              the web dashboard.
-            </Text>
-            {isWebLinkVisible ? (
-              <View style={styles.webLinkBox}>
-                <Text selectable style={styles.webLinkText}>
-                  {webDashboardUrl || "Admin has not configured the web dashboard link."}
-                </Text>
-                {webDashboardUrl ? (
-                  <Pressable style={styles.openLinkButton} onPress={openWebDashboard}>
-                    <Text style={styles.openLinkText}>Open</Text>
-                    <Ionicons name="open-outline" size={15} color="#FFFFFF" />
-                  </Pressable>
-                ) : null}
+              <Text style={styles.subtitle}>
+                Manage access, payout details, and owner settings.
+              </Text>
+              <View style={styles.heroPillRow}>
+                <InfoPill icon="call-outline" text={owner?.phone ?? "Phone unavailable"} />
+                <InfoPill
+                  icon="shield-checkmark-outline"
+                  text={owner?.isPhoneVerified ? "Verified" : "Phone pending"}
+                />
               </View>
-            ) : null}
+            </View>
           </View>
-          <Pressable
-            hitSlop={8}
-            onPress={() => setIsWebLinkVisible((value) => !value)}
-          >
-            <Text style={styles.showLinkText}>{isWebLinkVisible ? "Hide" : "Show"}</Text>
-          </Pressable>
         </View>
 
-        <Pressable
-          style={[styles.logoutButton, logoutMutation.isPending ? styles.disabled : null]}
-          onPress={confirmLogout}
-          disabled={logoutMutation.isPending}
-        >
-          {logoutMutation.isPending ? (
-            <ActivityIndicator size="small" color={palette.danger} />
-          ) : (
-            <>
-              <Ionicons name="log-out-outline" size={18} color={palette.danger} />
-              <Text style={styles.logoutText}>Sign out</Text>
-            </>
-          )}
-        </Pressable>
+        <View style={styles.section}>
+          <SectionHeader
+            title="Overview"
+            subtitle="A quick look at your store and payout status."
+          />
+          <View style={styles.overviewGrid}>
+            <OverviewCard
+              icon="restaurant-outline"
+              label="Store"
+              value={store?.runtime?.isOnline ? "Online" : "Offline"}
+              caption={store?.name ?? "Restaurant"}
+              tint="#FFF0F6"
+            />
+            <OverviewCard
+              icon="wallet-outline"
+              label="Payout"
+              value={payoutMethodStatus.label}
+              caption={payoutMethod?.accountNumber || "No active number"}
+              tint="#EEF8F2"
+              onPress={() => router.push("/payout-method" as never)}
+            />
+            <OverviewCard
+              icon="shield-checkmark-outline"
+              label="Status"
+              value={lifecycleStatus || "Pending"}
+              caption="Restaurant lifecycle"
+              tint="#EAF0FF"
+            />
+            <OverviewCard
+              icon="call-outline"
+              label="Pickup phone"
+              value={store?.contact?.phone || "Not added"}
+              caption="Rider support"
+              tint="#FFF6E3"
+              onPress={() => router.push("/account-contact" as never)}
+            />
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <SectionHeader
+            title="Manage"
+            subtitle="Open each section to view and update details."
+          />
+          <View style={styles.cardStack}>
+            <AccountNavCard
+              icon="call-outline"
+              tint="#FFF6E3"
+              title="Restaurant contact"
+              caption={store?.contact?.phone || "Add pickup support number"}
+              onPress={() => router.push("/account-contact" as never)}
+            />
+            <AccountNavCard
+              icon="phone-portrait-outline"
+              tint="#FFF0F6"
+              title="Payout bKash"
+              caption={`${payoutMethod?.accountNumber || "No active number"} - ${payoutMethodStatus.label}`}
+              onPress={() => router.push("/payout-method" as never)}
+            />
+            <AccountNavCard
+              icon="restaurant-outline"
+              tint="#EEF8F2"
+              title="Preparation time"
+              caption={
+                typeof store?.preparationTimeMinutes === "number"
+                  ? `${store.preparationTimeMinutes} minutes default`
+                  : "No default estimate set"
+              }
+              onPress={() => router.push("/account-preparation-time" as never)}
+            />
+            <AccountNavCard
+              icon="ticket-outline"
+              tint="#FFF0F6"
+              title="Vouchers"
+              caption="Create, edit, and remove owner-funded offers"
+              onPress={() => router.push("/vouchers" as never)}
+            />
+            <AccountNavCard
+              icon="desktop-outline"
+              tint="#EAF0FF"
+              title="Owner web dashboard"
+              caption="Menu, reports, settings, and analytics"
+              onPress={() => router.push("/owner-web-link" as never)}
+            />
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <SectionHeader
+            title="Session"
+            subtitle="Sign out when this device should not stay connected."
+          />
+          <View style={styles.cardStack}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={logoutMutation.isPending}
+              style={[styles.logoutCard, logoutMutation.isPending ? styles.disabledCard : null]}
+              onPress={() => setLogoutConfirmVisible(true)}
+            >
+              <View style={styles.logoutIconWrap}>
+                {logoutMutation.isPending ? (
+                  <ActivityIndicator size="small" color={palette.primary} />
+                ) : (
+                  <Ionicons name="log-out-outline" size={18} color={palette.primary} />
+                )}
+              </View>
+              <View style={styles.navCopy}>
+                <Text style={styles.logoutTitle}>Sign out</Text>
+                <Text style={styles.navCaption}>Leave owner app on this device</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={palette.mutedForeground} />
+            </Pressable>
+          </View>
+        </View>
       </ScrollView>
+
+      <Modal
+        visible={logoutConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogoutConfirmVisible(false)}
+      >
+        <View style={styles.confirmOverlay}>
+          <Pressable
+            style={styles.confirmBackdrop}
+            onPress={() => setLogoutConfirmVisible(false)}
+          />
+          <View style={styles.confirmCard}>
+            <View style={styles.confirmIconWrap}>
+              <Ionicons name="log-out-outline" size={26} color={palette.primary} />
+            </View>
+            <Text style={styles.confirmTitle}>Sign out?</Text>
+            <Text style={styles.confirmText}>
+              You can sign in again anytime with your owner account.
+            </Text>
+            <View style={styles.confirmActions}>
+              <Pressable
+                style={styles.confirmSecondaryButton}
+                onPress={() => setLogoutConfirmVisible(false)}
+              >
+                <Text style={styles.confirmSecondaryText}>Stay signed in</Text>
+              </Pressable>
+              <Pressable
+                style={styles.confirmPrimaryButton}
+                disabled={logoutMutation.isPending}
+                onPress={() => {
+                  setLogoutConfirmVisible(false);
+                  void signOut();
+                }}
+              >
+                {logoutMutation.isPending ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.confirmPrimaryText}>Sign out</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Screen>
   );
 }
 
+function getPayoutMethodStatus(
+  payoutMethod?: OwnerPayoutSummary["payoutMethod"],
+): { label: string; tone: "success" | "warning" | "danger"; detail: string } {
+  if (!payoutMethod) {
+    return {
+      label: "Setup needed",
+      tone: "warning",
+      detail: "Add a payout bKash number before admin sends payouts.",
+    };
+  }
+
+  if (payoutMethod.pendingVerificationStatus === "otp_pending") {
+    return {
+      label: "OTP pending",
+      tone: "warning",
+      detail: `New number ${payoutMethod.pendingAccountNumber ?? ""} needs OTP verification.`,
+    };
+  }
+
+  if (payoutMethod.pendingVerificationStatus === "admin_pending") {
+    return {
+      label: "Pending",
+      tone: "warning",
+      detail: `New number ${payoutMethod.pendingAccountNumber ?? ""} is waiting for admin approval.`,
+    };
+  }
+
+  if (payoutMethod.pendingVerificationStatus === "rejected") {
+    return {
+      label: "Rejected",
+      tone: "danger",
+      detail: payoutMethod.pendingAdminNote
+        ? `Last request rejected: ${payoutMethod.pendingAdminNote}`
+        : "Last number change was rejected. Submit again when ready.",
+    };
+  }
+
+  if (payoutMethod.isVerified) {
+    return {
+      label: "Verified",
+      tone: "success",
+      detail: "This number is active for owner payout.",
+    };
+  }
+
+  return {
+    label: "Unverified",
+    tone: "warning",
+    detail: "Verify the payout number to make it ready for admin payout.",
+  };
+}
+
+function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <View style={styles.sectionHeader}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text style={styles.sectionSubtitle}>{subtitle}</Text>
+    </View>
+  );
+}
+
+function InfoPill({
+  icon,
+  text,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  text: string;
+}) {
+  return (
+    <View style={styles.infoPill}>
+      <Ionicons name={icon} size={14} color={palette.foreground} />
+      <Text numberOfLines={1} style={styles.infoPillText}>
+        {text}
+      </Text>
+    </View>
+  );
+}
+
+function OverviewCard({
+  icon,
+  label,
+  value,
+  caption,
+  tint,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  caption: string;
+  tint: string;
+  onPress?: () => void;
+}) {
+  const content = (
+    <>
+      {onPress ? (
+        <View style={styles.overviewActionCue}>
+          <Ionicons name="chevron-forward" size={14} color={palette.foreground} />
+        </View>
+      ) : null}
+      <View style={styles.overviewIconWrap}>
+        <Ionicons name={icon} size={18} color={palette.foreground} />
+      </View>
+      <Text numberOfLines={1} style={styles.overviewValue}>
+        {value}
+      </Text>
+      <Text style={styles.overviewLabel}>{label}</Text>
+      <Text numberOfLines={1} style={styles.overviewCaption}>
+        {caption}
+      </Text>
+    </>
+  );
+
+  if (!onPress) {
+    return <View style={[styles.overviewCard, { backgroundColor: tint }]}>{content}</View>;
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      style={[styles.overviewCard, { backgroundColor: tint }]}
+      onPress={onPress}
+    >
+      {content}
+    </Pressable>
+  );
+}
+
+function AccountNavCard({
+  icon,
+  tint,
+  title,
+  caption,
+  onPress,
+  highlight = false,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  tint: string;
+  title: string;
+  caption?: string;
+  onPress: () => void;
+  highlight?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      style={[styles.navCard, highlight ? styles.navCardHighlighted : null]}
+      onPress={onPress}
+    >
+      <View style={[styles.navIconWrap, { backgroundColor: tint }]}>
+        <Ionicons name={icon} size={18} color={palette.foreground} />
+      </View>
+      <View style={styles.navCopy}>
+        <Text style={styles.navTitle}>{title}</Text>
+        {caption ? <Text style={styles.navCaption}>{caption}</Text> : null}
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={palette.mutedForeground} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  content: {
-    padding: 18,
-    gap: 14,
+  container: {
+    paddingBottom: 40,
+    gap: 28,
   },
-  header: {
+  hero: {
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 24,
+    backgroundColor: palette.primarySoft,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    gap: 18,
+  },
+  heroTopRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 12,
   },
-  title: {
-    fontSize: 30,
-    lineHeight: 36,
-    fontWeight: "900",
-    color: palette.foreground,
+  kicker: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    color: palette.primary,
   },
-  subtitle: {
-    marginTop: 3,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  profileCard: {
-    borderRadius: 22,
-    backgroundColor: palette.surface,
+  identityCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
     padding: 16,
-    gap: 8,
+    borderRadius: 26,
+    backgroundColor: "rgba(255,255,255,0.9)",
     shadowColor: palette.shadow,
     shadowOpacity: 1,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
   },
-  profileName: {
-    fontSize: 21,
-    lineHeight: 27,
+  avatar: {
+    width: 70,
+    height: 70,
+    borderRadius: 35,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.primary,
+  },
+  avatarText: {
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "900",
+    color: "#FFFFFF",
+  },
+  identityCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  name: {
+    fontSize: 24,
+    lineHeight: 30,
     fontWeight: "900",
     color: palette.foreground,
   },
-  profilePhone: {
+  accountHolder: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  subtitle: {
     fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "700",
+    lineHeight: 19,
+    fontWeight: "600",
     color: palette.mutedForeground,
   },
-  pillRow: {
-    marginTop: 4,
+  heroPillRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+    marginTop: 4,
   },
-  sectionCard: {
-    borderRadius: 20,
-    backgroundColor: palette.surface,
-    padding: 15,
+  infoPill: {
+    maxWidth: "100%",
+    minHeight: 30,
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "rgba(31, 36, 48, 0.08)",
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
-  contactCard: {
-    borderRadius: 20,
-    backgroundColor: palette.surface,
-    padding: 15,
+  infoPillText: {
+    flexShrink: 1,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  section: {
+    paddingHorizontal: 18,
     gap: 12,
   },
-  contactHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
+  sectionHeader: {
+    gap: 3,
   },
-  restaurantTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-  },
-  restaurantIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: palette.primarySoft,
-  },
-  restaurantTextWrap: {
-    flex: 1,
-  },
-  restaurantName: {
-    fontSize: 15,
-    lineHeight: 20,
+  sectionTitle: {
+    fontSize: 18,
+    lineHeight: 23,
     fontWeight: "900",
     color: palette.foreground,
   },
-  restaurantMeta: {
-    marginTop: 2,
+  sectionSubtitle: {
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "600",
+    color: palette.mutedForeground,
+  },
+  overviewGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  overviewCard: {
+    width: "48.5%",
+    minHeight: 118,
+    borderRadius: 22,
+    padding: 13,
+    gap: 5,
+    justifyContent: "center",
+  },
+  overviewActionCue: {
+    position: "absolute",
+    top: 11,
+    right: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.72)",
+  },
+  overviewIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 13,
+    backgroundColor: "rgba(255,255,255,0.72)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  overviewValue: {
+    marginTop: 4,
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  overviewLabel: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  overviewCaption: {
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+  },
+  cardStack: {
+    gap: 10,
+  },
+  navCard: {
+    minHeight: 70,
+    borderRadius: 20,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    padding: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    shadowColor: palette.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  navCardHighlighted: {
+    borderColor: "#F7B7CB",
+    backgroundColor: "#FFFCFD",
+  },
+  navIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  navCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  navTitle: {
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  navCaption: {
     fontSize: 12,
     lineHeight: 17,
     fontWeight: "600",
     color: palette.mutedForeground,
   },
-  phoneInputShell: {
-    height: 48,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: palette.border,
-    backgroundColor: palette.background,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    paddingHorizontal: 13,
-  },
-  phoneInput: {
-    flex: 1,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: "800",
-    color: palette.foreground,
-    paddingVertical: 0,
-    includeFontPadding: false,
-  },
-  saveContactButton: {
-    minHeight: 46,
-    borderRadius: 15,
-    backgroundColor: palette.primary,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-  },
-  saveContactText: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: "900",
-    color: "#FFFFFF",
-  },
-  infoCard: {
+  logoutCard: {
+    minHeight: 70,
     borderRadius: 20,
-    backgroundColor: palette.primarySoft,
-    padding: 15,
-    flexDirection: "row",
-    gap: 11,
-  },
-  infoTextWrap: {
-    flex: 1,
-    gap: 3,
-  },
-  infoTitle: {
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: "900",
-    color: palette.foreground,
-  },
-  infoText: {
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: "600",
-    color: palette.mutedForeground,
-  },
-  showLinkText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "900",
-    color: palette.primary,
-  },
-  webLinkBox: {
-    marginTop: 10,
-    borderRadius: 14,
     backgroundColor: palette.surface,
-    borderWidth: 1,
-    borderColor: palette.border,
-    padding: 10,
-    gap: 10,
-  },
-  webLinkText: {
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: "700",
-    color: palette.foreground,
-  },
-  openLinkButton: {
-    alignSelf: "flex-start",
-    minHeight: 36,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    backgroundColor: palette.foreground,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  openLinkText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: "900",
-    color: "#FFFFFF",
-  },
-  logoutButton: {
-    minHeight: 52,
-    borderRadius: 17,
     borderWidth: 1,
     borderColor: palette.dangerSoft,
-    backgroundColor: palette.surface,
+    padding: 13,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
+    gap: 12,
   },
-  logoutText: {
+  logoutIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.primarySoft,
+  },
+  logoutTitle: {
     fontSize: 14,
     lineHeight: 19,
     fontWeight: "900",
     color: palette.danger,
   },
-  disabled: {
+  disabledCard: {
     opacity: 0.7,
+  },
+  confirmOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 22,
+  },
+  confirmBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(31,36,48,0.45)",
+  },
+  confirmCard: {
+    borderRadius: 24,
+    backgroundColor: palette.surface,
+    padding: 20,
+    alignItems: "center",
+    gap: 11,
+    shadowColor: "rgba(31, 36, 48, 0.28)",
+    shadowOpacity: 1,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
+  },
+  confirmIconWrap: {
+    width: 58,
+    height: 58,
+    borderRadius: 22,
+    backgroundColor: palette.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  confirmTitle: {
+    fontSize: 21,
+    lineHeight: 27,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  confirmText: {
+    textAlign: "center",
+    fontSize: 13,
+    lineHeight: 20,
+    fontWeight: "600",
+    color: palette.mutedForeground,
+  },
+  confirmActions: {
+    marginTop: 5,
+    flexDirection: "row",
+    gap: 10,
+  },
+  confirmSecondaryButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: palette.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  confirmPrimaryButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 15,
+    backgroundColor: palette.foreground,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  confirmSecondaryText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  confirmPrimaryText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "900",
+    color: "#FFFFFF",
   },
 });

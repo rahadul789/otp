@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Redirect, router, useLocalSearchParams } from "expo-router";
 import * as Location from "expo-location";
 import MapView, { Marker, Polyline, type Region } from "react-native-maps";
 import {
@@ -31,7 +31,7 @@ import { useNetworkStatus } from "@/src/hooks/use-network-status";
 import { isBangla, useDeliveryCopy } from "@/src/lib/copy";
 import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
 import { normalizeRiderLiveTrackingPolicy } from "@/src/lib/live-tracking-policy";
-import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
+import { getOrderStatusBadge, getOrderTimingInfo, getPaymentMethodBadge } from "@/src/lib/rider-order-display";
 import {
   setRiderBackgroundTrackingOrderId,
   startRiderBackgroundLocationAsync,
@@ -50,12 +50,14 @@ import { palette } from "@/src/theme/palette";
 type Coordinate = { latitude: number; longitude: number };
 type FocusMode = "customer" | "restaurant" | "rider" | "overview";
 
-const HOLD_DURATION_MS = 1200;
+const HOLD_DURATION_MS = 900;
 const MAX_QUEUED_LOCATION_UPDATES = 20;
 const DEFAULT_DELIVERY_THRESHOLDS = {
   deliveryWatchAfterPickupMinutes: 20,
   deliveryLateAfterPickupMinutes: 25,
   deliveryCriticalAfterPickupMinutes: 30,
+  riderEtaSpeedKmph: 24,
+  riderEtaRouteFactor: 1.1,
 };
 
 function toRadians(value: number) {
@@ -76,9 +78,15 @@ function calculateDistanceKm(pointA: Coordinate, pointB: Coordinate) {
   return earthRadius * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
-function estimateCycleEtaMinutes(distanceKm: number) {
+function estimateCycleEtaMinutes(
+  distanceKm: number,
+  speedKmph = 24,
+  routeFactor = 1.1
+) {
   if (distanceKm <= 0) return 0;
-  return Math.max(1, Math.round((distanceKm / 14) * 60));
+  const safeSpeed = Math.min(45, Math.max(6, speedKmph));
+  const safeRouteFactor = Math.min(2, Math.max(1, routeFactor));
+  return Math.max(1, Math.round(((distanceKm * safeRouteFactor) / safeSpeed) * 60));
 }
 
 function formatDistanceLabel(distanceKm?: number | null) {
@@ -93,6 +101,19 @@ function formatEtaLabel(minutes?: number | null) {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = Math.round(minutes % 60);
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function formatMoney(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "--";
+  return `Tk ${Math.round(value).toLocaleString()}`;
+}
+
+function formatPaymentMethod(value?: string | null) {
+  const normalized = `${value ?? ""}`.trim().toLowerCase();
+  if (!normalized) return "--";
+  if (normalized.includes("bkash")) return "bKash";
+  if (normalized.includes("cash")) return "Cash on delivery";
+  return `${value}`.trim();
 }
 
 function getElapsedMinutes(value?: string | null, nowMs = Date.now()) {
@@ -125,6 +146,31 @@ function buildCurvedPolyline(start: Coordinate, end: Coordinate) {
         t * t * end.longitude,
     };
   });
+}
+
+function RouteMarkerBadge({
+  icon,
+  tone,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  tone: "restaurant" | "customer" | "rider";
+}) {
+  return (
+    <View style={styles.mapMarkerWrap}>
+      <View
+        style={[
+          styles.mapMarkerPin,
+          tone === "restaurant"
+            ? styles.mapMarkerRestaurant
+            : tone === "customer"
+              ? styles.mapMarkerCustomer
+              : styles.mapMarkerRider,
+        ]}
+      >
+        <Ionicons name={icon} size={14} color="#fff" />
+      </View>
+    </View>
+  );
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -188,40 +234,11 @@ function tightenRegion(region: Region | undefined, factor = 0.78) {
   } satisfies Region;
 }
 
-const HomeMarkerContent = memo(function HomeMarkerContent() {
-  return (
-    <View collapsable={false} style={styles.markerRoot}>
-      <View style={styles.customerMarkerPin}>
-        <Ionicons name="home" size={13} color="#fff" />
-      </View>
-    </View>
-  );
-});
-
-const RestaurantMarkerContent = memo(function RestaurantMarkerContent() {
-  return (
-    <View collapsable={false} style={styles.markerRoot}>
-      <View style={styles.restaurantMarkerPin}>
-        <Ionicons name="storefront" size={13} color="#fff" />
-      </View>
-    </View>
-  );
-});
-
-const RiderMarkerContent = memo(function RiderMarkerContent() {
-  return (
-    <View collapsable={false} style={styles.markerRoot}>
-      <View style={styles.riderMarkerPin}>
-        <Ionicons name="bicycle-outline" size={13} color="#fff" />
-      </View>
-    </View>
-  );
-});
-
 export default function RiderOrderDetailsScreen() {
   const params = useLocalSearchParams<{ orderId?: string }>();
   const orderId = params.orderId;
   const rider = useRiderAuthStore((state) => state.rider);
+  const accessToken = useRiderAuthStore((state) => state.accessToken);
   const { copy, language } = useDeliveryCopy();
   const isNetworkOnline = useNetworkStatus();
   const detailCopy = useMemo(
@@ -324,7 +341,6 @@ export default function RiderOrderDetailsScreen() {
   const [focusMode, setFocusMode] = useState<FocusMode>("overview");
   const [holdProgress, setHoldProgress] = useState(0);
   const [activeHoldAction, setActiveHoldAction] = useState<"pickup" | "deliver" | null>(null);
-  const [shouldTrackMarkerViews, setShouldTrackMarkerViews] = useState(true);
   const [nowMs, setNowMs] = useState(Date.now());
   const lastLocationSentAtRef = useRef(0);
   const isCompletingDeliveryRef = useRef(false);
@@ -337,6 +353,7 @@ export default function RiderOrderDetailsScreen() {
   const holdTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const holdStartedAtRef = useRef<number | null>(null);
+  const holdCompleteRef = useRef<(() => void) | null>(null);
   const mapRef = useRef<MapView | null>(null);
   const mapReadyRef = useRef(false);
   const orderQuery = useRiderOrderDetailsQuery(orderId);
@@ -358,7 +375,9 @@ export default function RiderOrderDetailsScreen() {
   const order = orderQuery.data;
   const supportPhone = supportContactQuery.data?.phone;
   const backgroundTrackingStatus = order?.status;
-  const backgroundTrackingEnabled = order?.status === "PickedUp";
+  const isFocusedLiveTrip = Boolean(order?.isFocusedLiveTrip);
+  const backgroundTrackingEnabled =
+    order?.status === "PickedUp" && Boolean(rider?.activeTrackingOrderId);
   const isAssignmentsPaused = rider?.isAvailableForAssignments === false;
   const trackingLocation = order?.riderTracking?.currentLocation;
   const lastKnownRiderLocation = rider?.lastKnownLocation;
@@ -475,7 +494,6 @@ export default function RiderOrderDetailsScreen() {
         0,
         1
       );
-  const isFocusedLiveTrip = Boolean(order?.isFocusedLiveTrip);
   const isAssignedPrePickup =
     order?.status === "ReadyForPickup" && order?.assignmentState === "assigned_to_you";
   const isAcceptStep = order?.status === "ReadyForPickup" && order?.assignmentState === "unassigned";
@@ -502,10 +520,10 @@ export default function RiderOrderDetailsScreen() {
 
   const activePrimaryRoute = useMemo(() => {
     if (isPickedUp && shouldShowCurrentApproachLeg && riderCoordinate && customerCoordinate) {
-      return [riderCoordinate, customerCoordinate];
+      return buildCurvedPolyline(riderCoordinate, customerCoordinate);
     }
     if (isAssignedPrePickup && shouldShowCurrentApproachLeg && riderCoordinate && restaurantCoordinate) {
-      return [riderCoordinate, restaurantCoordinate];
+      return buildCurvedPolyline(riderCoordinate, restaurantCoordinate);
     }
     return [] as Coordinate[];
   }, [
@@ -517,30 +535,11 @@ export default function RiderOrderDetailsScreen() {
     shouldShowCurrentApproachLeg,
   ]);
 
-  const nextLegRoute = useMemo(() => {
+  const plannedDeliveryRoute = useMemo(() => {
+    if (isPickedUp) return [] as Coordinate[];
     if (!restaurantCoordinate || !customerCoordinate) return [] as Coordinate[];
     return buildCurvedPolyline(restaurantCoordinate, customerCoordinate);
-  }, [customerCoordinate, restaurantCoordinate]);
-
-  const fallbackRiderRoute = useMemo(() => {
-    if (!riderCoordinate) return [] as Coordinate[];
-
-    const target =
-      focusMode === "customer"
-        ? customerCoordinate
-        : focusMode === "restaurant"
-          ? restaurantCoordinate
-          : focusMode === "rider"
-            ? isPickedUp
-              ? customerCoordinate
-              : restaurantCoordinate ?? customerCoordinate
-            : isPickedUp
-              ? customerCoordinate
-              : restaurantCoordinate;
-
-    if (!target) return [] as Coordinate[];
-    return buildCurvedPolyline(riderCoordinate, target);
-  }, [customerCoordinate, focusMode, isPickedUp, restaurantCoordinate, riderCoordinate]);
+  }, [customerCoordinate, isPickedUp, restaurantCoordinate]);
 
   const currentLegDistanceKm = useMemo(() => {
     if (isPickedUp) {
@@ -569,22 +568,37 @@ export default function RiderOrderDetailsScreen() {
       return Math.max(1, Math.round(order.riderTracking.remainingDurationMinutes));
     }
     return typeof currentLegDistanceKm === "number"
-      ? estimateCycleEtaMinutes(currentLegDistanceKm)
+      ? estimateCycleEtaMinutes(
+          currentLegDistanceKm,
+          deliveryThresholds.riderEtaSpeedKmph,
+          deliveryThresholds.riderEtaRouteFactor
+        )
       : null;
-  }, [currentLegDistanceKm, isPickedUp, order?.riderTracking?.remainingDurationMinutes]);
+  }, [
+    currentLegDistanceKm,
+    deliveryThresholds.riderEtaRouteFactor,
+    deliveryThresholds.riderEtaSpeedKmph,
+    isPickedUp,
+    order?.riderTracking?.remainingDurationMinutes,
+  ]);
 
   const nextLegEtaMinutes = useMemo(
-    () => (typeof nextLegDistanceKm === "number" ? estimateCycleEtaMinutes(nextLegDistanceKm) : null),
-    [nextLegDistanceKm]
+    () =>
+      typeof nextLegDistanceKm === "number"
+        ? estimateCycleEtaMinutes(
+            nextLegDistanceKm,
+            deliveryThresholds.riderEtaSpeedKmph,
+            deliveryThresholds.riderEtaRouteFactor
+          )
+        : null,
+    [
+      deliveryThresholds.riderEtaRouteFactor,
+      deliveryThresholds.riderEtaSpeedKmph,
+      nextLegDistanceKm,
+    ]
   );
 
-  const fullTripEtaMinutes = useMemo(() => {
-    if (isPickedUp) return currentLegEtaMinutes;
-    if (typeof currentLegEtaMinutes === "number" && typeof nextLegEtaMinutes === "number") {
-      return currentLegEtaMinutes + nextLegEtaMinutes;
-    }
-    return currentLegEtaMinutes ?? nextLegEtaMinutes ?? null;
-  }, [currentLegEtaMinutes, isPickedUp, nextLegEtaMinutes]);
+  const displayedEtaMinutes = currentLegEtaMinutes ?? nextLegEtaMinutes ?? null;
 
   const activeLegLabel = isPickedUp ? "To customer" : "To restaurant";
 
@@ -644,17 +658,6 @@ export default function RiderOrderDetailsScreen() {
     }
   }, [activeMapRegion]);
 
-  useEffect(() => {
-    setShouldTrackMarkerViews(true);
-    const timer = setTimeout(() => {
-      setShouldTrackMarkerViews(false);
-    }, 700);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [focusMode, restaurantCoordinate, customerCoordinate, riderCoordinate]);
-
   const focusModeMeta = useMemo(() => {
     switch (focusMode) {
       case "customer":
@@ -688,7 +691,14 @@ export default function RiderOrderDetailsScreen() {
     [lastSuccessfulSyncAt, order?.riderTracking?.lastUpdatedAt, rider?.lastKnownLocation?.updatedAt]
   );
 
-  const timelineRows = useMemo(() => order?.history ?? [], [order?.history]);
+  const timelineRows = useMemo(() => {
+    const rows = order?.history ?? [];
+    return rows.filter((entry, index) => {
+      if (!entry.status) return false;
+      const previous = rows[index - 1];
+      return previous?.status !== entry.status;
+    });
+  }, [order?.history]);
   const itemRows = useMemo(() => order?.items ?? [], [order?.items]);
 
   const shouldShowTripSyncStatus = isAssignedPrePickup || isPickedUp;
@@ -723,6 +733,7 @@ export default function RiderOrderDetailsScreen() {
   const resetHoldState = useCallback(() => {
     clearHoldTimers();
     holdStartedAtRef.current = null;
+    holdCompleteRef.current = null;
     setActiveHoldAction(null);
     setHoldProgress(0);
   }, [clearHoldTimers]);
@@ -754,6 +765,7 @@ export default function RiderOrderDetailsScreen() {
       isFlushingQueueRef.current ||
       !orderId ||
       order?.status !== "PickedUp" ||
+      !isFocusedLiveTrip ||
       queuedLocationsRef.current.length === 0 ||
       isCompletingDeliveryRef.current
     ) {
@@ -786,6 +798,7 @@ export default function RiderOrderDetailsScreen() {
     }
   }, [
     copy.orderDetails.trackingWeakConnection,
+    isFocusedLiveTrip,
     mutateRiderLocation,
     order?.status,
     orderId,
@@ -813,7 +826,7 @@ export default function RiderOrderDetailsScreen() {
   );
 
   useEffect(() => {
-    if (order?.status !== "PickedUp" || !orderId) {
+    if (order?.status !== "PickedUp" || !isFocusedLiveTrip || !orderId) {
       return;
     }
 
@@ -885,6 +898,7 @@ export default function RiderOrderDetailsScreen() {
     copy.orderDetails.trackingStartError,
     copy.orderDetails.trackingWaitingFirstLocation,
     enqueueLocationUpdate,
+    isFocusedLiveTrip,
     order?.status,
     orderId,
     trackingPolicy.distanceIntervalMeters,
@@ -922,7 +936,7 @@ export default function RiderOrderDetailsScreen() {
   ]);
 
   useEffect(() => {
-    if (order?.status !== "PickedUp") {
+    if (order?.status !== "PickedUp" || !isFocusedLiveTrip) {
       queuedLocationsRef.current = [];
       setQueuedLocationCount(0);
       setSyncState("live");
@@ -932,7 +946,7 @@ export default function RiderOrderDetailsScreen() {
         retryTimeoutRef.current = null;
       }
     }
-  }, [order?.status]);
+  }, [isFocusedLiveTrip, order?.status]);
 
   const handleAccept = async () => {
     if (!order) return;
@@ -1142,6 +1156,7 @@ export default function RiderOrderDetailsScreen() {
       setActiveHoldAction(action);
       setHoldProgress(0);
       holdStartedAtRef.current = Date.now();
+      holdCompleteRef.current = onComplete;
 
       holdIntervalRef.current = setInterval(() => {
         if (!holdStartedAtRef.current) return;
@@ -1152,7 +1167,9 @@ export default function RiderOrderDetailsScreen() {
       holdTimeoutRef.current = setTimeout(() => {
         clearHoldTimers();
         setHoldProgress(1);
-        onComplete();
+        const complete = holdCompleteRef.current;
+        holdCompleteRef.current = null;
+        complete?.();
       }, HOLD_DURATION_MS);
     },
     [activeHoldAction, clearHoldTimers, deliverMutation.isPending, pickupMutation.isPending]
@@ -1172,31 +1189,95 @@ export default function RiderOrderDetailsScreen() {
 
   const cancelHoldAction = useCallback(() => {
     if (pickupMutation.isPending || deliverMutation.isPending || activeHoldAction === null) return;
+    const heldMs = holdStartedAtRef.current ? Date.now() - holdStartedAtRef.current : 0;
+    if (heldMs >= HOLD_DURATION_MS * 0.82 && holdCompleteRef.current) {
+      clearHoldTimers();
+      setHoldProgress(1);
+      const complete = holdCompleteRef.current;
+      holdCompleteRef.current = null;
+      complete();
+      return;
+    }
     resetHoldState();
-  }, [activeHoldAction, deliverMutation.isPending, pickupMutation.isPending, resetHoldState]);
+  }, [activeHoldAction, clearHoldTimers, deliverMutation.isPending, pickupMutation.isPending, resetHoldState]);
 
-  if (orderQuery.isLoading) {
+  const handleBackPress = useCallback(() => {
+    const canGoBack =
+      (router as unknown as { canGoBack?: () => boolean }).canGoBack?.() ?? false;
+
+    if (canGoBack) {
+      router.back();
+      return;
+    }
+
+    router.replace("/(app)/active");
+  }, []);
+
+  if (!rider || !accessToken) {
     return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="small" color={palette.primaryStrong} />
-      </View>
+      <Redirect
+        href={{
+          pathname: "/sign-in",
+          params: {
+            redirectTo: orderId ? `/orders/${orderId}` : "/(app)/available",
+          },
+        }}
+      />
+    );
+  }
+
+  const isOrderLoading =
+    Boolean(orderId) &&
+    !order &&
+    (orderQuery.isLoading || orderQuery.isFetching || !orderQuery.isError);
+
+  if (isOrderLoading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="small" color={palette.primaryStrong} />
+          <Text style={styles.emptyText}>Loading order details...</Text>
+        </View>
+      </SafeAreaView>
     );
   }
 
   if (!order) {
     return (
-      <View style={styles.centered}>
-        <Text style={styles.emptyText}>{copy.orderDetails.unavailable}</Text>
-      </View>
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.centered}>
+          <Pressable style={styles.centeredBackButton} onPress={handleBackPress}>
+            <Ionicons name="arrow-back" size={18} color={palette.foreground} />
+          </Pressable>
+          <Text style={styles.emptyText}>{copy.orderDetails.unavailable}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.retryButton, pressed ? styles.retryButtonPressed : null]}
+            onPress={() => {
+              void orderQuery.refetch();
+            }}
+          >
+            {orderQuery.isFetching ? (
+              <ActivityIndicator size="small" color={palette.surface} />
+            ) : (
+              <Ionicons name="refresh" size={16} color={palette.surface} />
+            )}
+            <Text style={styles.retryButtonText}>{copy.common.retry}</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
     );
   }
 
   const orderStatusBadge = getOrderStatusBadge(order.status);
   const orderTimingInfo = getOrderTimingInfo(order);
+  const orderTotalLabel = formatMoney(order.pricing?.total);
+  const paymentMethodLabel = formatPaymentMethod(order.paymentMethod);
+  const paymentBadge = getPaymentMethodBadge(order.paymentMethod);
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
+        scrollEnabled={activeHoldAction === null}
         contentContainerStyle={styles.content}
         refreshControl={
           <RefreshControl
@@ -1208,7 +1289,7 @@ export default function RiderOrderDetailsScreen() {
       >
         <View style={styles.topRow}>
           <View style={styles.topIdentityRow}>
-            <Pressable style={styles.backButton} onPress={() => router.back()}>
+            <Pressable style={styles.backButton} onPress={handleBackPress}>
               <Ionicons name="arrow-back" size={20} color={palette.foreground} />
             </Pressable>
             <View style={styles.orderHeadingWrap}>
@@ -1325,7 +1406,7 @@ export default function RiderOrderDetailsScreen() {
         <View style={styles.mapCard}>
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionTitle}>{detailCopy.routeSummary}</Text>
-            <Text style={styles.sectionBadge}>{detailCopy.etaLabel} • {formatEtaLabel(fullTripEtaMinutes)}</Text>
+            <Text style={styles.sectionBadge}>{detailCopy.etaLabel} • {formatEtaLabel(displayedEtaMinutes)}</Text>
           </View>
 
           {activeMapRegion ? (
@@ -1341,6 +1422,7 @@ export default function RiderOrderDetailsScreen() {
                 rotateEnabled={false}
                 zoomEnabled={false}
                 toolbarEnabled={false}
+                showsUserLocation
                 showsCompass={false}
                 onMapReady={() => {
                   mapReadyRef.current = true;
@@ -1349,61 +1431,53 @@ export default function RiderOrderDetailsScreen() {
               >
                 {restaurantCoordinate ? (
                   <Marker
+                    key={`restaurant-${restaurantCoordinate.latitude}-${restaurantCoordinate.longitude}`}
+                    identifier="restaurant"
+                    title={order.restaurant?.name ?? copy.common.restaurant}
                     coordinate={restaurantCoordinate}
-                    anchor={{ x: 0.5, y: 0.5 }}
+                    anchor={{ x: 0.5, y: 0.9 }}
                     zIndex={3}
-                    tracksViewChanges={shouldTrackMarkerViews}
                   >
-                    <RestaurantMarkerContent />
+                    <RouteMarkerBadge
+                      icon="storefront"
+                      tone="restaurant"
+                    />
                   </Marker>
                 ) : null}
 
                 {customerCoordinate ? (
                   <Marker
+                    key={`customer-${customerCoordinate.latitude}-${customerCoordinate.longitude}`}
+                    identifier="customer"
+                    title={order.customer?.name ?? copy.common.customer}
                     coordinate={customerCoordinate}
-                    anchor={{ x: 0.5, y: 0.5 }}
+                    anchor={{ x: 0.5, y: 0.9 }}
                     zIndex={4}
-                    tracksViewChanges={shouldTrackMarkerViews}
                   >
-                    <HomeMarkerContent />
+                    <RouteMarkerBadge
+                      icon="home"
+                      tone="customer"
+                    />
                   </Marker>
                 ) : null}
 
-                {riderCoordinate ? (
-                  <Marker
-                    coordinate={riderCoordinate}
-                    anchor={{ x: 0.5, y: 0.5 }}
-                    zIndex={5}
-                    tracksViewChanges={shouldTrackMarkerViews}
-                  >
-                    <RiderMarkerContent />
-                  </Marker>
+                {plannedDeliveryRoute.length > 1 ? (
+                  <Polyline
+                    coordinates={plannedDeliveryRoute}
+                    strokeColor={palette.amber}
+                    strokeWidth={3}
+                    lineDashPattern={[8, 8]}
+                    zIndex={1}
+                  />
                 ) : null}
 
-                {activePrimaryRoute.length === 2 ? (
+                {activePrimaryRoute.length > 1 ? (
                   <Polyline
                     coordinates={activePrimaryRoute}
                     strokeColor={palette.secondary}
                     strokeWidth={5}
                     lineDashPattern={[10, 8]}
-                  />
-                ) : null}
-
-                {!activePrimaryRoute.length && fallbackRiderRoute.length > 1 ? (
-                  <Polyline
-                    coordinates={fallbackRiderRoute}
-                    strokeColor={palette.secondary}
-                    strokeWidth={4}
-                    lineDashPattern={[10, 8]}
-                  />
-                ) : null}
-
-                {nextLegRoute.length > 1 ? (
-                  <Polyline
-                    coordinates={nextLegRoute}
-                    strokeColor={palette.amber}
-                    strokeWidth={4}
-                    lineDashPattern={[8, 8]}
+                    zIndex={3}
                   />
                 ) : null}
               </MapView>
@@ -1422,18 +1496,38 @@ export default function RiderOrderDetailsScreen() {
           ) : null}
 
           <View style={styles.mapLegendRow}>
-            <View style={styles.legendChip}>
-              <View style={styles.legendPrimaryLine} />
-              <Text style={styles.legendText} numberOfLines={1}>
-                {isPickedUp ? "Current delivery" : "Current pickup"}
-              </Text>
-            </View>
-            <View style={styles.legendChip}>
-              <View style={styles.legendSecondaryLine} />
-              <Text style={styles.legendText} numberOfLines={1}>
-                {isPickedUp ? "Order route" : "Next delivery"}
-              </Text>
-            </View>
+            {activePrimaryRoute.length > 1 ? (
+              <View style={styles.legendChip}>
+                <View style={styles.legendPrimaryLine} />
+                <Text style={styles.legendText} numberOfLines={1}>
+                  {isPickedUp ? "Now: rider to customer" : "Now: rider to restaurant"}
+                </Text>
+              </View>
+            ) : null}
+            {!isPickedUp && plannedDeliveryRoute.length > 1 ? (
+              <View style={styles.legendChip}>
+                <View style={styles.legendSecondaryLine} />
+                <Text style={styles.legendText} numberOfLines={1}>
+                  After pickup: restaurant to customer
+                </Text>
+              </View>
+            ) : null}
+            {!activePrimaryRoute.length && isPickedUp ? (
+              <View style={styles.legendChip}>
+                <View style={styles.legendSecondaryLine} />
+                <Text style={styles.legendText} numberOfLines={1}>
+                  Waiting for rider GPS
+                </Text>
+              </View>
+            ) : null}
+            {!activePrimaryRoute.length && !plannedDeliveryRoute.length && !isPickedUp ? (
+              <View style={styles.legendChip}>
+                <View style={styles.legendSecondaryLine} />
+                <Text style={styles.legendText} numberOfLines={1}>
+                  Waiting for route locations
+                </Text>
+              </View>
+            ) : null}
           </View>
 
           <View style={styles.metricsRow}>
@@ -1443,7 +1537,7 @@ export default function RiderOrderDetailsScreen() {
             </View>
             <View style={[styles.metricCard, styles.metricSky]}>
               <Text style={styles.metricLabel}>ETA</Text>
-              <Text style={styles.metricValue}>{formatEtaLabel(fullTripEtaMinutes)}</Text>
+              <Text style={styles.metricValue}>{formatEtaLabel(displayedEtaMinutes)}</Text>
             </View>
             <View style={[styles.metricCard, styles.metricAmber]}>
               <Text style={styles.metricLabel}>Sync</Text>
@@ -1609,6 +1703,33 @@ export default function RiderOrderDetailsScreen() {
               <Text style={styles.sectionCountText}>{itemRows.length}</Text>
             </View>
           </View>
+          <View style={styles.orderSummaryStrip}>
+            <View style={[styles.orderSummaryBlock, styles.paymentSummaryBlock]}>
+              <View style={styles.paymentSummaryHeader}>
+                <Ionicons name="wallet" size={14} color={palette.surface} />
+                <Text style={[styles.orderSummaryLabel, styles.orderSummaryLabelDark]}>Payment</Text>
+              </View>
+              <View
+                style={[
+                  styles.paymentMethodBadge,
+                  styles.paymentMethodBadgeDark,
+                ]}
+              >
+                <Ionicons name={paymentBadge.icon} size={14} color={palette.surface} />
+                <Text style={[styles.paymentMethodBadgeText, styles.paymentMethodBadgeTextDark]}>
+                  {paymentBadge.label}
+                </Text>
+              </View>
+              <Text style={[styles.paymentMethodHint, styles.paymentMethodHintDark]}>
+                {paymentMethodLabel}
+              </Text>
+            </View>
+            <View style={styles.orderSummaryDivider} />
+            <View style={[styles.orderSummaryBlock, styles.orderSummaryBlockRight]}>
+              <Text style={[styles.orderSummaryLabel, styles.orderSummaryLabelDark]}>Total</Text>
+              <Text style={styles.orderSummaryTotal}>{orderTotalLabel}</Text>
+            </View>
+          </View>
           <View style={styles.itemList}>
             {itemRows.map((item: { name?: string; quantity?: number; totalPrice?: number }, index: number) => (
               <View key={`${item.name}-${index}`} style={styles.itemRow}>
@@ -1692,6 +1813,8 @@ export default function RiderOrderDetailsScreen() {
               style={[styles.holdButton, isPickupDisabled && styles.buttonDisabled]}
               onPressIn={startPickupHold}
               onPressOut={cancelHoldAction}
+              hitSlop={8}
+              pressRetentionOffset={{ top: 42, bottom: 42, left: 42, right: 42 }}
               disabled={isPickupDisabled}
             >
               <View style={[styles.holdProgressFill, { width: `${holdProgress * 100}%` }]} />
@@ -1735,6 +1858,8 @@ export default function RiderOrderDetailsScreen() {
               style={[styles.holdButton, isDeliverDisabled && styles.buttonDisabled]}
               onPressIn={startDeliverHold}
               onPressOut={cancelHoldAction}
+              hitSlop={8}
+              pressRetentionOffset={{ top: 42, bottom: 42, left: 42, right: 42 }}
               disabled={isDeliverDisabled}
             >
               <View style={[styles.holdProgressFill, { width: `${holdProgress * 100}%` }]} />
@@ -1772,11 +1897,41 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: palette.background,
     padding: 20,
+    gap: 14,
+  },
+  centeredBackButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
   },
   emptyText: {
     fontSize: 14,
     color: palette.mutedForeground,
     textAlign: "center",
+  },
+  retryButton: {
+    minHeight: 44,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: palette.foreground,
+  },
+  retryButtonPressed: {
+    opacity: 0.84,
+    transform: [{ scale: 0.98 }],
+  },
+  retryButtonText: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: palette.surface,
   },
   topRow: {
     flexDirection: "row",
@@ -1925,56 +2080,34 @@ const styles = StyleSheet.create({
   map: {
     height: 372,
   },
-  markerRoot: {
+  mapMarkerWrap: {
     alignItems: "center",
     justifyContent: "center",
-    width: 28,
-    height: 28,
+    width: 40,
+    height: 40,
   },
-  customerMarkerPin: {
-    width: 26,
-    height: 26,
-    borderRadius: 999,
+  mapMarkerPin: {
+    width: 31,
+    height: 31,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: palette.surface,
     alignItems: "center",
     justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
+  },
+  mapMarkerRestaurant: {
+    backgroundColor: palette.primary,
+  },
+  mapMarkerCustomer: {
     backgroundColor: palette.secondary,
-    borderWidth: 2,
-    borderColor: palette.surface,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.75,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
   },
-  restaurantMarkerPin: {
-    width: 26,
-    height: 26,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FF7A59",
-    borderWidth: 2,
-    borderColor: palette.surface,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.75,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
-  },
-  riderMarkerPin: {
-    width: 26,
-    height: 26,
-    borderRadius: 999,
-    alignItems: "center",
-    justifyContent: "center",
+  mapMarkerRider: {
     backgroundColor: palette.foreground,
-    borderWidth: 2,
-    borderColor: palette.surface,
-    shadowColor: palette.shadow,
-    shadowOpacity: 0.75,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 3,
   },
   mapActionDock: {
     position: "absolute",
@@ -2383,6 +2516,98 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: palette.primary,
+  },
+  orderSummaryStrip: {
+    minHeight: 76,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: palette.foreground,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  orderSummaryBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  paymentSummaryBlock: {
+    alignSelf: "stretch",
+    borderRadius: 14,
+    backgroundColor: "transparent",
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    justifyContent: "center",
+    gap: 6,
+  },
+  paymentSummaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  orderSummaryBlockRight: {
+    alignItems: "flex-end",
+    justifyContent: "center",
+  },
+  orderSummaryDivider: {
+    width: 1,
+    alignSelf: "stretch",
+    backgroundColor: "rgba(255,255,255,0.16)",
+  },
+  orderSummaryLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "800",
+    color: palette.mutedForeground,
+    textTransform: "uppercase",
+  },
+  orderSummaryLabelDark: {
+    color: "rgba(255,255,255,0.7)",
+  },
+  orderSummaryValue: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  paymentMethodBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  paymentMethodBadgeDark: {
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderColor: "rgba(255,255,255,0.28)",
+  },
+  paymentMethodBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  paymentMethodBadgeTextDark: {
+    color: palette.surface,
+  },
+  paymentMethodHint: {
+    marginTop: 3,
+    fontSize: 10,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+  },
+  paymentMethodHintDark: {
+    color: "rgba(255,255,255,0.72)",
+  },
+  orderSummaryTotal: {
+    fontSize: 24,
+    lineHeight: 30,
+    fontWeight: "900",
+    color: palette.surface,
   },
   itemList: {
     gap: 8,

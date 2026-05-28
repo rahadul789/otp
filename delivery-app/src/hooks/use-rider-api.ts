@@ -9,6 +9,10 @@ import {
 import { apiDelete, apiGet, apiPost } from "@/src/lib/api";
 import { buildQueryString } from "@/src/lib/query-params";
 import type { RiderLiveTrackingPolicy } from "@/src/lib/live-tracking-policy";
+import {
+  clearCurrentRiderExpoPushToken,
+  getCurrentRiderExpoPushToken,
+} from "@/src/lib/rider-push-token-state";
 import { useRiderAuthStore, type RiderProfile } from "@/src/store/auth-store";
 
 export type RiderOrder = {
@@ -90,10 +94,84 @@ export type RiderOrder = {
   }[];
 };
 
+export type RiderMapCoordinate = {
+  latitude: number;
+  longitude: number;
+};
+
+export type RiderLiveMapOrder = {
+  id: string;
+  orderNumber: string;
+  status: string;
+  assignmentState?: "unassigned" | "assigned_to_you" | "assigned_to_other";
+  createdAt: string | null;
+  updatedAt: string | null;
+  priority?: number;
+  preparation?: {
+    phase?: string;
+    label?: string;
+    baseMinutes?: number;
+    extraMinutes?: number;
+    totalMinutes?: number;
+    targetStartAt?: string | null;
+    targetReadyAt?: string | null;
+    remainingSeconds?: number | null;
+    lateBySeconds?: number;
+  };
+  pricing?: {
+    total?: number;
+    foodSubtotal?: number;
+  };
+  customer?: {
+    id?: string;
+    name?: string;
+    addressLabel?: string;
+    addressLine?: string;
+    addressDetails?: string;
+    location?: RiderMapCoordinate | null;
+  };
+  tracking?: RiderOrder["riderTracking"];
+};
+
+export type RiderLiveMapRestaurant = {
+  id: string;
+  name: string;
+  phone?: string;
+  address?: string;
+  city?: string;
+  preparationTimeMinutes?: number | null;
+  location?: RiderMapCoordinate | null;
+  orderCount: number;
+  readyCount: number;
+  preparingCount: number;
+  acceptedCount: number;
+  pickedUpCount: number;
+  lateCount: number;
+  earliestRemainingSeconds?: number | null;
+  nextReadyAt?: string | null;
+  priority?: number;
+  orders: RiderLiveMapOrder[];
+};
+
+export type RiderLiveMapResponse = {
+  generatedAt: string;
+  rider: {
+    id: string;
+    fullName?: string;
+    phone?: string;
+    vehicleType?: string;
+    activeTrackingOrderId?: string;
+    location?: (RiderMapCoordinate & {
+      heading?: number | null;
+      accuracyMeters?: number | null;
+      speedKmph?: number | null;
+      updatedAt?: string | null;
+    }) | null;
+  };
+  restaurants: RiderLiveMapRestaurant[];
+};
+
 const ACTIVE_ORDER_STATUSES = new Set([
-  "New",
-  "Accepted",
-  "Preparing",
   "ReadyForPickup",
   "PickedUp",
 ]);
@@ -110,12 +188,23 @@ type PlatformContentResponse = {
   };
 };
 
+export type RiderPerformanceSummary = {
+  deliveredToday: number;
+  deliveredLast7Days: number;
+  deliveredThisMonth: number;
+  deliveredTotal: number;
+  cancelledTotal: number;
+  activeAssignedOrders: number;
+};
+
 export type RiderDeliveryThresholds = {
   assignmentTimeoutMinutes: number;
   pickupLateGraceMinutes: number;
   deliveryWatchAfterPickupMinutes: number;
   deliveryLateAfterPickupMinutes: number;
   deliveryCriticalAfterPickupMinutes: number;
+  riderEtaSpeedKmph: number;
+  riderEtaRouteFactor: number;
 };
 
 const DEFAULT_RIDER_DELIVERY_THRESHOLDS: RiderDeliveryThresholds = {
@@ -124,7 +213,23 @@ const DEFAULT_RIDER_DELIVERY_THRESHOLDS: RiderDeliveryThresholds = {
   deliveryWatchAfterPickupMinutes: 20,
   deliveryLateAfterPickupMinutes: 25,
   deliveryCriticalAfterPickupMinutes: 30,
+  riderEtaSpeedKmph: 24,
+  riderEtaRouteFactor: 1.1,
 };
+
+function useRiderPlatformContentQuery<TData>(
+  select: (content: PlatformContentResponse) => TData
+) {
+  return useQuery({
+    queryKey: ["platform-content", "rider"],
+    staleTime: 5 * 60_000,
+    queryFn: async () => {
+      const response = await apiGet<PlatformContentResponse>("/public/content");
+      return response.data;
+    },
+    select,
+  });
+}
 
 function normalizeRiderOrder(order: Partial<RiderOrder> & { _id?: string; id?: string }) {
   const id = order.id ?? order._id ?? "";
@@ -180,7 +285,8 @@ function mergeRiderOrder(current: RiderOrder | undefined, nextOrder: RiderOrder)
 
 export function patchRiderOrderCaches(
   queryClient: QueryClient,
-  orderLike: Partial<RiderOrder> & { _id?: string; id?: string }
+  orderLike: Partial<RiderOrder> & { _id?: string; id?: string },
+  options?: { invalidateLiveMap?: boolean }
 ) {
   const nextOrder = normalizeRiderOrder(orderLike);
   if (!nextOrder.id) {
@@ -203,6 +309,9 @@ export function patchRiderOrderCaches(
       nextOrder.status === "ReadyForPickup" && nextOrder.assignmentState !== "assigned_to_other"
     )
   );
+  if (options?.invalidateLiveMap) {
+    void queryClient.invalidateQueries({ queryKey: ["rider", "live-map"] });
+  }
 }
 
 type RiderAuthResponse = {
@@ -286,6 +395,27 @@ export function useUpdateRiderProfileLocationMutation() {
     },
     onSuccess: (data: RiderProfile) => {
       queryClient.setQueryData(["rider", "profile"], data);
+      queryClient.setQueryData<RiderLiveMapResponse>(["rider", "live-map"], (current) => {
+        if (!current) return current;
+        const location = data.lastKnownLocation;
+        return {
+          ...current,
+          rider: {
+            ...current.rider,
+            location:
+              typeof location?.latitude === "number" && typeof location?.longitude === "number"
+                ? {
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                    heading: location.heading ?? null,
+                    accuracyMeters: location.accuracyMeters ?? null,
+                    speedKmph: location.speedKmph ?? null,
+                    updatedAt: location.updatedAt ?? null,
+                  }
+                : current.rider.location,
+          },
+        };
+      });
       if (rider && accessToken && refreshToken) {
         setSession({
           rider: { ...rider, ...data },
@@ -312,24 +442,63 @@ export function useRiderOrdersQuery(scope: "available" | "active" | "history") {
   });
 }
 
-export function useRiderLiveTrackingPolicyQuery() {
+export function useRiderOrdersPagedQuery(
+  scope: "available" | "active" | "history",
+  pageSize: number
+) {
+  const isAuthenticated = useRiderAuthStore((state: { accessToken: string }) => Boolean(state.accessToken));
+  const query = buildQueryString({ scope, page: 1, pageSize });
+
   return useQuery({
-    queryKey: ["platform-content", "rider-live-tracking"],
-    staleTime: 5 * 60_000,
+    queryKey: ["rider", "orders", scope, "paged", pageSize],
+    enabled: isAuthenticated,
+    placeholderData: keepPreviousData,
     queryFn: async () => {
-      const response = await apiGet<PlatformContentResponse>("/public/content");
-      return response.data.operations?.liveTracking ?? null;
+      const response = await apiGet<RiderOrder[]>(`/rider/orders?${query}`);
+      return response.data;
     },
   });
 }
 
-export function useRiderDeliveryThresholdsQuery() {
+export function useRiderPerformanceSummaryQuery(enabled = true) {
+  const isAuthenticated = useRiderAuthStore((state: { accessToken: string }) => Boolean(state.accessToken));
+
   return useQuery({
-    queryKey: ["platform-content", "rider-delivery-thresholds"],
-    staleTime: 5 * 60_000,
+    queryKey: ["rider", "performance-summary"],
+    enabled: enabled && isAuthenticated,
+    staleTime: 20_000,
+    placeholderData: keepPreviousData,
     queryFn: async () => {
-      const response = await apiGet<PlatformContentResponse>("/public/content");
-      const dispatch = response.data.operations?.dispatch ?? {};
+      const response = await apiGet<RiderPerformanceSummary>("/rider/orders/summary");
+      return response.data;
+    },
+  });
+}
+
+export function useRiderLiveMapQuery(enabled = true) {
+  const isAuthenticated = useRiderAuthStore((state: { accessToken: string }) => Boolean(state.accessToken));
+
+  return useQuery({
+    queryKey: ["rider", "live-map"],
+    enabled: enabled && isAuthenticated,
+    placeholderData: keepPreviousData,
+    staleTime: 5_000,
+    refetchInterval: enabled && isAuthenticated ? 15_000 : false,
+    refetchIntervalInBackground: false,
+    queryFn: async () => {
+      const response = await apiGet<RiderLiveMapResponse>("/rider/live-map");
+      return response.data;
+    },
+  });
+}
+
+export function useRiderLiveTrackingPolicyQuery() {
+  return useRiderPlatformContentQuery((content) => content.operations?.liveTracking ?? null);
+}
+
+export function useRiderDeliveryThresholdsQuery() {
+  return useRiderPlatformContentQuery((content) => {
+      const dispatch = content.operations?.dispatch ?? {};
       const assignmentTimeoutMinutes =
         typeof dispatch.assignmentTimeoutMinutes === "number"
           ? dispatch.assignmentTimeoutMinutes
@@ -354,6 +523,14 @@ export function useRiderDeliveryThresholdsQuery() {
           ? dispatch.deliveryCriticalAfterPickupMinutes
           : DEFAULT_RIDER_DELIVERY_THRESHOLDS.deliveryCriticalAfterPickupMinutes
       );
+      const riderEtaSpeedKmph =
+        typeof dispatch.riderEtaSpeedKmph === "number" && Number.isFinite(dispatch.riderEtaSpeedKmph)
+          ? Math.min(45, Math.max(6, dispatch.riderEtaSpeedKmph))
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.riderEtaSpeedKmph;
+      const riderEtaRouteFactor =
+        typeof dispatch.riderEtaRouteFactor === "number" && Number.isFinite(dispatch.riderEtaRouteFactor)
+          ? Math.min(2, Math.max(1, dispatch.riderEtaRouteFactor))
+          : DEFAULT_RIDER_DELIVERY_THRESHOLDS.riderEtaRouteFactor;
 
       return {
         assignmentTimeoutMinutes,
@@ -361,20 +538,14 @@ export function useRiderDeliveryThresholdsQuery() {
         deliveryWatchAfterPickupMinutes: watch,
         deliveryLateAfterPickupMinutes: late,
         deliveryCriticalAfterPickupMinutes: critical,
+        riderEtaSpeedKmph,
+        riderEtaRouteFactor,
       } satisfies RiderDeliveryThresholds;
-    },
   });
 }
 
 export function useRiderSupportContactQuery() {
-  return useQuery({
-    queryKey: ["platform-content", "rider-support-contact"],
-    staleTime: 5 * 60_000,
-    queryFn: async () => {
-      const response = await apiGet<PlatformContentResponse>("/public/content");
-      return response.data.supportContact ?? null;
-    },
-  });
+  return useRiderPlatformContentQuery((content) => content.supportContact ?? null);
 }
 
 export function useRiderOrderDetailsQuery(orderId?: string) {
@@ -486,7 +657,7 @@ export function usePickupOrderMutation() {
       return response.data;
     },
     onSuccess: (data: RiderOrder) => {
-      patchRiderOrderCaches(queryClient, data);
+      patchRiderOrderCaches(queryClient, data, { invalidateLiveMap: true });
       queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
       queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
@@ -502,7 +673,7 @@ export function useAcceptOrderMutation() {
       return response.data;
     },
     onSuccess: (data: RiderOrder) => {
-      patchRiderOrderCaches(queryClient, data);
+      patchRiderOrderCaches(queryClient, data, { invalidateLiveMap: true });
       queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
       queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
@@ -518,7 +689,7 @@ export function useDeliverOrderMutation() {
       return response.data;
     },
     onSuccess: (data: RiderOrder) => {
-      patchRiderOrderCaches(queryClient, data);
+      patchRiderOrderCaches(queryClient, data, { invalidateLiveMap: true });
       queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
       queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
@@ -534,7 +705,7 @@ export function useActivateTrackingMutation() {
       return response.data;
     },
     onSuccess: (data: RiderOrder) => {
-      patchRiderOrderCaches(queryClient, data);
+      patchRiderOrderCaches(queryClient, data, { invalidateLiveMap: true });
       queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
       queryClient.invalidateQueries({ queryKey: ["rider", "profile"] });
     },
@@ -572,10 +743,15 @@ export function useLogoutRiderMutation() {
   return useMutation({
     mutationFn: async () => {
       if (!refreshToken) return null;
-      await apiPost("/rider/auth/logout", { refreshToken });
+      const expoPushToken = getCurrentRiderExpoPushToken();
+      await apiPost("/rider/auth/logout", {
+        refreshToken,
+        ...(expoPushToken ? { expoPushToken } : {}),
+      });
       return null;
     },
     onSettled: () => {
+      clearCurrentRiderExpoPushToken();
       clearSession();
     },
   });

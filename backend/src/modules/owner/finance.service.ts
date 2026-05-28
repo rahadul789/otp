@@ -1,16 +1,19 @@
 import { StatusCodes } from "http-status-codes"
 import mongoose, { type PipelineStage, type SortOrder } from "mongoose"
 
+import { emitSocketEvent } from "../../config/socket"
 import { AppError } from "../../common/utils/app-error"
-import { createAdminOperationalAlert } from "../admin/admin-alert.service"
+import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache"
 import { OwnerModel, PayoutMethodModel, RestaurantModel } from "../auth/auth.model"
 import { createOtpSession, getOtpSessionTiming } from "../auth/auth.service"
+import { createAdminOperationalAlert } from "../admin/admin-alert.service"
 import { getOperationalFinanceSettings } from "../public/content.service"
 import {
   buildRelatedOrderPayoutEligibilityMatch,
   isRestaurantPayoutEligibleOrder
 } from "./finance-rules"
 import { LedgerEntryModel, PayoutBatchModel } from "./finance.model"
+import { ReviewModel } from "./experience.model"
 import { OrderModel } from "./operational.model"
 import {
   buildDhakaPresetRange,
@@ -34,10 +37,89 @@ type DashboardPreset =
 const walletLedgerEntryTypes = ["earning", "refund", "adjustment"] as const
 const payoutResidualSourceTypes = ["payout_residual", "payout_residual_reversal"] as const
 const ledgerFreshnessTtlMs = 15 * 60_000
+const ledgerFreshnessMaxEntries = 500
+const OWNER_FINANCE_CACHE_TTL_MS = 10_000
+const OWNER_FINANCE_STALE_REVALIDATE_MS = 30_000
 const ledgerFreshnessByRestaurant = new Map<
   string,
   { checkedAt: number; promise?: Promise<void> }
 >()
+const ownerDashboardSummaryCache = createInMemoryAsyncCache<any>({
+  ttlMs: OWNER_FINANCE_CACHE_TTL_MS,
+  staleWhileRevalidateMs: OWNER_FINANCE_STALE_REVALIDATE_MS,
+  maxEntries: 300,
+})
+const ownerAnalyticsOverviewCache = createInMemoryAsyncCache<any>({
+  ttlMs: OWNER_FINANCE_CACHE_TTL_MS,
+  staleWhileRevalidateMs: OWNER_FINANCE_STALE_REVALIDATE_MS,
+  maxEntries: 300,
+})
+
+function pruneLedgerFreshnessCache(now = Date.now()) {
+  for (const [key, entry] of ledgerFreshnessByRestaurant) {
+    if (!entry.promise && now - entry.checkedAt > ledgerFreshnessTtlMs) {
+      ledgerFreshnessByRestaurant.delete(key)
+    }
+  }
+
+  if (ledgerFreshnessByRestaurant.size <= ledgerFreshnessMaxEntries) {
+    return
+  }
+
+  for (const [key, entry] of ledgerFreshnessByRestaurant) {
+    if (entry.promise) continue
+    ledgerFreshnessByRestaurant.delete(key)
+    if (ledgerFreshnessByRestaurant.size <= ledgerFreshnessMaxEntries) {
+      break
+    }
+  }
+}
+
+function touchLedgerFreshnessEntry(
+  cacheKey: string,
+  entry: { checkedAt: number; promise?: Promise<void> },
+) {
+  ledgerFreshnessByRestaurant.delete(cacheKey)
+  ledgerFreshnessByRestaurant.set(cacheKey, entry)
+}
+
+export function invalidateOwnerFinanceCaches(restaurantId?: string) {
+  ownerDashboardSummaryCache.clear()
+  ownerAnalyticsOverviewCache.clear()
+
+  if (restaurantId) {
+    ledgerFreshnessByRestaurant.delete(String(restaurantId))
+  } else {
+    ledgerFreshnessByRestaurant.clear()
+  }
+}
+
+function normalizeFinanceCacheString(value?: string) {
+  return typeof value === "string" ? value.trim().toLowerCase() : ""
+}
+
+function buildOwnerFinanceCacheKey(
+  prefix: string,
+  params: {
+    ownerId: string
+    preset?: string
+    from?: string
+    to?: string
+    paymentMethod?: string
+    orderType?: string
+    categoryId?: string
+  },
+) {
+  return `${prefix}:${JSON.stringify({
+    ownerId: params.ownerId,
+    preset: normalizeFinanceCacheString(params.preset),
+    from: normalizeFinanceCacheString(params.from),
+    to: normalizeFinanceCacheString(params.to),
+    paymentMethod: normalizeFinanceCacheString(params.paymentMethod),
+    orderType: normalizeFinanceCacheString(params.orderType),
+    categoryId: normalizeFinanceCacheString(params.categoryId),
+  })}`
+}
 
 function toObjectId(value: string) {
   return mongoose.Types.ObjectId.isValid(value)
@@ -116,12 +198,54 @@ function getOrderDiscountAmount(order: Record<string, any>) {
   )
 }
 
+function getAppliedVoucherDiscountSplit(order: Record<string, any>) {
+  const vouchers = Array.isArray(order.appliedVouchers) ? order.appliedVouchers : []
+
+  if (!vouchers.length) {
+    return null
+  }
+
+  return vouchers.reduce(
+    (summary, voucher) => {
+      const discountAmount = numberValue(voucher?.discountAmount)
+      const fundedBy = String(voucher?.fundedBy ?? "owner").toLowerCase()
+      const ownerSharePercent =
+        fundedBy === "platform"
+          ? 0
+          : fundedBy === "owner"
+            ? 100
+            : Math.min(100, Math.max(0, numberValue(voucher?.ownerSharePercent)))
+      const ownerDiscountCost = numberValue(
+        voucher?.ownerDiscountCost,
+        Math.round(discountAmount * (ownerSharePercent / 100))
+      )
+      const platformDiscountCost = numberValue(
+        voucher?.platformDiscountCost,
+        Math.max(0, discountAmount - ownerDiscountCost)
+      )
+
+      summary.ownerDiscountCost += ownerDiscountCost
+      summary.platformDiscountCost += platformDiscountCost
+      return summary
+    },
+    { ownerDiscountCost: 0, platformDiscountCost: 0 }
+  )
+}
+
 function getOrderOwnerDiscountCost(order: Record<string, any>) {
-  return numberValue(order.pricing?.ownerDiscountCost, getOrderDiscountAmount(order))
+  const voucherSplit = getAppliedVoucherDiscountSplit(order)
+  return numberValue(
+    order.pricing?.ownerDiscountCost,
+    voucherSplit?.ownerDiscountCost ?? getOrderDiscountAmount(order)
+  )
 }
 
 function getOrderPlatformDiscountCost(order: Record<string, any>) {
-  return numberValue(order.pricing?.platformDiscountCost)
+  const voucherSplit = getAppliedVoucherDiscountSplit(order)
+  return numberValue(
+    order.pricing?.platformDiscountCost,
+    voucherSplit?.platformDiscountCost ?? 0
+  )
 }
 
 function getOrderSubtotalForOwner(order: Record<string, any>) {
@@ -131,7 +255,11 @@ function getOrderSubtotalForOwner(order: Record<string, any>) {
 
   const total = numberValue(order.pricing?.total)
   const deliveryFee = numberValue(order.pricing?.deliveryFee)
-  return Math.max(0, total - deliveryFee)
+  return Math.max(0, total - deliveryFee + getOrderDiscountAmount(order))
+}
+
+function getOrderRestaurantNetSalesForOwner(order: Record<string, any>) {
+  return Math.max(0, getOrderSubtotalForOwner(order) - getOrderOwnerDiscountCost(order))
 }
 
 function getOrderNetEarnings(order: Record<string, any>, restaurant: Record<string, any>) {
@@ -148,6 +276,52 @@ function getOrderNetEarnings(order: Record<string, any>, restaurant: Record<stri
     platformDiscountCost: getOrderPlatformDiscountCost(order),
     deliveryCost: numberValue(order.pricing?.deliveryFee),
     netAmount: grossAmount - commission - discountCost
+  }
+}
+
+function ownerSubtotalAggregateExpression() {
+  return {
+    $ifNull: [
+      "$pricing.subtotal",
+      {
+        $add: [
+          {
+            $subtract: [
+              { $ifNull: ["$pricing.total", 0] },
+              { $ifNull: ["$pricing.deliveryFee", 0] }
+            ]
+          },
+          totalDiscountAggregateExpression()
+        ]
+      }
+    ]
+  }
+}
+
+function totalDiscountAggregateExpression() {
+  return {
+    $ifNull: [
+      "$pricing.discountAmount",
+      { $ifNull: ["$pricing.discount", 0] }
+    ]
+  }
+}
+
+function ownerDiscountAggregateExpression() {
+  return {
+    $ifNull: [
+      "$pricing.ownerDiscountCost",
+      totalDiscountAggregateExpression()
+    ]
+  }
+}
+
+function ownerNetSalesAggregateExpression() {
+  return {
+    $subtract: [
+      ownerSubtotalAggregateExpression(),
+      ownerDiscountAggregateExpression()
+    ]
   }
 }
 
@@ -200,6 +374,7 @@ async function ensureRestaurantEarningLedgerEntries(
   })
     .select({
       pricing: 1,
+      appliedVouchers: 1,
       timestamps: 1,
       updatedAt: 1,
       paymentMethod: 1,
@@ -289,28 +464,23 @@ async function ensureRestaurantEarningLedgerEntries(
     }
   }
 
-  await LedgerEntryModel.updateMany(
+  await LedgerEntryModel.deleteMany(
     {
       restaurantId: restaurantObjectId,
       entryType: "earning",
       settlementStatus: { $ne: "paid_out" },
       orderId: { $nin: deliveredOrderIds }
-    },
-    {
-      $set: {
-        settlementStatus: "pending",
-        availableAt: null
-      }
     }
   )
 }
 
-async function ensureRestaurantLedgerFresh(
+async function _ensureRestaurantLedgerFresh(
   restaurantId: string,
   settlementDelayDays: number,
   options: { force?: boolean } = {}
 ) {
   const cacheKey = String(restaurantId)
+  pruneLedgerFreshnessCache()
   const cached = ledgerFreshnessByRestaurant.get(cacheKey)
   const now = Date.now()
 
@@ -323,6 +493,7 @@ async function ensureRestaurantLedgerFresh(
     cached &&
     now - cached.checkedAt < ledgerFreshnessTtlMs
   ) {
+    touchLedgerFreshnessEntry(cacheKey, cached)
     return
   }
 
@@ -331,20 +502,22 @@ async function ensureRestaurantLedgerFresh(
     await reconcileRestaurantLedgerStatuses(restaurantId, settlementDelayDays)
   })()
 
-  ledgerFreshnessByRestaurant.set(cacheKey, {
+  touchLedgerFreshnessEntry(cacheKey, {
     checkedAt: cached?.checkedAt ?? 0,
     promise
   })
 
   try {
     await promise
-    ledgerFreshnessByRestaurant.set(cacheKey, {
+    touchLedgerFreshnessEntry(cacheKey, {
       checkedAt: Date.now()
     })
   } catch (error) {
     ledgerFreshnessByRestaurant.delete(cacheKey)
     throw error
   }
+
+  pruneLedgerFreshnessCache()
 }
 
 async function promoteMatureLedgerEntries(restaurantId: string) {
@@ -442,12 +615,12 @@ export async function getLedgerSummary(restaurantId: string) {
     lifetimeAggregate,
     nextSettlementAggregate
   ] = await Promise.all([
-    aggregateLedgerEntries({
+    aggregateFinalizedLedgerEntries({
       restaurantId,
       entryType: { $in: [...walletLedgerEntryTypes] },
       settlementStatus: "pending"
     }, [{ $group: { _id: null, total: { $sum: "$netAmount" } } }]),
-    aggregateLedgerEntries({
+    aggregateFinalizedLedgerEntries({
       restaurantId,
       entryType: { $in: [...walletLedgerEntryTypes] },
       settlementStatus: "available"
@@ -464,7 +637,7 @@ export async function getLedgerSummary(restaurantId: string) {
       restaurantId: toObjectId(restaurantId),
       status: { $in: ["pending", "processing"] }
     }),
-    aggregateLedgerEntries(
+    aggregateFinalizedLedgerEntries(
       {
         restaurantId,
         entryType: { $in: [...walletLedgerEntryTypes] },
@@ -483,7 +656,7 @@ export async function getLedgerSummary(restaurantId: string) {
         }
       ]
     ),
-    aggregateLedgerEntries(
+    aggregateFinalizedLedgerEntries(
       {
         restaurantId,
         entryType: { $in: [...walletLedgerEntryTypes] },
@@ -545,17 +718,23 @@ export async function reconcileRestaurantLedgerStatuses(
       .select({ status: 1, paymentMethod: 1, paymentStatus: 1, timestamps: 1, updatedAt: 1 })
       .lean()
     const orderById = new Map(orders.map((order) => [String(order._id), order]))
-    const updates = settlementEntries.flatMap((entry) => {
+    const updates: any[] = settlementEntries.flatMap((entry): any[] => {
       const order = orderById.get(String(entry.orderId))
       const isPayoutEligibleOrder = isRestaurantPayoutEligibleOrder(order)
-      const nextAvailableAt = isPayoutEligibleOrder && order
+      if (!isPayoutEligibleOrder) {
+        return [
+          {
+            deleteOne: {
+              filter: { _id: entry._id }
+            }
+          }
+        ]
+      }
+      const nextAvailableAt = order
         ? getSettlementAvailableAt(getOrderDeliveredAt(order), delayDays)
         : null
-      const nextSettlementStatus: "pending" | "available" = isPayoutEligibleOrder
-        ? nextAvailableAt && nextAvailableAt <= now
-          ? "available"
-          : "pending"
-        : "pending"
+      const nextSettlementStatus: "pending" | "available" =
+        nextAvailableAt && nextAvailableAt <= now ? "available" : "pending"
       const currentAvailableAt = entry.availableAt
         ? new Date(entry.availableAt).getTime()
         : null
@@ -616,6 +795,7 @@ export async function syncOrderLedgerForFinalStatus(params: {
   })
 
   if (!ledgerEntry) {
+    invalidateOwnerFinanceCaches(params.restaurantId)
     return null
   }
 
@@ -631,12 +811,18 @@ export async function syncOrderLedgerForFinalStatus(params: {
       financeSettings.settlementDelayDays
     )
     await ledgerEntry.save()
+    invalidateOwnerFinanceCaches(params.restaurantId)
     return ledgerEntry
   }
 
-  ledgerEntry.settlementStatus = "pending"
-  ledgerEntry.availableAt = null
-  await ledgerEntry.save()
+  if (ledgerEntry.settlementStatus !== "paid_out") {
+    await ledgerEntry.deleteOne()
+  } else {
+    ledgerEntry.settlementStatus = "pending"
+    ledgerEntry.availableAt = null
+    await ledgerEntry.save()
+  }
+  invalidateOwnerFinanceCaches(params.restaurantId)
   return ledgerEntry
 }
 
@@ -733,7 +919,7 @@ export async function aggregateFinalizedLedgerEntries(
   return LedgerEntryModel.aggregate(buildFinalizedLedgerPipeline(match, extraStages))
 }
 
-function aggregateLedgerEntries(
+function _aggregateLedgerEntries(
   match: Record<string, unknown>,
   extraStages: PipelineStage[] = []
 ) {
@@ -764,6 +950,203 @@ export async function getPayoutSummary(ownerId: string) {
     lastPayout: latestBatch,
     payoutMethod
   }
+}
+
+export async function requestOwnerPayout(ownerId: string) {
+  const { owner, restaurant, restaurantId } = await getOwnerFinanceContext(ownerId)
+  const financeSettings = await getOperationalFinanceSettings()
+  const restaurantObjectId = toObjectId(restaurantId)
+  const payoutMethod = await PayoutMethodModel.findOne({ restaurantId }).lean()
+
+  if (!payoutMethod || !String(payoutMethod.accountNumber ?? "").trim()) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "PAYOUT_METHOD_REQUIRED",
+      "Add a payout method before requesting payout"
+    )
+  }
+
+  if (payoutMethod.isVerified !== true) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "PAYOUT_METHOD_NOT_VERIFIED",
+      "Your payout method must be verified before requesting payout"
+    )
+  }
+
+  if (financeSettings.oneActivePayoutRequest) {
+    const activePayout = await PayoutBatchModel.exists({
+      restaurantId: restaurantObjectId,
+      status: { $in: ["pending", "processing"] }
+    })
+    if (activePayout) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "ACTIVE_PAYOUT_REQUEST_EXISTS",
+        "A payout request is already pending or processing"
+      )
+    }
+  }
+
+  const session = await mongoose.startSession()
+  let createdPayout: Record<string, any> | null = null
+
+  try {
+    await session.withTransaction(async () => {
+      await reconcileRestaurantLedgerStatuses(
+        restaurantId,
+        financeSettings.settlementDelayDays
+      )
+
+      const availableEntries = await LedgerEntryModel.find({
+        restaurantId: restaurantObjectId,
+        entryType: { $in: [...walletLedgerEntryTypes] },
+        settlementStatus: "available",
+        netAmount: { $gt: 0 }
+      })
+        .sort({ availableAt: 1, createdAt: 1 })
+        .select({ _id: 1, netAmount: 1 })
+        .session(session)
+
+      const amount = Math.round(
+        availableEntries.reduce(
+          (sum, entry) => sum + numberValue(entry.netAmount),
+          0
+        )
+      )
+
+      if (amount <= 0 || availableEntries.length === 0) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "NO_PAYOUT_BALANCE",
+          "No available payout balance right now"
+        )
+      }
+
+      if (amount < financeSettings.minimumPayoutAmountTaka) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "PAYOUT_BELOW_MINIMUM",
+          `Available balance is below ${financeSettings.minimumPayoutAmountTaka}tk minimum payout`
+        )
+      }
+
+      const now = new Date()
+      const [payoutBatch] = await PayoutBatchModel.create(
+        [
+          {
+            restaurantId: restaurantObjectId,
+            methodId: payoutMethod._id,
+            amount,
+            status: "pending",
+            provider: payoutMethod.type === "bkash" ? "bkash" : "bank",
+            batchReference: `OWN-PO-${Date.now()}`,
+            processingNote: "Requested by restaurant owner",
+            requestedAt: now
+          }
+        ],
+        { session }
+      )
+
+      const entryIds = availableEntries.map((entry) => entry._id)
+      const reserveResult = await LedgerEntryModel.updateMany(
+        {
+          _id: { $in: entryIds },
+          restaurantId: restaurantObjectId,
+          settlementStatus: "available"
+        },
+        {
+          $set: {
+            settlementStatus: "paid_out",
+            payoutBatchId: payoutBatch._id
+          }
+        },
+        { session }
+      )
+
+      if (reserveResult.modifiedCount !== entryIds.length) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "PAYOUT_BALANCE_CHANGED",
+          "Available balance changed. Please try again"
+        )
+      }
+
+      await LedgerEntryModel.create(
+        [
+          {
+            restaurantId: restaurantObjectId,
+            payoutBatchId: payoutBatch._id,
+            sourceEntityType: "payout_batch",
+            sourceEntityId: payoutBatch.id,
+            entryType: "payout",
+            netAmount: -amount,
+            settlementStatus: "pending",
+            availableAt: now
+          }
+        ],
+        { session }
+      )
+
+      createdPayout = payoutBatch.toObject()
+    })
+  } finally {
+    await session.endSession()
+  }
+
+  const savedPayout = createdPayout as Record<string, any> | null
+
+  if (!savedPayout) {
+    throw new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      "PAYOUT_REQUEST_FAILED",
+      "Payout request could not be created"
+    )
+  }
+
+  invalidateOwnerFinanceCaches(restaurantId)
+
+  const payoutId = String(savedPayout._id ?? "")
+  const amount = numberValue(savedPayout.amount)
+  const restaurantName = String(restaurant.name ?? "Restaurant")
+  const ownerName = String(owner.fullName ?? "Owner")
+
+  emitSocketEvent(`owner:${ownerId}`, "payout.updated", {
+    payoutId,
+    restaurantId,
+    status: "pending",
+    amount
+  })
+  emitSocketEvent(`restaurant:${restaurantId}`, "payout.updated", {
+    payoutId,
+    restaurantId,
+    status: "pending",
+    amount
+  })
+
+  await createAdminOperationalAlert({
+    alertType: "payout_request",
+    severity: "info",
+    title: "Payout request submitted",
+    description: `${restaurantName} requested ${amount.toLocaleString("en-US")}tk payout.`,
+    source: "Owner payout",
+    entityType: "payout",
+    entityId: payoutId,
+    path: `/payouts?restaurantId=${restaurantId}&payoutId=${payoutId}`,
+    iconKey: "credit-card",
+    dedupeKey: `payout:${payoutId}:owner_request`,
+    metadata: {
+      payoutId,
+      restaurantId,
+      restaurantName,
+      ownerId,
+      ownerName,
+      amount,
+      provider: payoutMethod.type
+    }
+  })
+
+  return createdPayout
 }
 
 export async function listPayoutHistory(ownerId: string) {
@@ -887,43 +1270,80 @@ export async function updatePayoutMethod(params: {
   const { owner, restaurantId } = await getOwnerFinanceContext(params.ownerId)
 
   if (params.type === "bkash") {
-    const isSameAsOwnerPhone = params.accountNumber === owner.phone
+    const existingPayoutMethod = await PayoutMethodModel.findOne({ restaurantId }).lean()
+    const isSameAsActiveNumber =
+      existingPayoutMethod?.type === "bkash" &&
+      existingPayoutMethod.accountNumber === params.accountNumber &&
+      existingPayoutMethod.isVerified === true
+
+    if (isSameAsActiveNumber) {
+      const payoutMethod = await PayoutMethodModel.findOneAndUpdate(
+        { restaurantId },
+        {
+          restaurantId,
+          type: "bkash",
+          accountName: params.accountName,
+          accountNumber: params.accountNumber,
+          bankName: "",
+          branchName: "",
+          isVerified: true,
+          pendingType: null,
+          pendingAccountName: "",
+          pendingAccountNumber: null,
+          pendingBankName: "",
+          pendingBranchName: "",
+          pendingVerificationStatus: null,
+          pendingVerifiedAt: null,
+          pendingAdminNote: "",
+          verificationSource: existingPayoutMethod.verificationSource ?? "admin_approved",
+          verifiedAt: existingPayoutMethod.verifiedAt ?? new Date()
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      )
+      invalidateOwnerFinanceCaches(restaurantId)
+
+      return {
+        payoutMethod,
+        verificationSessionId: null
+      }
+    }
 
     const payoutMethod = await PayoutMethodModel.findOneAndUpdate(
       { restaurantId },
       {
         restaurantId,
-        type: params.type,
-        accountName: params.accountName,
-        accountNumber: isSameAsOwnerPhone ? params.accountNumber : "",
+        type: existingPayoutMethod?.type ?? "bkash",
+        accountName: existingPayoutMethod?.accountName || params.accountName,
+        accountNumber: existingPayoutMethod?.accountNumber ?? "",
         bankName: "",
         branchName: "",
-        isVerified: isSameAsOwnerPhone,
-        pendingAccountNumber: isSameAsOwnerPhone ? null : params.accountNumber,
-        verificationSource: isSameAsOwnerPhone ? "owner_phone" : null,
-        verifiedAt: isSameAsOwnerPhone ? new Date() : null
+        isVerified: Boolean(existingPayoutMethod?.isVerified && existingPayoutMethod.accountNumber),
+        pendingType: "bkash",
+        pendingAccountName: params.accountName,
+        pendingAccountNumber: params.accountNumber,
+        pendingBankName: "",
+        pendingBranchName: "",
+        pendingVerificationStatus: "otp_pending",
+        pendingVerifiedAt: null,
+        pendingAdminNote: "",
+        verificationSource: "payout_change",
+        verifiedAt: existingPayoutMethod?.verifiedAt ?? null
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     )
+    invalidateOwnerFinanceCaches(restaurantId)
 
-    if (!isSameAsOwnerPhone) {
-      const otpSession = await createOtpSession({
-        ownerId: owner.id,
-        phone: params.accountNumber,
-        purpose: "owner_payout_verify",
-        referenceId: payoutMethod.id
-      })
-
-      return {
-        payoutMethod,
-        verificationSessionId: otpSession.id,
-        ...getOtpSessionTiming(otpSession)
-      }
-    }
+    const otpSession = await createOtpSession({
+      ownerId: owner.id,
+      phone: params.accountNumber,
+      purpose: "owner_payout_verify",
+      referenceId: payoutMethod.id
+    })
 
     return {
       payoutMethod,
-      verificationSessionId: null
+      verificationSessionId: otpSession.id,
+      ...getOtpSessionTiming(otpSession)
     }
   }
 
@@ -937,240 +1357,25 @@ export async function updatePayoutMethod(params: {
       bankName: params.bankName ?? "",
       branchName: params.branchName ?? "",
       isVerified: true,
+      pendingType: null,
+      pendingAccountName: "",
       pendingAccountNumber: null,
+      pendingBankName: "",
+      pendingBranchName: "",
+      pendingVerificationStatus: null,
+      pendingVerifiedAt: null,
+      pendingAdminNote: "",
       verificationSource: "manual_bank",
       verifiedAt: new Date()
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   )
+  invalidateOwnerFinanceCaches(restaurantId)
 
   return {
     payoutMethod,
     verificationSessionId: null
   }
-}
-
-export async function requestPayout(params: {
-  ownerId: string
-  amount: number
-}) {
-  const { restaurantId } = await getOwnerFinanceContext(params.ownerId)
-  const financeSettings = await getOperationalFinanceSettings()
-  await ensureRestaurantLedgerFresh(
-    restaurantId,
-    financeSettings.settlementDelayDays,
-    { force: true }
-  )
-  const payoutMethod = await PayoutMethodModel.findOne({ restaurantId })
-
-  if (!payoutMethod) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "PAYOUT_METHOD_REQUIRED",
-      "Configure a payout method before requesting payout"
-    )
-  }
-
-  if (!payoutMethod.isVerified) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "PAYOUT_METHOD_NOT_VERIFIED",
-      "Verify the payout method before requesting payout"
-    )
-  }
-
-  if (params.amount <= 0 || !Number.isInteger(params.amount)) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "INVALID_PAYOUT_AMOUNT",
-      "Requested amount must be a whole number greater than zero"
-    )
-  }
-
-  if (params.amount < financeSettings.minimumPayoutAmountTaka) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "PAYOUT_MINIMUM_AMOUNT_REQUIRED",
-      `Minimum payout request is ${financeSettings.minimumPayoutAmountTaka}tk`
-    )
-  }
-
-  if (financeSettings.oneActivePayoutRequest) {
-    const activePayout = await PayoutBatchModel.exists({
-      restaurantId: toObjectId(restaurantId),
-      status: { $in: ["pending", "processing"] }
-    })
-
-    if (activePayout) {
-      throw new AppError(
-        StatusCodes.CONFLICT,
-        "ACTIVE_PAYOUT_REQUEST_EXISTS",
-        "A payout request is already pending or processing"
-      )
-    }
-  }
-
-  const session = await mongoose.startSession()
-  let payoutBatch: mongoose.Document | null = null
-
-  try {
-    await session.withTransaction(async () => {
-      await reconcileRestaurantLedgerStatuses(
-        restaurantId,
-        financeSettings.settlementDelayDays
-      )
-
-      const selectableEntries = await LedgerEntryModel.aggregate(
-        buildFinalizedLedgerPipeline(
-          {
-            restaurantId,
-            entryType: { $in: [...walletLedgerEntryTypes] },
-            settlementStatus: "available",
-            netAmount: { $gt: 0 }
-          },
-          [
-            { $sort: { availableAt: 1, createdAt: 1 } },
-            { $project: { _id: 1, netAmount: 1 } }
-          ]
-        )
-      ).session(session)
-
-      const selectedEntryIds: mongoose.Types.ObjectId[] = []
-      let selectedTotal = 0
-
-      for (const entry of selectableEntries) {
-        if (selectedTotal >= params.amount) break
-        selectedEntryIds.push(entry._id)
-        selectedTotal += Number(entry.netAmount ?? 0)
-      }
-
-      if (selectedTotal < params.amount || selectedEntryIds.length === 0) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "INVALID_PAYOUT_AMOUNT",
-          "Requested amount exceeds available balance"
-        )
-      }
-
-      const [createdBatch] = await PayoutBatchModel.create(
-        [
-          {
-            restaurantId,
-            methodId: payoutMethod._id,
-            amount: params.amount,
-            status: "pending",
-            provider: payoutMethod.type === "bkash" ? "bkash" : "bank",
-            batchReference: `PO-${Date.now()}`,
-            requestedAt: new Date()
-          }
-        ],
-        { session }
-      )
-      payoutBatch = createdBatch
-
-      const reserveResult = await LedgerEntryModel.updateMany(
-        {
-          _id: { $in: selectedEntryIds },
-          restaurantId,
-          settlementStatus: "available"
-        },
-        {
-          $set: {
-            settlementStatus: "paid_out",
-            payoutBatchId: createdBatch._id
-          }
-        },
-        { session }
-      )
-
-      if (reserveResult.modifiedCount !== selectedEntryIds.length) {
-        throw new AppError(
-          StatusCodes.CONFLICT,
-          "PAYOUT_BALANCE_CHANGED",
-          "Available balance changed. Please try again"
-        )
-      }
-
-      await LedgerEntryModel.create(
-        [
-          {
-            restaurantId,
-            payoutBatchId: createdBatch._id,
-            sourceEntityType: "payout_batch",
-            sourceEntityId: createdBatch.id,
-            entryType: "payout",
-            netAmount: -params.amount,
-            settlementStatus: "pending",
-            availableAt: new Date()
-          }
-        ],
-        { session }
-      )
-
-      const residualAmount = Number((selectedTotal - params.amount).toFixed(2))
-      if (residualAmount > 0) {
-        await LedgerEntryModel.create(
-          [
-            {
-              restaurantId,
-              payoutBatchId: createdBatch._id,
-              sourceEntityType: "payout_residual",
-              sourceEntityId: createdBatch.id,
-              entryType: "adjustment",
-              netAmount: residualAmount,
-              settlementStatus: "available",
-              availableAt: new Date()
-            }
-          ],
-          { session }
-        )
-      }
-    })
-  } finally {
-    await session.endSession()
-  }
-
-  if (!payoutBatch) {
-    throw new AppError(
-      StatusCodes.INTERNAL_SERVER_ERROR,
-      "PAYOUT_REQUEST_FAILED",
-      "Payout request could not be created"
-    )
-  }
-
-  try {
-    const restaurant = await RestaurantModel.findById(restaurantId)
-      .select({ name: 1 })
-      .lean()
-    const payoutId = String(
-      (payoutBatch as { _id?: unknown; id?: unknown })._id ??
-        (payoutBatch as { id?: unknown }).id ??
-        ""
-    )
-    await createAdminOperationalAlert({
-      alertType: "payout_request",
-      severity: "info",
-      title: "Payout request submitted",
-      description: `${restaurant?.name ?? "Restaurant"} requested ${params.amount.toLocaleString("en-US")}tk payout.`,
-      source: "Payouts",
-      entityType: "payout",
-      entityId: payoutId,
-      path: `/restaurants?restaurantId=${restaurantId}`,
-      iconKey: "credit-card",
-      dedupeKey: `payout:${payoutId}:request`,
-      metadata: {
-        payoutId,
-        restaurantId,
-        restaurantName: restaurant?.name ?? "",
-        amount: params.amount,
-        provider: payoutMethod.type === "bkash" ? "bkash" : "bank",
-      },
-    })
-  } catch {
-    // Payout is already committed; admin alert is best-effort.
-  }
-
-  return payoutBatch
 }
 
 type AnalyticsOverviewParams = {
@@ -1197,11 +1402,27 @@ type AnalyticsMenuRow = {
 }
 
 const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+const dhakaDateKeyFormatter = new Intl.DateTimeFormat("en-CA", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  timeZone: "Asia/Dhaka"
+})
 const dhakaDateLabelFormatter = new Intl.DateTimeFormat("en-US", {
   day: "2-digit",
   month: "short",
   timeZone: "Asia/Dhaka"
 })
+
+function formatDailySeriesKey(date: Date) {
+  const parts = dhakaDateKeyFormatter
+    .formatToParts(date)
+    .reduce<Record<string, string>>((accumulator, part) => {
+      accumulator[part.type] = part.value
+      return accumulator
+    }, {})
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
 
 function formatHourLabel(hour: number) {
   const normalizedHour = ((hour % 24) + 24) % 24
@@ -1215,6 +1436,126 @@ function formatDailySeriesLabel(dateKey: string) {
   return Number.isNaN(date.getTime())
     ? dateKey
     : dhakaDateLabelFormatter.format(date)
+}
+
+type OwnerDashboardTrendPoint = {
+  date: string
+  label: string
+  orders: number
+  revenue: number
+  placedValue: number
+  deliveredValue: number
+  netEarnings: number
+  activeOrders: number
+  failedOrders: number
+  failedValue: number
+  cancelledOrders: number
+  rejectedOrders: number
+}
+
+function createDashboardTrendPoint(dateKey: string): OwnerDashboardTrendPoint {
+  return {
+    date: dateKey,
+    label: formatDailySeriesLabel(dateKey),
+    orders: 0,
+    revenue: 0,
+    placedValue: 0,
+    deliveredValue: 0,
+    netEarnings: 0,
+    activeOrders: 0,
+    failedOrders: 0,
+    failedValue: 0,
+    cancelledOrders: 0,
+    rejectedOrders: 0
+  }
+}
+
+function getOrderStatusTimestamp(
+  order: Record<string, any>,
+  status: "Delivered" | "Cancelled" | "Rejected"
+) {
+  const lowerKey =
+    status === "Delivered"
+      ? "deliveredAt"
+      : status === "Cancelled"
+        ? "cancelledAt"
+        : "rejectedAt"
+  const value = order.timestamps?.[status] ?? order.timestamps?.[lowerKey] ?? order.updatedAt ?? order.createdAt
+  const parsed = value ? new Date(value) : null
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null
+}
+
+function getOrCreateDashboardTrendPoint(
+  trendByDate: Map<string, OwnerDashboardTrendPoint>,
+  date: Date | null | undefined
+) {
+  if (!date || Number.isNaN(date.getTime())) return null
+  const dateKey = formatDailySeriesKey(date)
+  const existing = trendByDate.get(dateKey)
+  if (existing) return existing
+
+  const next = createDashboardTrendPoint(dateKey)
+  trendByDate.set(dateKey, next)
+  return next
+}
+
+function buildOwnerDashboardTrend(params: {
+  placedOrders: Array<Record<string, any>>
+  deliveredOrders: Array<Record<string, any>>
+  cancelledOrders: Array<Record<string, any>>
+  rejectedOrders: Array<Record<string, any>>
+  restaurant: Record<string, any>
+}) {
+  const trendByDate = new Map<string, OwnerDashboardTrendPoint>()
+
+  params.placedOrders.forEach((order) => {
+    const point = getOrCreateDashboardTrendPoint(trendByDate, new Date(order.createdAt))
+    if (!point) return
+    const placedValue = getOrderRestaurantNetSalesForOwner(order)
+    point.orders += 1
+    point.placedValue += placedValue
+    if (["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"].includes(order.status)) {
+      point.activeOrders += 1
+    }
+  })
+
+  params.deliveredOrders.forEach((order) => {
+    const point = getOrCreateDashboardTrendPoint(
+      trendByDate,
+      getOrderStatusTimestamp(order, "Delivered")
+    )
+    if (!point) return
+    const deliveredValue = getOrderRestaurantNetSalesForOwner(order)
+    point.revenue += deliveredValue
+    point.deliveredValue += deliveredValue
+    point.netEarnings += getOrderNetEarnings(order, params.restaurant).netAmount
+  })
+
+  params.cancelledOrders.forEach((order) => {
+    const point = getOrCreateDashboardTrendPoint(
+      trendByDate,
+      getOrderStatusTimestamp(order, "Cancelled")
+    )
+    if (!point) return
+    const failedValue = getOrderRestaurantNetSalesForOwner(order)
+    point.failedOrders += 1
+    point.cancelledOrders += 1
+    point.failedValue += failedValue
+  })
+
+  params.rejectedOrders.forEach((order) => {
+    const point = getOrCreateDashboardTrendPoint(
+      trendByDate,
+      getOrderStatusTimestamp(order, "Rejected")
+    )
+    if (!point) return
+    const failedValue = getOrderRestaurantNetSalesForOwner(order)
+    point.failedOrders += 1
+    point.rejectedOrders += 1
+    point.failedValue += failedValue
+  })
+
+  return [...trendByDate.values()].sort((left, right) => left.date.localeCompare(right.date))
 }
 
 function buildAnalyticsOrderFilter(params: AnalyticsOverviewParams, restaurantId: string) {
@@ -1283,6 +1624,13 @@ function mapNumberRows(rows: Array<{ _id: number; count: number }>, size: number
 }
 
 export async function getAnalyticsOverview(params: AnalyticsOverviewParams) {
+  return ownerAnalyticsOverviewCache.getOrSet(
+    buildOwnerFinanceCacheKey("owner-analytics-overview", params),
+    () => buildAnalyticsOverview(params),
+  )
+}
+
+async function buildAnalyticsOverview(params: AnalyticsOverviewParams) {
   const { restaurant, restaurantId } = await getOwnerFinanceContext(params.ownerId)
 
   const currentRange = getDashboardRange(params)
@@ -1374,20 +1722,12 @@ export async function getAnalyticsOverview(params: AnalyticsOverviewParams) {
               $group: {
                 _id: null,
                 count: { $sum: 1 },
-                revenue: { $sum: { $ifNull: ["$pricing.total", 0] } },
+                revenue: { $sum: ownerNetSalesAggregateExpression() },
                 discountedOrdersCount: {
                   $sum: {
                     $cond: [
                       {
-                        $gt: [
-                          {
-                            $ifNull: [
-                              "$pricing.discountAmount",
-                              { $ifNull: ["$pricing.discount", 0] }
-                            ]
-                          },
-                          0
-                        ]
+                        $gt: [ownerDiscountAggregateExpression(), 0]
                       },
                       1,
                       0
@@ -1398,28 +1738,15 @@ export async function getAnalyticsOverview(params: AnalyticsOverviewParams) {
                   $sum: {
                     $cond: [
                       {
-                        $gt: [
-                          {
-                            $ifNull: [
-                              "$pricing.discountAmount",
-                              { $ifNull: ["$pricing.discount", 0] }
-                            ]
-                          },
-                          0
-                        ]
+                        $gt: [ownerDiscountAggregateExpression(), 0]
                       },
-                      { $ifNull: ["$pricing.total", 0] },
+                      ownerNetSalesAggregateExpression(),
                       0
                     ]
                   }
                 },
                 discountGiven: {
-                  $sum: {
-                    $ifNull: [
-                      "$pricing.discountAmount",
-                      { $ifNull: ["$pricing.discount", 0] }
-                    ]
-                  }
+                  $sum: ownerDiscountAggregateExpression()
                 }
               }
             }
@@ -1430,7 +1757,7 @@ export async function getAnalyticsOverview(params: AnalyticsOverviewParams) {
                 _id: "$customerSnapshot.phone",
                 name: { $first: "$customerSnapshot.fullName" },
                 orders: { $sum: 1 },
-                revenue: { $sum: { $ifNull: ["$pricing.total", 0] } }
+                revenue: { $sum: ownerNetSalesAggregateExpression() }
               }
             },
             { $match: { _id: { $nin: ["", null] } } },
@@ -1475,7 +1802,7 @@ export async function getAnalyticsOverview(params: AnalyticsOverviewParams) {
               $group: {
                 _id: null,
                 count: { $sum: 1 },
-                revenue: { $sum: { $ifNull: ["$pricing.total", 0] } }
+                revenue: { $sum: ownerNetSalesAggregateExpression() }
               }
             }
           ],
@@ -1485,7 +1812,7 @@ export async function getAnalyticsOverview(params: AnalyticsOverviewParams) {
                 _id: "$customerSnapshot.phone",
                 name: { $first: "$customerSnapshot.fullName" },
                 orders: { $sum: 1 },
-                revenue: { $sum: { $ifNull: ["$pricing.total", 0] } }
+                revenue: { $sum: ownerNetSalesAggregateExpression() }
               }
             },
             { $match: { _id: { $nin: ["", null] } } }
@@ -1645,6 +1972,18 @@ export async function getDashboardSummary(params: {
   from?: string
   to?: string
 }) {
+  return ownerDashboardSummaryCache.getOrSet(
+    buildOwnerFinanceCacheKey("owner-dashboard-summary", params),
+    () => buildDashboardSummary(params),
+  )
+}
+
+async function buildDashboardSummary(params: {
+  ownerId: string
+  preset?: DashboardPreset
+  from?: string
+  to?: string
+}) {
   const { restaurant, restaurantId } = await getOwnerFinanceContext(params.ownerId)
   const range = getDashboardRange(params)
   const previousRange = buildPreviousRange(range)
@@ -1660,7 +1999,10 @@ export async function getDashboardSummary(params: {
     previousRejectedOrdersInRange,
     activeOrders,
     previousActiveOrders,
-    latestPayout
+    latestPayout,
+    dashboardFacet,
+    liveOrderRows,
+    recentReviewRows
   ] = await Promise.all([
     OrderModel.find({
       restaurantId,
@@ -1728,15 +2070,72 @@ export async function getDashboardSummary(params: {
     PayoutBatchModel.findOne({ restaurantId, status: "completed" })
       .sort({ createdAt: -1 })
       .select({ createdAt: 1 })
+      .lean(),
+    OrderModel.aggregate([
+      {
+        $match: {
+          restaurantId: toObjectId(restaurantId),
+          createdAt: { $gte: range.start, $lte: range.end },
+          status: { $nin: ["Cancelled", "Rejected"] }
+        }
+      },
+      {
+        $facet: {
+          topItems: [
+            { $unwind: "$itemsSnapshot" },
+            {
+              $group: {
+                _id: {
+                  itemId: "$itemsSnapshot.itemId",
+                  name: { $ifNull: ["$itemsSnapshot.name", "$itemsSnapshot.itemName"] }
+                },
+                quantity: { $sum: { $ifNull: ["$itemsSnapshot.quantity", 0] } },
+                revenue: {
+                  $sum: {
+                    $ifNull: [
+                      "$itemsSnapshot.lineTotal",
+                      {
+                        $multiply: [
+                          { $ifNull: ["$itemsSnapshot.quantity", 0] },
+                          { $ifNull: ["$itemsSnapshot.unitPrice", 0] }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            { $sort: { quantity: -1, revenue: -1 } },
+            { $limit: 6 }
+          ]
+        }
+      }
+    ]),
+    OrderModel.find({
+      restaurantId,
+      status: { $in: ["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"] }
+    })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .select({ orderNumber: 1, status: 1, pricing: 1, customerSnapshot: 1, createdAt: 1 })
+      .lean(),
+    ReviewModel.find({
+      restaurantId,
+      isHidden: { $ne: true },
+      moderationStatus: { $ne: "hidden" }
+    })
+      .sort({ createdAt: -1 })
+      .limit(4)
+      .select({ customerId: 1, rating: 1, comment: 1, createdAt: 1 })
       .lean()
   ])
 
   const filteredRevenue = deliveredOrdersInRange.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const previousRevenue = previousDeliveredOrders.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const netAggregate = summarizeDeliveredOrdersForOwner(
@@ -1754,27 +2153,27 @@ export async function getDashboardSummary(params: {
     (order) => order.status !== "Cancelled" && order.status !== "Rejected"
   )
   const placedOrderValue = placedOrdersInRange.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const previousPlacedOrderValue = previousPlacedOrders.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const cancelledOrderValue = cancelledOrdersInRange.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const previousCancelledOrderValue = previousCancelledOrdersInRange.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const rejectedOrderValue = rejectedOrdersInRange.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const previousRejectedOrderValue = previousRejectedOrdersInRange.reduce(
-    (sum, order) => sum + (order.pricing?.total ?? 0),
+    (sum, order) => sum + getOrderRestaurantNetSalesForOwner(order),
     0
   )
   const totalOrders = placedOrdersInRange.length
@@ -1791,6 +2190,14 @@ export async function getDashboardSummary(params: {
   const nextEstimatedPayoutAt = latestPayout
     ? new Date(new Date(latestPayout.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000)
     : null
+  const dashboardExtras = dashboardFacet[0] ?? { salesTrend: [], topItems: [] }
+  const salesTrend = buildOwnerDashboardTrend({
+    placedOrders: placedOrdersInRange as Array<Record<string, any>>,
+    deliveredOrders: deliveredOrdersInRange as Array<Record<string, any>>,
+    cancelledOrders: cancelledOrdersInRange as Array<Record<string, any>>,
+    rejectedOrders: rejectedOrdersInRange as Array<Record<string, any>>,
+    restaurant
+  })
 
   return {
     restaurant: {
@@ -1832,6 +2239,28 @@ export async function getDashboardSummary(params: {
       previousCompletedOrders,
       uniqueCustomers: customerCount,
       nextEstimatedPayoutAt: nextEstimatedPayoutAt?.toISOString() ?? null
-    }
+    },
+    salesTrend,
+    topItems: ((dashboardExtras.topItems ?? []) as any[]).map((row) => ({
+      id: String(row._id?.itemId ?? row._id?.name ?? ""),
+      name: row._id?.name || "Item",
+      quantity: Number(row.quantity ?? 0),
+      revenue: Number(row.revenue ?? 0)
+    })),
+    liveOrders: (liveOrderRows as Array<Record<string, any>>).map((order) => ({
+      id: String(order._id),
+      orderNumber: order.orderNumber,
+      customerName: order.customerSnapshot?.fullName ?? "Customer",
+      status: order.status,
+      placedAt: order.createdAt?.toISOString?.() ?? new Date(order.createdAt).toISOString(),
+      value: getOrderRestaurantNetSalesForOwner(order)
+    })),
+    recentReviews: (recentReviewRows as Array<Record<string, any>>).map((review) => ({
+      id: String(review._id),
+      customerName: "Customer",
+      rating: Number(review.rating ?? 0),
+      comment: review.comment ?? "",
+      createdAt: review.createdAt?.toISOString?.() ?? new Date(review.createdAt).toISOString()
+    }))
   }
 }

@@ -9,6 +9,7 @@ import {
   getAdminOrderMonitor,
   getAdminOrders,
   getAdminOrdersMonitor,
+  getAdminBkashPaymentAttempts,
   getAdminPayments,
   getAdminPaymentsExport,
   getAdminRiderAssignmentCandidates,
@@ -25,6 +26,7 @@ import {
   patchAdminOrderStatus,
   patchAdminRiderPayrollSettings,
   patchAdminRiderPayrollStatus,
+  postAdminBkashPaymentAttemptReconcile,
   postAdminBulkAssignRiders,
   postAdminRiderPayrollAdjustment,
   postAdminRider,
@@ -77,6 +79,11 @@ adminOrdersMonitorRouter.patch(
 );
 adminOrdersMonitorRouter.get("/orders", getAdminOrders);
 adminOrdersMonitorRouter.get("/payments", getAdminPayments);
+adminOrdersMonitorRouter.get("/payments/bkash-attempts", getAdminBkashPaymentAttempts);
+adminOrdersMonitorRouter.post(
+  "/payments/bkash-attempts/:attemptId/reconcile",
+  postAdminBkashPaymentAttemptReconcile,
+);
 adminOrdersMonitorRouter.get("/payments/export", getAdminPaymentsExport);
 adminOrdersMonitorRouter.post(
   "/payments/reconcile-ledger",

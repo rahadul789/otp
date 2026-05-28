@@ -84,18 +84,14 @@ export function PhoneVerificationPage() {
       if (payoutMethod.pendingAccountNumber) {
         setPayoutMethod((current) => ({
           ...current,
-          type: "bkash",
-          accountName: current.pendingAccountName || current.accountName,
-          accountNumber: current.pendingAccountNumber || current.accountNumber,
-          bankName: "",
-          branchName: "",
-          pendingAccountName: "",
-          pendingAccountNumber: "",
-          verificationSource: null,
-          isVerified: true,
-          verifiedAt: new Date().toISOString(),
+          pendingVerificationStatus: "admin_pending",
+          pendingVerifiedAt: new Date().toISOString(),
+          pendingAdminNote: "",
         }))
-        toast.success("bKash number verified successfully.")
+        toast.success("bKash number verified.", {
+          description:
+            "Admin approval is required before the new number becomes active.",
+        })
       } else {
         setOwnerAccount((current) => ({
           ...current,

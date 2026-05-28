@@ -4,7 +4,6 @@ import { StatusCodes } from "http-status-codes";
 import { AppError } from "../../common/utils/app-error";
 import { slugify } from "../../common/utils/slugify";
 import { hashPassword } from "../auth/auth.utils";
-import { emitSocketEvent } from "../../config/socket";
 import { AdminAuditLogModel, AdminModel } from "./admin.model";
 import {
   OpeningHoursModel,
@@ -14,6 +13,7 @@ import {
 } from "../auth/auth.model";
 import { SupportCaseModel, ReviewModel } from "../owner/experience.model";
 import { LedgerEntryModel, PayoutBatchModel } from "../owner/finance.model";
+import { invalidateOwnerFinanceCaches } from "../owner/finance.service";
 import {
   buildRelatedOrderPayoutEligibilityMatch,
   isRestaurantPayoutEligibleOrder,
@@ -22,9 +22,9 @@ import { getOperationalFinanceSettings } from "../public/content.service";
 import {
   CategoryModel,
   MenuItemModel,
-  NotificationModel,
   OrderModel,
 } from "../owner/operational.model";
+import { notifyOwnerPayoutStatus } from "./payout-owner-notifications";
 
 const LIVE_ORDER_STATUSES = [
   "New",
@@ -33,6 +33,7 @@ const LIVE_ORDER_STATUSES = [
   "ReadyForPickup",
   "PickedUp",
 ];
+const walletLedgerEntryTypes = ["earning", "refund", "adjustment"] as const;
 
 type RestaurantListParams = {
   search?: string;
@@ -843,21 +844,25 @@ async function reconcileRestaurantLedgerStatuses(
       .select({ status: 1, paymentMethod: 1, paymentStatus: 1, timestamps: 1, updatedAt: 1 })
       .lean();
     const orderById = new Map(orders.map((order) => [objectIdString(order._id), order]));
-    const updates = settlementEntries.flatMap((entry) => {
+    const updates: any[] = settlementEntries.flatMap((entry): any[] => {
       const order = orderById.get(objectIdString(entry.orderId));
       const isPayoutEligibleOrder = isRestaurantPayoutEligibleOrder(order);
+      if (!isPayoutEligibleOrder) {
+        return [
+          {
+            deleteOne: {
+              filter: { _id: entry._id },
+            },
+          },
+        ];
+      }
       const deliveredAt = order
         ? getOrderTimestamp(order, "Delivered") ??
           (order.updatedAt ? new Date(order.updatedAt) : now)
         : now;
-      const nextAvailableAt = isPayoutEligibleOrder
-        ? getSettlementAvailableAt(deliveredAt, settlementDelayDays)
-        : null;
-      const nextSettlementStatus: "pending" | "available" = isPayoutEligibleOrder
-        ? nextAvailableAt && nextAvailableAt <= now
-          ? "available"
-          : "pending"
-        : "pending";
+      const nextAvailableAt = getSettlementAvailableAt(deliveredAt, settlementDelayDays);
+      const nextSettlementStatus: "pending" | "available" =
+        nextAvailableAt && nextAvailableAt <= now ? "available" : "pending";
       const currentAvailableAt = entry.availableAt
         ? new Date(entry.availableAt).getTime()
         : null;
@@ -947,12 +952,54 @@ function getOrderDiscountAmount(order: Record<string, any>) {
   );
 }
 
+function getAppliedVoucherDiscountSplit(order: Record<string, any>) {
+  const vouchers = Array.isArray(order.appliedVouchers) ? order.appliedVouchers : [];
+
+  if (!vouchers.length) {
+    return null;
+  }
+
+  return vouchers.reduce(
+    (summary, voucher) => {
+      const discountAmount = numberValue(voucher?.discountAmount);
+      const fundedBy = stringValue(voucher?.fundedBy, "owner").toLowerCase();
+      const ownerSharePercent =
+        fundedBy === "platform"
+          ? 0
+          : fundedBy === "owner"
+            ? 100
+            : Math.min(100, Math.max(0, numberValue(voucher?.ownerSharePercent)));
+      const ownerDiscountCost = numberValue(
+        voucher?.ownerDiscountCost,
+        Math.round(discountAmount * (ownerSharePercent / 100)),
+      );
+      const platformDiscountCost = numberValue(
+        voucher?.platformDiscountCost,
+        Math.max(0, discountAmount - ownerDiscountCost),
+      );
+
+      summary.ownerDiscountCost += ownerDiscountCost;
+      summary.platformDiscountCost += platformDiscountCost;
+      return summary;
+    },
+    { ownerDiscountCost: 0, platformDiscountCost: 0 },
+  );
+}
+
 function getOrderOwnerDiscountCost(order: Record<string, any>) {
-  return numberValue(order.pricing?.ownerDiscountCost, getOrderDiscountAmount(order));
+  const voucherSplit = getAppliedVoucherDiscountSplit(order);
+  return numberValue(
+    order.pricing?.ownerDiscountCost,
+    voucherSplit?.ownerDiscountCost ?? getOrderDiscountAmount(order),
+  );
 }
 
 function getOrderPlatformDiscountCost(order: Record<string, any>) {
-  return numberValue(order.pricing?.platformDiscountCost);
+  const voucherSplit = getAppliedVoucherDiscountSplit(order);
+  return numberValue(
+    order.pricing?.platformDiscountCost,
+    voucherSplit?.platformDiscountCost ?? 0,
+  );
 }
 
 function mapRestaurantOrderHistory(
@@ -1546,10 +1593,17 @@ export async function getAdminRestaurantDetails(
       ? {
           type: stringValue(payoutMethod.type),
           accountName: stringValue(payoutMethod.accountName),
+          accountNumber: stringValue(payoutMethod.accountNumber),
           accountNumberMasked: maskAccountNumber(payoutMethod.accountNumber),
           bankName: stringValue(payoutMethod.bankName),
           branchName: stringValue(payoutMethod.branchName),
           isVerified: payoutMethod.isVerified === true,
+          pendingType: stringValue(payoutMethod.pendingType),
+          pendingAccountName: stringValue(payoutMethod.pendingAccountName),
+          pendingAccountNumber: stringValue(payoutMethod.pendingAccountNumber),
+          pendingVerificationStatus: stringValue(payoutMethod.pendingVerificationStatus),
+          pendingVerifiedAt: serializeDate(payoutMethod.pendingVerifiedAt),
+          pendingAdminNote: stringValue(payoutMethod.pendingAdminNote),
           verifiedAt: serializeDate(payoutMethod.verifiedAt),
         }
       : null,
@@ -2098,6 +2152,7 @@ export async function updateAdminRestaurantCommission(params: {
     ],
   });
   await restaurant.save();
+  invalidateOwnerFinanceCaches(restaurant.id);
 
   await createAdminAuditLog({
     adminId: params.adminId,
@@ -2159,6 +2214,7 @@ export async function updateAdminRestaurantDeliveryPricing(params: {
     deliveryPricingOverride: nextOverride,
   });
   await restaurant.save();
+  invalidateOwnerFinanceCaches(restaurant.id);
 
   await createAdminAuditLog({
     adminId: params.adminId,
@@ -2309,18 +2365,12 @@ export async function reconcileAdminRestaurantFinance(params: {
     else pending += 1;
   }
 
-  await LedgerEntryModel.updateMany(
+  await LedgerEntryModel.deleteMany(
     {
       restaurantId: safeRestaurantId,
       entryType: "earning",
       settlementStatus: { $ne: "paid_out" },
       orderId: { $nin: deliveredOrderIds },
-    },
-    {
-      $set: {
-        settlementStatus: "pending",
-        availableAt: null,
-      },
     },
   );
 
@@ -2340,6 +2390,7 @@ export async function reconcileAdminRestaurantFinance(params: {
       available,
     },
   });
+  invalidateOwnerFinanceCaches(params.restaurantId);
 
   return {
     restaurantId: params.restaurantId,
@@ -2364,6 +2415,7 @@ export async function updateAdminRestaurantPayoutStatus(params: {
   providerTransactionId?: string;
   paymentProofUrl?: string;
   processingNote?: string;
+  notifyOwnerSms?: boolean;
   adminId?: string;
 }) {
   const restaurantId = toObjectIdOrThrow(params.restaurantId, "Restaurant");
@@ -2422,7 +2474,7 @@ export async function updateAdminRestaurantPayoutStatus(params: {
         throw new AppError(
           StatusCodes.BAD_REQUEST,
           "PAYOUT_ALREADY_FAILED",
-          "Failed payouts cannot be moved back. Create a new payout request instead",
+          "Failed payouts cannot be moved back. Create a new payout instead",
         );
       }
 
@@ -2451,8 +2503,18 @@ export async function updateAdminRestaurantPayoutStatus(params: {
           {
             restaurantId,
             payoutBatchId: payoutId,
-            entryType: { $in: ["earning", "refund", "adjustment"] },
-            sourceEntityType: { $nin: ["payout_residual", "payout_residual_reversal"] },
+            entryType: { $in: [...walletLedgerEntryTypes] },
+            $or: [
+              {
+                sourceEntityType: {
+                  $nin: ["payout_residual", "payout_residual_reversal"],
+                },
+              },
+              {
+                sourceEntityType: "payout_residual",
+                sourceEntityId: { $ne: payoutBatch.id },
+              },
+            ],
             settlementStatus: "paid_out",
           },
           {
@@ -2462,15 +2524,13 @@ export async function updateAdminRestaurantPayoutStatus(params: {
           { session },
         );
 
-        await LedgerEntryModel.updateMany(
+        await LedgerEntryModel.deleteMany(
           {
             restaurantId,
             payoutBatchId: payoutId,
             entryType: "adjustment",
             sourceEntityType: "payout_residual",
-          },
-          {
-            $set: { settlementStatus: "paid_out" },
+            sourceEntityId: payoutBatch.id,
           },
           { session },
         );
@@ -2538,6 +2598,8 @@ export async function updateAdminRestaurantPayoutStatus(params: {
     );
   }
 
+  invalidateOwnerFinanceCaches(params.restaurantId);
+
   await createAdminAuditLog({
     adminId: params.adminId,
     entityType: "restaurant",
@@ -2556,28 +2618,20 @@ export async function updateAdminRestaurantPayoutStatus(params: {
   });
 
   if (restaurant.ownerId) {
-    const statusLabel =
-      params.status === "completed"
-        ? "completed"
-        : params.status === "failed"
-          ? "failed"
-          : "processing";
-    const notification = await NotificationModel.create({
-      ownerId: restaurant.ownerId,
-      restaurantId,
-      type: "payout",
-      eventType: `payout.${params.status}`,
-      entityType: "payout",
-      entityId: objectIdString(savedBatch._id),
-      title: "Payout status updated",
-      description: `Your payout request for Tk ${Math.round(numberValue(savedBatch.amount)).toLocaleString()} is now ${statusLabel}.`,
-      actionPath: "/payouts",
-    });
-    emitSocketEvent(
-      `owner:${objectIdString(restaurant.ownerId)}`,
-      "notification.created",
-      notification.toObject(),
-    );
+    await notifyOwnerPayoutStatus({
+      ownerId: objectIdString(restaurant.ownerId),
+      restaurantId: params.restaurantId,
+      payoutId: objectIdString(savedBatch._id),
+      amount: numberValue(savedBatch.amount),
+      status: params.status,
+      restaurantName: stringValue(restaurant.name),
+      reference:
+        stringValue(savedBatch.providerTransactionId) ||
+        stringValue(savedBatch.providerPayoutId) ||
+        stringValue(savedBatch.providerReference) ||
+        stringValue(savedBatch.batchReference),
+      sendSms: params.notifyOwnerSms === true,
+    }).catch(() => undefined);
   }
 
   return {

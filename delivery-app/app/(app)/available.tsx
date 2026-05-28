@@ -15,15 +15,15 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { RiderDelayBanner } from "@/src/components/rider-delay-banner";
+import { RiderAvailabilityCard } from "@/src/components/rider-availability-card";
 import { RiderLocationAccessCard } from "@/src/components/rider-location-access-card";
 import { useRiderDeliveryThresholdsQuery, useRiderOrdersQuery } from "@/src/hooks/use-rider-api";
 import { useDeliveryCopy } from "@/src/lib/copy";
 import { formatDateTime, formatRelativeTime } from "@/src/lib/date-time";
 import { getRiderDelayPriority, getRiderDelaySignal } from "@/src/lib/rider-delay-display";
-import { getOrderStatusBadge, getOrderTimingInfo } from "@/src/lib/rider-order-display";
+import { getOrderStatusBadge, getOrderTimingInfo, getPaymentMethodBadge } from "@/src/lib/rider-order-display";
 import { useRiderAuthStore } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
-import { RiderScreenHeader } from "@/src/components/rider-screen-header";
 import { useNetworkStatus } from "@/src/hooks/use-network-status";
 
 export default function AvailableOrdersScreen() {
@@ -33,12 +33,6 @@ export default function AvailableOrdersScreen() {
   const { copy } = useDeliveryCopy();
   const isNetworkOnline = useNetworkStatus();
   const isAssignmentsPaused = rider?.isAvailableForAssignments === false;
-  const statusTone = !isNetworkOnline ? "offline" : isAssignmentsPaused ? "paused" : "online";
-  const statusLabel = !isNetworkOnline
-    ? copy.common.offline
-    : isAssignmentsPaused
-      ? "Paused"
-      : copy.common.online;
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [nowMs, setNowMs] = useState(Date.now());
@@ -145,12 +139,7 @@ export default function AvailableOrdersScreen() {
         contentContainerStyle={styles.listContent}
         ListHeaderComponent={
           <View style={styles.headerWrap}>
-            <RiderScreenHeader
-              icon="storefront-outline"
-              title={copy.available.title}
-              statusTone={statusTone}
-              statusLabel={statusLabel}
-            />
+            <RiderAvailabilityCard />
             <RiderLocationAccessCard />
 
             <View style={styles.searchShell}>
@@ -208,6 +197,7 @@ export default function AvailableOrdersScreen() {
         }
         renderItem={({ item }) => {
           const statusBadge = getOrderStatusBadge(item.status);
+          const paymentBadge = getPaymentMethodBadge(item.paymentMethod);
           const timingInfo = getOrderTimingInfo(item);
           const delaySignal = getRiderDelaySignal(item, deliveryThresholds, nowMs);
           return (
@@ -227,6 +217,20 @@ export default function AvailableOrdersScreen() {
                     {statusBadge.label}
                   </Text>
                 </View>
+              </View>
+              <View
+                style={[
+                  styles.paymentBadge,
+                  {
+                    backgroundColor: paymentBadge.backgroundColor,
+                    borderColor: paymentBadge.borderColor,
+                  },
+                ]}
+              >
+                <Ionicons name={paymentBadge.icon} size={13} color={paymentBadge.color} />
+                <Text style={[styles.paymentBadgeText, { color: paymentBadge.color }]}>
+                  {paymentBadge.label}
+                </Text>
               </View>
               <Text style={styles.name}>{item.restaurant?.name ?? copy.common.restaurant}</Text>
               <Text style={styles.metaStrong}>{item.customer?.name ?? copy.common.customer}</Text>
@@ -301,6 +305,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   readyChipText: { fontSize: 12, fontWeight: "800" },
+  paymentBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  paymentBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+  },
   name: { fontSize: 15, fontWeight: "700", color: palette.foreground },
   metaStrong: { fontSize: 13, fontWeight: "700", color: palette.foreground },
   meta: { fontSize: 13, color: palette.mutedForeground },

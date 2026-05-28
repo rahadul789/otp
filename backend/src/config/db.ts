@@ -9,26 +9,28 @@ export async function connectDatabase() {
   mongoose.set("strictQuery", true)
 
   await mongoose.connect(env.MONGODB_URI, {
-    maxPoolSize: 20,
-    minPoolSize: 5,
+    maxPoolSize: env.MONGODB_MAX_POOL_SIZE,
+    minPoolSize: Math.min(env.MONGODB_MIN_POOL_SIZE, env.MONGODB_MAX_POOL_SIZE),
     serverSelectionTimeoutMS: 10000
   })
 
-  await BkashSandboxPaymentSessionModel.updateMany(
-    {
-      $or: [{ sandboxPaymentId: "" }, { otpCodeHash: "" }]
-    },
-    {
-      $unset: {
-        sandboxPaymentId: 1,
-        otpCodeHash: 1
+  if (env.DB_STARTUP_MAINTENANCE_ENABLED) {
+    await BkashSandboxPaymentSessionModel.updateMany(
+      {
+        $or: [{ sandboxPaymentId: "" }, { otpCodeHash: "" }]
+      },
+      {
+        $unset: {
+          sandboxPaymentId: 1,
+          otpCodeHash: 1
+        }
       }
-    }
-  )
+    )
 
-  await BkashSandboxPaymentSessionModel.syncIndexes()
-  await OtpSecurityEventModel.syncIndexes()
-  await OtpAbuseBlockModel.syncIndexes()
+    await BkashSandboxPaymentSessionModel.syncIndexes()
+    await OtpSecurityEventModel.syncIndexes()
+    await OtpAbuseBlockModel.syncIndexes()
+  }
 
   logger.info("MongoDB connected successfully")
 }

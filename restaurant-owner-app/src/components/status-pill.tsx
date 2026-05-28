@@ -46,9 +46,9 @@ export function StatusPill({
 const styles = StyleSheet.create({
   pill: {
     alignSelf: "flex-start",
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
   },
   text: {
     fontSize: 11,

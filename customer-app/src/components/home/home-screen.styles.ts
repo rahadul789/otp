@@ -10,10 +10,10 @@ export const styles = StyleSheet.create({
     overflow: "hidden",
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 18,
+    paddingBottom: 12,
     backgroundColor: palette.heroBackground,
-    borderBottomLeftRadius: 34,
-    borderBottomRightRadius: 34,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
     gap: 10,
   },
   heroOrbPrimary: {
@@ -286,6 +286,16 @@ export const styles = StyleSheet.create({
     padding: 18,
     gap: 12,
   },
+  homeModalCard: {
+    width: "100%",
+    minHeight: 420,
+    maxHeight: "84%",
+    borderRadius: 18,
+    backgroundColor: palette.surface,
+    padding: 14,
+    gap: 12,
+    overflow: "hidden",
+  },
   campaignModalClose: {
     position: "absolute",
     top: 12,
@@ -303,6 +313,16 @@ export const styles = StyleSheet.create({
     height: 160,
     borderRadius: 20,
     backgroundColor: "#FFF1F6",
+  },
+  homeModalImage: {
+    width: "100%",
+    minHeight: 260,
+    flex: 1,
+    borderRadius: 10,
+    backgroundColor: "#FFF1F6",
+  },
+  homeModalImageOnly: {
+    minHeight: 340,
   },
   campaignModalTitle: {
     fontSize: 22,

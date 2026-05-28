@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { RestaurantListSkeleton } from "@/src/components/loading-skeleton";
 import { RestaurantHeroCard } from "@/src/components/restaurant-hero-card";
 import { Screen } from "@/src/components/screen";
 import {
@@ -121,8 +122,7 @@ export default function FavoriteRestaurantsScreen() {
         ListEmptyComponent={
           isInitialLoading ? (
             <View style={styles.feedbackWrap}>
-              <ActivityIndicator size="small" color={palette.secondary} />
-              <Text style={styles.loadingText}>Loading your favorites...</Text>
+              <RestaurantListSkeleton count={3} />
             </View>
           ) : (
             <View style={styles.feedbackWrap}>

@@ -529,10 +529,12 @@ export function FactChip({
   icon,
   label,
   value,
+  onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   value: string;
+  onPress?: () => void;
 }) {
   const tone =
     label === "Rating"
@@ -559,8 +561,8 @@ export function FactChip({
               icon: palette.sky,
             };
 
-  return (
-    <View style={[styles.factChip, { backgroundColor: tone.card }]}>
+  const content = (
+    <>
       <View style={[styles.factChipIconWrap, { backgroundColor: tone.iconWrap }]}>
         <Ionicons name={icon} size={14} color={tone.icon} />
       </View>
@@ -570,6 +572,31 @@ export function FactChip({
           {value}
         </Text>
       </View>
+      {onPress ? (
+        <Ionicons name="chevron-forward" size={14} color={palette.mutedForeground} />
+      ) : null}
+    </>
+  );
+
+  if (onPress) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.factChip,
+          { backgroundColor: tone.card },
+          pressed ? styles.factChipPressed : null,
+        ]}
+      >
+        {content}
+      </Pressable>
+    );
+  }
+
+  return (
+    <View style={[styles.factChip, { backgroundColor: tone.card }]}>
+      {content}
     </View>
   );
 }

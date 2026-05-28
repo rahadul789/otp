@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -22,7 +22,13 @@ import {
   useOwnerOrdersQuery,
   useOwnerOrderTransitionMutation,
 } from "@/src/hooks/use-owner-api";
-import { formatCurrency, formatTime, getOrderPlacedAt } from "@/src/lib/format";
+import { useNow } from "@/src/hooks/use-now";
+import {
+  formatCurrency,
+  formatTime,
+  getOrderPlacedAt,
+  getOwnerOrderNetSales,
+} from "@/src/lib/format";
 import {
   canOwnerCancelOrder,
   formatAutoCancelCountdown,
@@ -44,26 +50,29 @@ const filters: { label: string; status: OwnerOrderStatus | "" }[] = [
   { label: "Done", status: "Delivered" },
   { label: "Cancelled", status: "Cancelled" },
 ];
+const OWNER_ORDER_PAGE_STEP = 20;
 
 export default function OrdersScreen() {
   const router = useRouter();
   const [selectedStatus, setSelectedStatus] = useState<OwnerOrderStatus | "">("");
   const [pendingAction, setPendingAction] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [now, setNow] = useState(Date.now());
+  const [orderPageSize, setOrderPageSize] = useState(OWNER_ORDER_PAGE_STEP);
+  const now = useNow();
   const isHistoryStatus = isOrderHistoryStatus(selectedStatus);
   const ordersQuery = useOwnerOrdersQuery(true, {
     tab: isHistoryStatus ? "history" : "live",
     status: selectedStatus || undefined,
-    pageSize: 80,
+    pageSize: isHistoryStatus ? orderPageSize : 80,
   });
   const transitionMutation = useOwnerOrderTransitionMutation();
   const orders = ordersQuery.data?.items ?? [];
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const canLoadMoreOrders = Boolean(
+    isHistoryStatus &&
+      ordersQuery.data?.total &&
+      orders.length < ordersQuery.data.total &&
+      !ordersQuery.isFetching,
+  );
 
   async function transitionOrder(
     order: OwnerOrder,
@@ -164,8 +173,7 @@ export default function OrdersScreen() {
             <Text style={styles.orderNumber}>{item.orderNumber}</Text>
             <Text style={styles.orderMeta}>
               {formatTime(getOrderPlacedAt(item)) || "Just now"} -{" "}
-              {item.itemsSnapshot?.length ?? 0} items -{" "}
-              {item.paymentMethod || "Payment"}
+              {item.itemsSnapshot?.length ?? 0} items
             </Text>
           </View>
           <View style={styles.orderStatusStack}>
@@ -208,8 +216,15 @@ export default function OrdersScreen() {
 
         <Text style={styles.customerText}>
           {item.customerSnapshot?.fullName || "Customer"} -{" "}
-          {formatCurrency(item.pricing?.total)}
+          {formatCurrency(getOwnerOrderNetSales(item))}
         </Text>
+
+        {item.appliedVouchers?.length ? (
+          <View style={styles.voucherAppliedPill}>
+            <Ionicons name="pricetag-outline" size={13} color={palette.warning} />
+            <Text style={styles.voucherAppliedText}>Voucher applied</Text>
+          </View>
+        ) : null}
 
         {item.itemsSnapshot?.slice(0, 3).map((orderItem, index) => (
           <Text key={`${orderItem.itemId ?? orderItem.name}-${index}`} style={styles.itemText}>
@@ -329,7 +344,10 @@ export default function OrdersScreen() {
             <Pressable
               key={filter.label}
               style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
-              onPress={() => setSelectedStatus(filter.status)}
+              onPress={() => {
+                setSelectedStatus(filter.status);
+                setOrderPageSize(OWNER_ORDER_PAGE_STEP);
+              }}
             >
               <Text
                 style={[
@@ -372,6 +390,26 @@ export default function OrdersScreen() {
               </Text>
             </View>
           )
+        }
+        ListFooterComponent={
+          isHistoryStatus && orders.length ? (
+            <View style={styles.footerWrap}>
+              {ordersQuery.isFetching ? (
+                <ActivityIndicator size="small" color={palette.primary} />
+              ) : canLoadMoreOrders ? (
+                <Pressable
+                  accessibilityRole="button"
+                  style={styles.loadMoreButton}
+                  onPress={() => setOrderPageSize((current) => current + OWNER_ORDER_PAGE_STEP)}
+                >
+                  <Text style={styles.loadMoreText}>Show more history</Text>
+                  <Ionicons name="chevron-down" size={16} color={palette.foreground} />
+                </Pressable>
+              ) : (
+                <Text style={styles.endOfListText}>All matching history is loaded.</Text>
+              )}
+            </View>
+          ) : null
         }
       />
     </Screen>
@@ -477,6 +515,22 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: palette.mutedForeground,
   },
+  voucherAppliedPill: {
+    alignSelf: "flex-start",
+    minHeight: 26,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    backgroundColor: palette.warningSoft,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  voucherAppliedText: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "900",
+    color: palette.warning,
+  },
   actions: {
     flexDirection: "row",
     gap: 8,
@@ -570,5 +624,35 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     color: palette.mutedForeground,
     fontWeight: "600",
+  },
+  footerWrap: {
+    minHeight: 72,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 8,
+  },
+  loadMoreButton: {
+    minHeight: 46,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    backgroundColor: palette.surface,
+    borderWidth: 1,
+    borderColor: palette.border,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  loadMoreText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  endOfListText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "700",
+    color: palette.mutedForeground,
   },
 });

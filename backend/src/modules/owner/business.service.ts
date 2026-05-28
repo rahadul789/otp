@@ -5,7 +5,12 @@ import type { SortOrder } from "mongoose"
 
 import { env } from "../../config/env"
 import { emitSocketEvent } from "../../config/socket"
-import { createAdminOperationalAlert } from "../admin/admin-alert.service"
+import { enqueueBackgroundTask } from "../../common/utils/background-task"
+import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout"
+import {
+  createAdminOperationalAlert,
+  resolveAdminOperationalAlertByDedupeKey
+} from "../admin/admin-alert.service"
 import { AdminAuditLogModel } from "../admin/admin.model"
 import { AppError } from "../../common/utils/app-error"
 import {
@@ -178,13 +183,35 @@ export async function getStoreSettings(ownerId: string) {
     typeof onboardingDraft?.basicInfo?.preparationTimeMinutes === "number"
       ? onboardingDraft.basicInfo.preparationTimeMinutes
       : null
+  const resolvedPreparationTime = draftPreparationTime ?? 20
 
   if (
     (restaurant.preparationTimeMinutes === null ||
-      restaurant.preparationTimeMinutes === undefined) &&
-    draftPreparationTime !== null
+      restaurant.preparationTimeMinutes === undefined)
   ) {
-    restaurant.preparationTimeMinutes = draftPreparationTime
+    restaurant.preparationTimeMinutes = resolvedPreparationTime
+    await restaurant.save()
+  }
+
+  const currentSettings =
+    (restaurant.settings as {
+      notifications?: Record<string, boolean>
+      orderSettings?: { autoAcceptOrders?: boolean }
+    } | undefined) ?? {}
+  if (currentSettings.orderSettings?.autoAcceptOrders === true) {
+    restaurant.settings = {
+      ...currentSettings,
+      notifications: {
+        newOrder: true,
+        cancellation: true,
+        payouts: true,
+        support: true
+      },
+      orderSettings: {
+        ...(currentSettings.orderSettings ?? {}),
+        autoAcceptOrders: false
+      }
+    }
     await restaurant.save()
   }
 
@@ -272,22 +299,13 @@ export async function updateStoreSettings(params: {
   }
 
   if (params.notifications !== undefined) {
-    const currentNotifications =
-      ((restaurant.settings as { notifications?: Record<string, boolean> } | undefined)
-        ?.notifications ?? {
+    restaurant.settings = {
+      ...(restaurant.settings ?? {}),
+      notifications: {
         newOrder: true,
         cancellation: true,
         payouts: true,
         support: true
-      })
-
-    restaurant.settings = {
-      ...(restaurant.settings ?? {}),
-      notifications: {
-        newOrder: params.notifications.newOrder ?? currentNotifications.newOrder ?? true,
-        cancellation: params.notifications.cancellation ?? currentNotifications.cancellation ?? true,
-        payouts: params.notifications.payouts ?? currentNotifications.payouts ?? true,
-        support: params.notifications.support ?? currentNotifications.support ?? true
       }
     }
   }
@@ -301,15 +319,34 @@ export async function updateStoreSettings(params: {
 
     restaurant.settings = {
       notifications: {
-        newOrder: currentSettings.notifications?.newOrder ?? true,
-        cancellation: currentSettings.notifications?.cancellation ?? true,
-        payouts: currentSettings.notifications?.payouts ?? true,
-        support: currentSettings.notifications?.support ?? true
+        newOrder: true,
+        cancellation: true,
+        payouts: true,
+        support: true
       },
       orderSettings: {
         ...(currentSettings.orderSettings ?? {}),
-        autoAcceptOrders: params.autoAcceptOrders
+        autoAcceptOrders: false
       }
+    }
+  }
+
+  const nextSettings =
+    (restaurant.settings as {
+      notifications?: Record<string, boolean>
+      orderSettings?: { autoAcceptOrders?: boolean }
+    } | undefined) ?? {}
+  restaurant.settings = {
+    ...nextSettings,
+    notifications: {
+      newOrder: true,
+      cancellation: true,
+      payouts: true,
+      support: true
+    },
+    orderSettings: {
+      ...(nextSettings.orderSettings ?? {}),
+      autoAcceptOrders: false
     }
   }
 
@@ -383,36 +420,35 @@ export async function updateRestaurantStatus(params: {
   const activeOrders = await OrderModel.find({
     restaurantId,
     status: { $in: ["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"] }
-  }).select("customerId orderNumber")
+  }).select("customerId orderNumber status")
 
-  const notifiedCustomerIds = new Set<string>()
-
-  await Promise.all(
-    activeOrders.map(async (order) => {
-      const customerId = String(order.customerId)
-
-      if (notifiedCustomerIds.has(customerId)) {
-        return
-      }
-
-      notifiedCustomerIds.add(customerId)
-
-      await sendPushToCustomer({
-        customerId,
-        payload: {
-          title: params.isOnline ? "✅ Restaurant is online" : "⏸️ Restaurant is offline",
-          body: params.isOnline
-            ? `${restaurant.name} is back online. Your order updates will continue.`
-            : `${restaurant.name} is offline for now. We will keep you updated.`,
-          data: {
-            type: "restaurant_status",
-            restaurantId,
-            path: "/(tabs)/orders"
-          }
-        }
+  const offlineActiveOrdersDedupeKey = `restaurant:${restaurantId}:offline_active_orders`
+  if (!params.isOnline && activeOrders.length > 0) {
+    enqueueBackgroundTask("admin.restaurant_offline_active_orders_alert", async () => {
+      await createAdminOperationalAlert({
+        alertType: "restaurant_offline_active_orders",
+        severity: "critical",
+        title: `${restaurant.name} went offline with active orders`,
+        description: `${activeOrders.length} live order${activeOrders.length === 1 ? "" : "s"} may need admin follow-up.`,
+        source: "Restaurants",
+        entityType: "restaurant",
+        entityId: restaurantId,
+        path: `/restaurants?restaurantId=${restaurantId}`,
+        iconKey: "store",
+        dedupeKey: offlineActiveOrdersDedupeKey,
+        metadata: {
+          restaurantId,
+          restaurantName: restaurant.name,
+          activeOrderCount: activeOrders.length,
+          orderNumbers: activeOrders.map((order) => order.orderNumber).slice(0, 20),
+        },
       })
     })
-  )
+  } else if (params.isOnline) {
+    enqueueBackgroundTask("admin.restaurant_offline_active_orders_resolve", async () => {
+      await resolveAdminOperationalAlertByDedupeKey(offlineActiveOrdersDedupeKey)
+    })
+  }
 
   return restaurant
 }
@@ -696,18 +732,20 @@ export async function replyToReview(params: {
   })
 
   if (review.customerId && review.orderId) {
-    await sendPushToCustomer({
-      customerId: review.customerId,
-      payload: {
-        title: "💬 Restaurant replied",
-        body: "A restaurant replied to your review.",
-        data: {
-          type: "review_reply",
-          orderId: String(review.orderId),
-          reviewId: review.id,
-          path: `/orders/${String(review.orderId)}/tracking`
+    enqueueBackgroundTask("owner.review_reply.customer_push", async () => {
+      await sendPushToCustomer({
+        customerId: review.customerId,
+        payload: {
+          title: "💬 Restaurant replied",
+          body: "A restaurant replied to your review.",
+          data: {
+            type: "review_reply",
+            orderId: String(review.orderId),
+            reviewId: review.id,
+            path: `/orders/${String(review.orderId)}/tracking`
+          }
         }
-      }
+      })
     })
   }
 
@@ -880,15 +918,16 @@ export async function deleteCloudinaryAsset(params: {
     api_key: env.CLOUDINARY_API_KEY,
     signature,
   })
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `https://api.cloudinary.com/v1_1/${env.CLOUDINARY_CLOUD_NAME}/${resourceType}/destroy`,
     {
       method: "POST",
       body,
+      timeoutMs: 5_000,
     }
-  )
+  ).catch(() => null)
 
-  if (!response.ok) {
+  if (!response?.ok) {
     return { deleted: false }
   }
 

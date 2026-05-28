@@ -1,20 +1,19 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   Image,
-  Modal,
   Pressable,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
 
+import { AppBottomSheet } from "@/src/components/app-bottom-sheet";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
+import { RestaurantListSkeleton } from "@/src/components/loading-skeleton";
 import { styles } from "@/src/components/browse/browse-screen.styles";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import { RestaurantHeroCard } from "@/src/components/restaurant-hero-card";
@@ -32,7 +31,7 @@ import { useIsOnline } from "@/src/hooks/use-network-status";
 import { openLocationPermissionSettings } from "@/src/lib/location-permissions";
 import { useLocationStore } from "@/src/store/location-store";
 import { palette } from "@/src/theme/palette";
-import type { DiscoverableRestaurant } from "@/src/types/restaurant";
+import type { CustomerVoucherOffer, DiscoverableRestaurant } from "@/src/types/restaurant";
 
 type BrowseFilter = "all" | "open" | "offers" | "featured";
 type BrowseSort = "nearest" | "fastest" | "topRated";
@@ -48,6 +47,41 @@ function restaurantSubtitle(restaurant: DiscoverableRestaurant) {
 
 function restaurantCardSubtitle(restaurant: DiscoverableRestaurant) {
   return restaurant.cuisineTypes?.slice(0, 2).join(" • ") ?? "";
+}
+
+function getOfferLabel(offer: CustomerVoucherOffer) {
+  if (offer.type === "free_delivery") {
+    return offer.code ? `${offer.code} - Free delivery` : "Free delivery";
+  }
+
+  if (offer.type === "percentage" && typeof offer.discountValue === "number") {
+    return offer.code ? `${offer.code} - ${offer.discountValue}% off` : `${offer.discountValue}% off`;
+  }
+
+  if (typeof offer.discountValue === "number") {
+    return offer.code ? `${offer.code} - Tk ${offer.discountValue} off` : `Tk ${offer.discountValue} off`;
+  }
+
+  return offer.code ? `${offer.code} - Offer available` : "Offer available";
+}
+
+function buildRestaurantOfferMap(offers: CustomerVoucherOffer[]) {
+  const next = new Map<string, string>();
+
+  for (const offer of offers) {
+    const restaurantIds = [
+      ...(offer.restaurantIds ?? []),
+      offer.restaurantId ?? "",
+    ].filter(Boolean);
+
+    for (const restaurantId of restaurantIds) {
+      if (!next.has(restaurantId)) {
+        next.set(restaurantId, getOfferLabel(offer));
+      }
+    }
+  }
+
+  return next;
 }
 
 function formatVisitedTime(value?: string) {
@@ -97,6 +131,9 @@ export default function BrowseScreen() {
   const addRecentVisitedRestaurant = useBrowseHistoryStore(
     (state) => state.addRecentVisitedRestaurant
   );
+  const pruneRecentVisitedRestaurants = useBrowseHistoryStore(
+    (state) => state.pruneRecentVisitedRestaurants
+  );
   const selectedLocation = useLocationStore((state) => state.selectedLocation);
   const isOnline = useIsOnline();
   const permissionGranted = useLocationStore((state) => state.permissionGranted);
@@ -130,27 +167,48 @@ export default function BrowseScreen() {
     [homeDiscoveryQuery.data?.restaurantsWithOffers]
   );
   const offerLabelByRestaurantId = useMemo(
-    () =>
-      new Map(
-        (homeDiscoveryQuery.data?.activeOffers ?? [])
-          .filter((offer) => offer.restaurantId)
-          .map((offer) => [
-            offer.restaurantId as string,
-            offer.type === "free_delivery"
-              ? "Free delivery"
-              : offer.type === "percentage" && typeof offer.discountValue === "number"
-                ? `${offer.discountValue}% off`
-                : typeof offer.discountValue === "number"
-                  ? `Tk ${offer.discountValue} off`
-                  : "Offer available",
-          ])
-      ),
+    () => buildRestaurantOfferMap(homeDiscoveryQuery.data?.activeOffers ?? []),
     [homeDiscoveryQuery.data?.activeOffers]
   );
   const favoriteRestaurantIdsSet = useMemo(
     () => new Set(favoriteRestaurantIdsQuery.data ?? []),
     [favoriteRestaurantIdsQuery.data]
   );
+  const currentRestaurantIds = useMemo(() => {
+    const ids = new Set(restaurants.map((restaurant) => restaurant._id));
+
+    for (const restaurant of homeDiscoveryQuery.data?.featuredRestaurants ?? []) {
+      ids.add(restaurant._id);
+    }
+
+    for (const restaurant of homeDiscoveryQuery.data?.restaurantsWithOffers ?? []) {
+      ids.add(restaurant._id);
+    }
+
+    return ids;
+  }, [
+    homeDiscoveryQuery.data?.featuredRestaurants,
+    homeDiscoveryQuery.data?.restaurantsWithOffers,
+    restaurants,
+  ]);
+  const visibleRecentVisitedRestaurants = useMemo(
+    () =>
+      recentVisitedRestaurants.filter((restaurant) =>
+        currentRestaurantIds.has(restaurant.id)
+      ),
+    [currentRestaurantIds, recentVisitedRestaurants]
+  );
+  useEffect(() => {
+    if (!nearbyRestaurantsQuery.isSuccess || currentRestaurantIds.size === 0) {
+      return;
+    }
+
+    pruneRecentVisitedRestaurants(currentRestaurantIds);
+  }, [
+    currentRestaurantIds,
+    nearbyRestaurantsQuery.isSuccess,
+    pruneRecentVisitedRestaurants,
+  ]);
   const favoritePendingRestaurantId = toggleFavoriteMutation.isPending
     ? toggleFavoriteMutation.variables
     : null;
@@ -412,7 +470,7 @@ export default function BrowseScreen() {
                   </View>
                 </View>
               ) : null}
-              {!searchQuery.trim() && recentVisitedRestaurants.length > 0 ? (
+              {!searchQuery.trim() && visibleRecentVisitedRestaurants.length > 0 ? (
                 <View style={styles.historyBlock}>
                   <Text style={styles.historyLabel}>Recently visited</Text>
                   <ScrollView
@@ -420,7 +478,7 @@ export default function BrowseScreen() {
                     showsHorizontalScrollIndicator={false}
                     contentContainerStyle={styles.recentVisitedRow}
                   >
-                    {recentVisitedRestaurants.map((restaurant) => (
+                    {visibleRecentVisitedRestaurants.map((restaurant) => (
                       <View
                         key={restaurant.id}
                         style={styles.recentVisitedCardWrap}
@@ -524,10 +582,7 @@ export default function BrowseScreen() {
               onPress={handleMissingLocationPress}
             />
           ) : nearbyRestaurantsQuery.isLoading ? (
-            <View style={styles.feedbackCard}>
-              <ActivityIndicator size="small" color={palette.primary} />
-              <Text style={styles.feedbackText}>Loading restaurants...</Text>
-            </View>
+            <RestaurantListSkeleton count={3} />
           ) : nearbyRestaurantsQuery.isError ? (
             isOnline ? (
               <EmptyStateCard
@@ -559,198 +614,225 @@ export default function BrowseScreen() {
         }
       />
 
-      <Modal visible={isFilterOpen} transparent animationType="fade" onRequestClose={() => setIsFilterOpen(false)}>
-        <View style={styles.filterModalBackdrop}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setIsFilterOpen(false)} />
-          <View style={styles.filterModalCard}>
-            <View style={styles.filterAccentOrb} />
-            <View style={styles.filterModalHeader}>
-              <View>
-                <View style={styles.filterPill}>
-                  <Ionicons name="sparkles" size={12} color={palette.primary} />
-                  <Text style={styles.filterPillText}>Browse filters</Text>
-                </View>
-                <Text style={styles.filterModalTitle}>Filters</Text>
-                <Text style={styles.filterModalSubtitle}>Choose what you want to see</Text>
-              </View>
-              <Pressable style={styles.filterModalClose} onPress={() => setIsFilterOpen(false)}>
-                <Ionicons name="close" size={18} color={palette.foreground} />
-              </Pressable>
-            </View>
+      <AppBottomSheet
+        visible={isFilterOpen}
+        onClose={() => setIsFilterOpen(false)}
+        title="Filters"
+        subtitle="Choose what you want to see"
+        leadingIcon="options-outline"
+        snapPoints={[0.7, 0.92]}
+        initialSnapPoint={0.7}
+        footer={
+          <View style={styles.filterFooter}>
+            <Pressable
+              style={styles.filterResetButton}
+              onPress={() => {
+                setDraftFilter("all");
+                setDraftSortBy("nearest");
+                setDraftMinimumRating(0);
+                setDraftMaximumLowestPrice(0);
+              }}
+            >
+              <Ionicons name="refresh-outline" size={15} color={palette.foreground} />
+              <Text style={styles.filterResetText}>Reset</Text>
+            </Pressable>
+            <Pressable
+              style={styles.filterApplyButton}
+              onPress={() => {
+                setActiveFilter(draftFilter);
+                setSortBy(draftSortBy);
+                setMinimumRating(draftMinimumRating);
+                setMaximumLowestPrice(draftMaximumLowestPrice);
+                setIsFilterOpen(false);
+              }}
+            >
+              <Text style={styles.filterApplyText}>Apply filters</Text>
+              <Ionicons name="checkmark" size={16} color={palette.surface} />
+            </Pressable>
+          </View>
+        }
+      >
+        <View style={styles.filterPill}>
+          <Ionicons name="sparkles" size={12} color={palette.primary} />
+          <Text style={styles.filterPillText}>Browse filters</Text>
+        </View>
 
-            <View style={styles.filterSection}>
-              <View style={styles.filterSectionHeader}>
-                <View style={styles.filterSectionIconWrap}>
-                  <Ionicons name="grid-outline" size={14} color="#A14A74" />
-                </View>
-                <Text style={styles.filterSectionLabel}>Show</Text>
-              </View>
-              <View style={styles.filterOptionsRow}>
-                {[
-                  { key: "all", label: "All" },
-                  { key: "open", label: "Open now" },
-                  { key: "offers", label: "Offers" },
-                  { key: "featured", label: "Featured" },
-                ].map((filter) => {
-                  const isActive = draftFilter === filter.key;
-                  return (
-                    <Pressable
-                      key={filter.key}
-                      style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
-                      onPress={() => setDraftFilter(filter.key as BrowseFilter)}
-                    >
-                      <Text
-                        style={[
-                          styles.filterChipText,
-                          isActive ? styles.filterChipTextActive : null,
-                        ]}
-                      >
-                        {filter.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={styles.filterSection}>
-              <View style={styles.filterSectionHeader}>
-                <View style={styles.filterSectionIconWrap}>
-                  <Ionicons name="swap-vertical-outline" size={14} color="#A14A74" />
-                </View>
-                <Text style={styles.filterSectionLabel}>Sort by</Text>
-              </View>
-              <View style={styles.filterOptionsRow}>
-                {[
-                  { key: "nearest", label: "Nearest" },
-                  { key: "fastest", label: "Fastest" },
-                  { key: "topRated", label: "Top rated" },
-                ].map((option) => {
-                  const isActive = draftSortBy === option.key;
-                  return (
-                    <Pressable
-                      key={option.key}
-                      style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
-                      onPress={() => setDraftSortBy(option.key as BrowseSort)}
-                    >
-                      <Text
-                        style={[
-                          styles.filterChipText,
-                          isActive ? styles.filterChipTextActive : null,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={styles.filterSection}>
-              <View style={styles.filterSectionHeader}>
-                <View style={styles.filterSectionIconWrap}>
-                  <Ionicons name="star-outline" size={14} color="#A14A74" />
-                </View>
-                <Text style={styles.filterSectionLabel}>Ratings</Text>
-              </View>
-              <View style={styles.filterOptionsRow}>
-                {[
-                  { key: 0, label: "Any" },
-                  { key: 4, label: "4.0+" },
-                  { key: 4.5, label: "4.5+" },
-                ].map((option) => {
-                  const isActive = draftMinimumRating === option.key;
-                  return (
-                    <Pressable
-                      key={option.label}
-                      style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
-                      onPress={() => setDraftMinimumRating(option.key as BrowseRating)}
-                    >
-                      <Text
-                        style={[
-                          styles.filterChipText,
-                          isActive ? styles.filterChipTextActive : null,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={styles.filterSection}>
-              <View style={styles.filterSectionHeader}>
-                <View style={styles.filterSectionIconWrap}>
-                  <Ionicons name="cash-outline" size={14} color="#A14A74" />
-                </View>
-                <Text style={styles.filterSectionLabel}>Starting price</Text>
-              </View>
-              <View style={styles.filterOptionsRow}>
-                {[
-                  { key: 0, label: "Any" },
-                  { key: 200, label: "Up to Tk 200" },
-                  { key: 400, label: "Up to Tk 400" },
-                  { key: 700, label: "Up to Tk 700" },
-                ].map((option) => {
-                  const isActive = draftMaximumLowestPrice === option.key;
-                  return (
-                    <Pressable
-                      key={option.label}
-                      style={[
-                        styles.filterChip,
-                        isActive ? styles.filterChipActive : null,
-                      ]}
-                      onPress={() =>
-                        setDraftMaximumLowestPrice(
-                          option.key as BrowseLowestPrice
-                        )
-                      }
-                    >
-                      <Text
-                        style={[
-                          styles.filterChipText,
-                          isActive ? styles.filterChipTextActive : null,
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={styles.filterFooter}>
-              <Pressable
-                style={styles.filterResetButton}
-                onPress={() => {
-                  setDraftFilter("all");
-                  setDraftSortBy("nearest");
-                  setDraftMinimumRating(0);
-                  setDraftMaximumLowestPrice(0);
-                }}
-              >
-                <Text style={styles.filterResetText}>Reset</Text>
-              </Pressable>
-              <Pressable
-                style={styles.filterApplyButton}
-                onPress={() => {
-                  setActiveFilter(draftFilter);
-                  setSortBy(draftSortBy);
-                  setMinimumRating(draftMinimumRating);
-                  setMaximumLowestPrice(draftMaximumLowestPrice);
-                  setIsFilterOpen(false);
-                }}
-              >
-                <Text style={styles.filterApplyText}>Apply filters</Text>
-              </Pressable>
-            </View>
+        <View style={styles.filterInsightRow}>
+          <View style={styles.filterInsightCard}>
+            <Text style={styles.filterInsightValue}>{filteredRestaurants.length}</Text>
+            <Text style={styles.filterInsightLabel}>Matching restaurants</Text>
+          </View>
+          <View style={styles.filterInsightCard}>
+            <Text style={styles.filterInsightValue}>{activeFilterCount}</Text>
+            <Text style={styles.filterInsightLabel}>Active filters</Text>
           </View>
         </View>
-      </Modal>
+
+        <View style={styles.filterSection}>
+          <View style={styles.filterSectionHeader}>
+            <View style={styles.filterSectionIconWrap}>
+              <Ionicons name="grid-outline" size={14} color="#A14A74" />
+            </View>
+            <Text style={styles.filterSectionLabel}>Show</Text>
+          </View>
+          <View style={styles.filterOptionsRow}>
+            {[
+              { key: "all", label: "All", icon: "apps-outline" },
+              { key: "open", label: "Open now", icon: "checkmark-circle-outline" },
+              { key: "offers", label: "Offers", icon: "pricetag-outline" },
+              { key: "featured", label: "Featured", icon: "sparkles-outline" },
+            ].map((filter) => {
+              const isActive = draftFilter === filter.key;
+              return (
+                <Pressable
+                  key={filter.key}
+                  style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
+                  onPress={() => setDraftFilter(filter.key as BrowseFilter)}
+                >
+                  <Ionicons
+                    name={filter.icon as keyof typeof Ionicons.glyphMap}
+                    size={13}
+                    color={isActive ? palette.surface : palette.secondary}
+                  />
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      isActive ? styles.filterChipTextActive : null,
+                    ]}
+                  >
+                    {filter.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.filterSection}>
+          <View style={styles.filterSectionHeader}>
+            <View style={styles.filterSectionIconWrap}>
+              <Ionicons name="swap-vertical-outline" size={14} color="#A14A74" />
+            </View>
+            <Text style={styles.filterSectionLabel}>Sort by</Text>
+          </View>
+          <View style={styles.filterOptionsRow}>
+            {[
+              { key: "nearest", label: "Nearest", icon: "navigate-outline" },
+              { key: "fastest", label: "Fastest", icon: "flash-outline" },
+              { key: "topRated", label: "Top rated", icon: "star-outline" },
+            ].map((option) => {
+              const isActive = draftSortBy === option.key;
+              return (
+                <Pressable
+                  key={option.key}
+                  style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
+                  onPress={() => setDraftSortBy(option.key as BrowseSort)}
+                >
+                  <Ionicons
+                    name={option.icon as keyof typeof Ionicons.glyphMap}
+                    size={13}
+                    color={isActive ? palette.surface : palette.secondary}
+                  />
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      isActive ? styles.filterChipTextActive : null,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.filterSection}>
+          <View style={styles.filterSectionHeader}>
+            <View style={styles.filterSectionIconWrap}>
+              <Ionicons name="star-outline" size={14} color="#A14A74" />
+            </View>
+            <Text style={styles.filterSectionLabel}>Ratings</Text>
+          </View>
+          <View style={styles.filterOptionsRow}>
+            {[
+              { key: 0, label: "Any" },
+              { key: 4, label: "4.0+" },
+              { key: 4.5, label: "4.5+" },
+            ].map((option) => {
+              const isActive = draftMinimumRating === option.key;
+              return (
+                <Pressable
+                  key={option.label}
+                  style={[styles.filterChip, isActive ? styles.filterChipActive : null]}
+                  onPress={() => setDraftMinimumRating(option.key as BrowseRating)}
+                >
+                  <Ionicons
+                    name={isActive ? "star" : "star-outline"}
+                    size={13}
+                    color={isActive ? palette.surface : palette.secondary}
+                  />
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      isActive ? styles.filterChipTextActive : null,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={styles.filterSection}>
+          <View style={styles.filterSectionHeader}>
+            <View style={styles.filterSectionIconWrap}>
+              <Ionicons name="cash-outline" size={14} color="#A14A74" />
+            </View>
+            <Text style={styles.filterSectionLabel}>Starting price</Text>
+          </View>
+          <View style={styles.filterOptionsRow}>
+            {[
+              { key: 0, label: "Any" },
+              { key: 200, label: "Up to Tk 200" },
+              { key: 400, label: "Up to Tk 400" },
+              { key: 700, label: "Up to Tk 700" },
+            ].map((option) => {
+              const isActive = draftMaximumLowestPrice === option.key;
+              return (
+                <Pressable
+                  key={option.label}
+                  style={[
+                    styles.filterChip,
+                    isActive ? styles.filterChipActive : null,
+                  ]}
+                  onPress={() =>
+                    setDraftMaximumLowestPrice(
+                      option.key as BrowseLowestPrice
+                    )
+                  }
+                >
+                  <Ionicons
+                    name={isActive ? "cash" : "cash-outline"}
+                    size={13}
+                    color={isActive ? palette.surface : palette.secondary}
+                  />
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      isActive ? styles.filterChipTextActive : null,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </AppBottomSheet>
     </Screen>
   );
 }

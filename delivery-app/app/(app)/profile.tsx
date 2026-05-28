@@ -8,7 +8,6 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from "react-native";
@@ -18,30 +17,22 @@ import { RiderLocationAccessCard } from "@/src/components/rider-location-access-
 import {
   useLogoutRiderMutation,
   useRiderOrdersQuery,
+  useRiderPerformanceSummaryQuery,
   useRiderProfileQuery,
-  useUpdateRiderAvailabilityMutation,
-  useUpdateRiderProfileLocationMutation,
 } from "@/src/hooks/use-rider-api";
 import { useDeliveryCopy } from "@/src/lib/copy";
 import { useRiderAuthStore, type RiderProfile } from "@/src/store/auth-store";
 import { palette } from "@/src/theme/palette";
 import { RiderScreenHeader } from "@/src/components/rider-screen-header";
 import { useNetworkStatus } from "@/src/hooks/use-network-status";
-import {
-  getBestAvailableRiderLocationPayload,
-  openRiderLocationSettings,
-  requestRiderBackgroundPermission,
-  requestRiderForegroundPermission,
-} from "@/src/lib/rider-location-permissions";
 
 export default function ProfileScreen() {
   const rider = useRiderAuthStore((state: { rider: RiderProfile | null }) => state.rider);
   const logoutMutation = useLogoutRiderMutation();
   const profileQuery = useRiderProfileQuery(Boolean(rider));
-  const availabilityMutation = useUpdateRiderAvailabilityMutation();
-  const locationMutation = useUpdateRiderProfileLocationMutation();
   const activeOrdersQuery = useRiderOrdersQuery("active");
   const historyQuery = useRiderOrdersQuery("history");
+  const performanceSummaryQuery = useRiderPerformanceSummaryQuery(Boolean(rider));
   const { copy, language, setLanguage } = useDeliveryCopy();
   const isNetworkOnline = useNetworkStatus();
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -49,59 +40,16 @@ export default function ProfileScreen() {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await Promise.all([profileQuery.refetch(), activeOrdersQuery.refetch(), historyQuery.refetch()]);
+      await Promise.all([
+        profileQuery.refetch(),
+        activeOrdersQuery.refetch(),
+        historyQuery.refetch(),
+        performanceSummaryQuery.refetch(),
+      ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [activeOrdersQuery, historyQuery, profileQuery]);
-
-  const handleAvailabilityToggle = async (nextOnlineState: boolean) => {
-    if (!isNetworkOnline) {
-      Alert.alert(copy.common.offline, "Reconnect before updating rider availability.");
-      return;
-    }
-
-    try {
-      if (nextOnlineState) {
-        const permission = await requestRiderForegroundPermission();
-        if (permission.status !== "granted") {
-          Alert.alert(
-            copy.profile.locationPermissionTitle,
-            copy.profile.locationPermissionText,
-            [
-              { text: "Not now", style: "cancel" },
-              {
-                text: "Settings",
-                onPress: () => {
-                  void openRiderLocationSettings();
-                },
-              },
-            ],
-          );
-          return;
-        }
-
-        const locationPayload = await getBestAvailableRiderLocationPayload();
-        void requestRiderBackgroundPermission().catch(() => undefined);
-
-        await locationMutation.mutateAsync(locationPayload);
-
-        const updatedProfile = await availabilityMutation.mutateAsync(true);
-
-        if (updatedProfile) {
-          void profileQuery.refetch();
-        }
-        return;
-      }
-
-      await availabilityMutation.mutateAsync(false);
-    } catch (error) {
-      Alert.alert(
-        copy.profile.statusUpdateFailed,
-        error instanceof Error ? error.message : copy.profile.statusUpdateFailedText
-      );
-    }
-  };
+  }, [activeOrdersQuery, historyQuery, performanceSummaryQuery, profileQuery]);
 
   const handleLogoutPress = useCallback(() => {
     if (logoutMutation.isPending) {
@@ -125,6 +73,7 @@ export default function ProfileScreen() {
   const profile = profileQuery.data ?? rider;
   const activeOrders = activeOrdersQuery.data ?? [];
   const historyOrders = historyQuery.data ?? [];
+  const performanceSummary = performanceSummaryQuery.data;
   const deliveredOrders = historyOrders.filter((order) => order.status === "Delivered");
   const now = Date.now();
   const todayStart = new Date();
@@ -143,7 +92,6 @@ export default function ProfileScreen() {
   const isOnline = profile.isAvailableForAssignments !== false;
   const statusTone = !isNetworkOnline ? "offline" : isOnline ? "online" : "paused";
   const statusLabel = !isNetworkOnline ? copy.common.offline : isOnline ? copy.common.online : "Paused";
-  const hasActiveAssignedOrders = activeOrders.length > 0 || Boolean(profile.activeTrackingOrderId);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -169,61 +117,19 @@ export default function ProfileScreen() {
         />
         <RiderLocationAccessCard />
 
-        <View style={styles.toggleCard}>
-          <View style={styles.toggleContent}>
-            <Text style={styles.toggleTitle}>{copy.profile.toggleTitle}</Text>
-            {!isNetworkOnline && !availabilityMutation.isPending ? (
-              <Text style={styles.toggleHint}>Reconnect before changing your rider status.</Text>
-            ) : !isOnline && !availabilityMutation.isPending ? (
-              <Text style={styles.toggleHint}>{copy.profile.toggleHint}</Text>
-            ) : null}
-            {hasActiveAssignedOrders ? (
-              <Text style={styles.toggleWarning}>{copy.profile.toggleWarning}</Text>
-            ) : null}
-          </View>
-          <View style={styles.toggleControlWrap}>
-            <View
-              style={[
-                styles.statusBadge,
-                isOnline ? styles.statusBadgeOnline : styles.statusBadgeOffline,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.statusBadgeText,
-                  !isNetworkOnline
-                    ? styles.statusBadgeTextOffline
-                    : isOnline
-                      ? styles.statusBadgeTextOnline
-                      : styles.statusBadgeTextOffline,
-                ]}
-              >
-                {statusLabel}
-              </Text>
-            </View>
-            {availabilityMutation.isPending || locationMutation.isPending ? (
-              <ActivityIndicator size="small" color={palette.primary} />
-            ) : (
-              <Switch
-                value={isOnline}
-                onValueChange={handleAvailabilityToggle}
-                disabled={!isNetworkOnline || availabilityMutation.isPending || locationMutation.isPending}
-                trackColor={{ false: "#E2D5C8", true: "#F7B8A7" }}
-                thumbColor={isOnline ? palette.primary : palette.foreground}
-              />
-            )}
-          </View>
-        </View>
-
         <View style={styles.summaryRow}>
           <View style={[styles.summaryCard, styles.summaryPink]}>
             <Text style={styles.summaryLabel}>{copy.profile.today}</Text>
-            <Text style={styles.summaryValue}>{todayDelivered.length}</Text>
+            <Text style={styles.summaryValue}>
+              {performanceSummary?.deliveredToday ?? todayDelivered.length}
+            </Text>
             <Text style={styles.summaryMeta}>{copy.profile.delivered}</Text>
           </View>
           <View style={[styles.summaryCard, styles.summarySky]}>
             <Text style={styles.summaryLabel}>{copy.profile.last7Days}</Text>
-            <Text style={styles.summaryValue}>{weeklyDelivered.length}</Text>
+            <Text style={styles.summaryValue}>
+              {performanceSummary?.deliveredLast7Days ?? weeklyDelivered.length}
+            </Text>
             <Text style={styles.summaryMeta}>{copy.profile.delivered}</Text>
           </View>
         </View>
@@ -243,7 +149,9 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>{copy.profile.activeAssignedOrders}</Text>
-            <Text style={styles.infoValue}>{activeOrders.length}</Text>
+            <Text style={styles.infoValue}>
+              {performanceSummary?.activeAssignedOrders ?? activeOrders.length}
+            </Text>
           </View>
         </View>
 
@@ -334,37 +242,6 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   infoLabel: { fontSize: 14, color: palette.mutedForeground, flex: 1 },
   infoValue: { fontSize: 14, fontWeight: "700", color: palette.foreground, flex: 1, textAlign: "right" },
-  statusBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderWidth: 1,
-  },
-  statusBadgeOnline: { backgroundColor: palette.successSoft, borderColor: "#BFE6D1" },
-  statusBadgeOffline: { backgroundColor: "#F4EDE6", borderColor: palette.border },
-  statusBadgeText: { fontSize: 12, fontWeight: "800" },
-  statusBadgeTextOnline: { color: palette.success },
-  statusBadgeTextOffline: { color: palette.mutedForeground },
-  toggleCard: {
-    backgroundColor: palette.surface,
-    borderRadius: 18,
-    padding: 18,
-    gap: 14,
-    borderWidth: 1,
-    borderColor: palette.border,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-  },
-  toggleContent: { flex: 1, gap: 6, paddingRight: 12 },
-  toggleTitle: { fontSize: 16, fontWeight: "800", color: palette.foreground },
-  toggleHint: { fontSize: 13, color: palette.primary, fontWeight: "700" },
-  toggleWarning: { fontSize: 13, color: palette.warning, fontWeight: "700" },
-  toggleControlWrap: {
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
   sectionTitle: { fontSize: 15, fontWeight: "800", color: palette.foreground },
   languageRow: { flexDirection: "row", gap: 10 },
   languageChip: {

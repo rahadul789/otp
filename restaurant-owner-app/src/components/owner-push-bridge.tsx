@@ -10,8 +10,15 @@ import {
 } from "@/src/hooks/use-owner-api";
 import { useOwnerAuthStore } from "@/src/store/auth-store";
 
+const PUSH_DEBUG_ENABLED =
+  __DEV__ &&
+  Boolean(
+    (Constants.expoConfig?.extra as { enablePushDebug?: boolean } | undefined)
+      ?.enablePushDebug,
+  );
+
 function logOwnerPushDebug(message: string, details?: unknown) {
-  if (!__DEV__) return;
+  if (!PUSH_DEBUG_ENABLED) return;
 
   if (details !== undefined) {
     console.log(message, details);
@@ -77,7 +84,7 @@ async function registerForPushNotificationsAsync() {
       name: "default",
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
-      lightColor: "#E85135",
+      lightColor: "#FF6392",
     });
   }
 

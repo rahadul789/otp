@@ -7,6 +7,7 @@ import type { OtpPurpose, RestaurantLifecycleStatus } from "../../common/constan
 import { AppError } from "../../common/utils/app-error"
 import { env } from "../../config/env"
 import { logger } from "../../config/logger"
+import { emitSocketEvent } from "../../config/socket"
 import {
   OtpAbuseBlockModel,
   OnboardingDraftModel,
@@ -14,6 +15,7 @@ import {
   OtpSessionModel,
   OwnerModel,
   PayoutMethodModel,
+  RestaurantModel,
   RefreshTokenSessionModel
 } from "./auth.model"
 import type { SendOtpParams } from "./auth.types"
@@ -34,13 +36,13 @@ import {
   type OtpDeliveryConfig
 } from "./otp-sms.service"
 import { createAdminOperationalAlert } from "../admin/admin-alert.service"
+import {
+  defaultAuthRateLimitSettings,
+  getAuthRateLimitSettings,
+  type AuthRateLimitSettings,
+} from "../public/content.service"
 
 export const OWNER_REFRESH_SESSION_EXPIRY_DAYS = 3650
-const OTP_PHONE_HOURLY_SEND_LIMIT = 5
-const OTP_PHONE_DAILY_SEND_LIMIT = 15
-const OTP_IP_DAILY_SEND_LIMIT = 60
-const OTP_FAILED_VERIFY_LIMIT = 5
-const OTP_VERIFY_LOCK_MINUTES = 15
 const OTP_SUSPICIOUS_DEVICE_PHONE_THRESHOLD = 5
 const OTP_SUSPICIOUS_DEVICE_LOOKBACK_MINUTES = 60
 
@@ -200,6 +202,15 @@ function maskOtpPhone(phone: string) {
   return phone.length <= 6 ? phone : `${phone.slice(0, 5)}***${phone.slice(-3)}`
 }
 
+async function getOtpSecurityLimits(): Promise<AuthRateLimitSettings> {
+  try {
+    return await getAuthRateLimitSettings()
+  } catch (error) {
+    logger.warn({ error }, "Using fallback OTP security limits")
+    return defaultAuthRateLimitSettings
+  }
+}
+
 function buildOtpBlockTargets(phone: string, context?: OtpSecurityContext) {
   const targets: Array<{
     targetType: "phone" | "ip" | "device"
@@ -334,6 +345,7 @@ async function maybeCreateSuspiciousOtpAlert(params: {
   otpSession: InstanceType<typeof OtpSessionModel>
   context?: OtpSecurityContext
   failedVerifyCount: number
+  failedVerifyLimit: number
 }) {
   const ipAddress = normalizeAuditText(params.context?.ipAddress, 80)
   const userAgent = normalizeAuditText(params.context?.userAgent, 300)
@@ -355,7 +367,7 @@ async function maybeCreateSuspiciousOtpAlert(params: {
   const deviceValue = buildOtpDeviceValue(params.context)
   const deviceHash = hashOtpSecurityValue(deviceValue)
   const severity =
-    params.failedVerifyCount >= OTP_FAILED_VERIFY_LIMIT ? "critical" : "warning"
+    params.failedVerifyCount >= params.failedVerifyLimit ? "critical" : "warning"
 
   await createAdminOperationalAlert({
     alertType: "otp_abuse",
@@ -376,7 +388,7 @@ async function maybeCreateSuspiciousOtpAlert(params: {
       uniquePhoneCount: uniquePhones.length,
       samplePhones: uniquePhones.slice(0, 8).map(maskOtpPhone),
       failedVerifyCount: params.failedVerifyCount,
-      failedVerifyLimit: OTP_FAILED_VERIFY_LIMIT,
+      failedVerifyLimit: params.failedVerifyLimit,
       lookbackMinutes: OTP_SUSPICIOUS_DEVICE_LOOKBACK_MINUTES,
       suggestedTargets: {
         device: deviceValue,
@@ -388,6 +400,7 @@ async function maybeCreateSuspiciousOtpAlert(params: {
 }
 
 async function assertOtpSendAllowed(params: SendOtpParams) {
+  const limits = await getOtpSecurityLimits()
   const now = Date.now()
   const hourAgo = new Date(now - 60 * 60 * 1000)
   const dayAgo = new Date(now - 24 * 60 * 60 * 1000)
@@ -415,11 +428,11 @@ async function assertOtpSendAllowed(params: SendOtpParams) {
   ])
 
   let blockReason = ""
-  if (phoneHourlyCount >= OTP_PHONE_HOURLY_SEND_LIMIT) {
+  if (phoneHourlyCount >= limits.otpPhoneHourlySendLimit) {
     blockReason = "phone_hourly_limit"
-  } else if (phoneDailyCount >= OTP_PHONE_DAILY_SEND_LIMIT) {
+  } else if (phoneDailyCount >= limits.otpPhoneDailySendLimit) {
     blockReason = "phone_daily_limit"
-  } else if (ipDailyCount >= OTP_IP_DAILY_SEND_LIMIT) {
+  } else if (ipDailyCount >= limits.otpIpDailySendLimit) {
     blockReason = "ip_daily_limit"
   }
 
@@ -437,9 +450,9 @@ async function assertOtpSendAllowed(params: SendOtpParams) {
       phoneDailyCount,
       ipDailyCount,
       limits: {
-        phoneHourly: OTP_PHONE_HOURLY_SEND_LIMIT,
-        phoneDaily: OTP_PHONE_DAILY_SEND_LIMIT,
-        ipDaily: OTP_IP_DAILY_SEND_LIMIT
+        phoneHourly: limits.otpPhoneHourlySendLimit,
+        phoneDaily: limits.otpPhoneDailySendLimit,
+        ipDaily: limits.otpIpDailySendLimit
       }
     }
   })
@@ -548,11 +561,12 @@ export async function rejectInvalidOtpAttempt(
   otpSession: InstanceType<typeof OtpSessionModel>,
   context?: OtpSecurityContext
 ) {
+  const limits = await getOtpSecurityLimits()
   const nextFailedCount = (otpSession.failedVerifyCount ?? 0) + 1
   otpSession.failedVerifyCount = nextFailedCount
 
-  if (nextFailedCount >= OTP_FAILED_VERIFY_LIMIT) {
-    otpSession.lockedUntilAt = new Date(Date.now() + OTP_VERIFY_LOCK_MINUTES * 60 * 1000)
+  if (nextFailedCount >= limits.otpFailedVerifyLimit) {
+    otpSession.lockedUntilAt = new Date(Date.now() + limits.otpVerifyLockMinutes * 60 * 1000)
   }
 
   await otpSession.save()
@@ -562,21 +576,22 @@ export async function rejectInvalidOtpAttempt(
     referenceId: otpSession.referenceId,
     verificationSessionId: otpSession.id,
     event: "verify_failed",
-    blockReason: nextFailedCount >= OTP_FAILED_VERIFY_LIMIT ? "session_locked" : "",
+    blockReason: nextFailedCount >= limits.otpFailedVerifyLimit ? "session_locked" : "",
     context,
     metadata: {
       failedVerifyCount: nextFailedCount,
-      failedVerifyLimit: OTP_FAILED_VERIFY_LIMIT,
+      failedVerifyLimit: limits.otpFailedVerifyLimit,
       lockedUntilAt: getDateValue(otpSession.lockedUntilAt)?.toISOString() ?? null
     }
   })
   await maybeCreateSuspiciousOtpAlert({
     otpSession,
     context,
-    failedVerifyCount: nextFailedCount
+    failedVerifyCount: nextFailedCount,
+    failedVerifyLimit: limits.otpFailedVerifyLimit
   })
 
-  if (nextFailedCount >= OTP_FAILED_VERIFY_LIMIT) {
+  if (nextFailedCount >= limits.otpFailedVerifyLimit) {
     throw new AppError(
       StatusCodes.TOO_MANY_REQUESTS,
       "OTP_VERIFICATION_LOCKED",
@@ -1001,7 +1016,11 @@ export async function sendOtpForPurpose(params: SendOtpParams) {
   if (params.purpose === "owner_payout_verify") {
     const payoutMethod = await PayoutMethodModel.findById(params.referenceId)
 
-    if (!payoutMethod || payoutMethod.pendingAccountNumber !== params.phone) {
+    if (
+      !payoutMethod ||
+      payoutMethod.pendingAccountNumber !== params.phone ||
+      payoutMethod.pendingVerificationStatus !== "otp_pending"
+    ) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
         "INVALID_PAYOUT_VERIFICATION",
@@ -1114,12 +1133,49 @@ export async function verifyOtpSession(params: {
       )
     }
 
-    payoutMethod.accountNumber = otpSession.phone
-    payoutMethod.pendingAccountNumber = null
-    payoutMethod.isVerified = true
-    payoutMethod.verifiedAt = new Date()
-    payoutMethod.verificationSource = "otp"
+    if (payoutMethod.pendingVerificationStatus !== "otp_pending") {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "PAYOUT_VERIFICATION_NOT_PENDING",
+        "This payout verification request is no longer pending OTP"
+      )
+    }
+
+    payoutMethod.pendingVerificationStatus = "admin_pending"
+    payoutMethod.pendingVerifiedAt = new Date()
+    payoutMethod.pendingAdminNote = ""
+    payoutMethod.verificationSource = "otp_verified_pending_admin"
     await payoutMethod.save()
+
+    await createAdminOperationalAlert({
+      alertType: "payout_method_approval",
+      severity: "info",
+      title: "Payout bKash approval needed",
+      description: `Owner verified new bKash number ${otpSession.phone}. Review it before the number is used for payouts.`,
+      source: "finance",
+      entityType: "payout_method",
+      entityId: payoutMethod._id.toString(),
+      path: "/payouts",
+      iconKey: "wallet",
+      dedupeKey: `payout-method-approval:${payoutMethod._id.toString()}:${otpSession.phone}`,
+      metadata: {
+        restaurantId: payoutMethod.restaurantId?.toString?.() ?? "",
+        methodId: payoutMethod._id.toString(),
+        pendingAccountNumber: payoutMethod.pendingAccountNumber,
+        pendingAccountName: payoutMethod.pendingAccountName,
+      },
+    })
+
+    const restaurant = await RestaurantModel.findById(payoutMethod.restaurantId)
+      .select({ ownerId: 1 })
+      .lean()
+    if (restaurant?.ownerId) {
+      emitSocketEvent(`owner:${restaurant.ownerId.toString()}`, "payout.method.updated", {
+        methodId: payoutMethod._id.toString(),
+        restaurantId: payoutMethod.restaurantId?.toString?.() ?? "",
+        status: payoutMethod.pendingVerificationStatus,
+      })
+    }
   }
 
   otpSession.status =

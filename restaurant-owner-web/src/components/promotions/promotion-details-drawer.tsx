@@ -6,7 +6,6 @@ import {
   Info,
   Percent,
   TicketPercent,
-  Truck,
   Users,
   X,
 } from "lucide-react"
@@ -244,9 +243,7 @@ export function PromotionDetailsDrawer({
                   <div>
                     <p className="font-medium">This offer affects restaurant payout</p>
                     <p className="mt-1 text-amber-900/80">
-                      {voucher.type === "free-delivery"
-                        ? "The waived delivery fee is counted as voucher cost. It will reduce owner earning for orders using this voucher."
-                        : "The used discount amount is deducted from owner earning before payout."}
+                      The owner-funded discount amount is deducted from owner earning before payout.
                     </p>
                   </div>
                 </div>
@@ -350,21 +347,6 @@ export function PromotionDetailsDrawer({
                   </div>
                 </CardContent>
               </Card>
-              <Card className="rounded-2xl shadow-none">
-                <CardContent className="flex items-start justify-between p-5">
-                  <div>
-                    <p className="text-sm text-muted-foreground">
-                      Delivery Cost Covered
-                    </p>
-                    <p className="mt-3 text-3xl font-semibold">
-                      {formatMoney(voucher.analytics.totalDeliveryCostCovered)}
-                    </p>
-                  </div>
-                  <div className="rounded-2xl bg-muted p-3 text-foreground">
-                    <Truck className="size-5" />
-                  </div>
-                </CardContent>
-              </Card>
             </section>
 
             <Card className="rounded-2xl shadow-none">
@@ -376,7 +358,7 @@ export function PromotionDetailsDrawer({
               <CardContent>
                 <ChartContainer
                   config={chartConfig}
-                  className="w-full md:h-[280px]"
+                  className="h-[280px] w-full"
                 >
                   <AreaChart data={voucher.analytics.points}>
                     <CartesianGrid vertical={false} />

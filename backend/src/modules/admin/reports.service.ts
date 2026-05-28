@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-import { RestaurantModel, RiderModel } from "../auth/auth.model";
+import { RestaurantModel } from "../auth/auth.model";
 import { CustomerModel, VoucherRedemptionModel } from "../customer/customer.model";
 import { LedgerEntryModel } from "../owner/finance.model";
 import { aggregateFinalizedLedgerEntries } from "../owner/finance.service";
@@ -228,7 +228,6 @@ export async function getAdminReports(params: ReportParams) {
     totalCustomers,
     activeRestaurants,
     reviewRows,
-    payrollRiders,
     payrollCycles,
   ] = await Promise.all([
     OrderModel.aggregate<Record<string, any>>([
@@ -569,14 +568,10 @@ export async function getAdminReports(params: ReportParams) {
       { $match: { isHidden: { $ne: true }, moderationStatus: "visible", createdAt: { $gte: range.start, $lte: range.end } } },
       { $group: { _id: null, count: { $sum: 1 }, averageRating: { $avg: "$rating" } } },
     ]),
-    RiderModel.find({
-      $or: [
-        { "payroll.isPayrollEnabled": { $ne: false } },
-        { payroll: { $exists: false } },
-      ],
-      createdAt: { $lte: range.end },
+    RiderPayrollCycleModel.find({
+      status: "paid",
+      paidAt: { $gte: range.start, $lte: range.end },
     }).lean(),
-    RiderPayrollCycleModel.find({ month: { $in: payrollMonths } }).lean(),
   ]);
 
   const delivered = deliveredRows[0] ?? {};
@@ -585,42 +580,31 @@ export async function getAdminReports(params: ReportParams) {
   const refundLedger = refundLedgerRows[0] ?? {};
   const refundOrders = refundOrderRows[0] ?? {};
   const reviews = reviewRows[0] ?? {};
-  const payrollCycleMap = new Map(
-    payrollCycles.map((cycle) => [`${objectIdString(cycle.riderId)}:${stringValue(cycle.month)}`, cycle]),
-  );
-  const payrollRiderMap = new Map(
-    payrollRiders.map((rider) => [objectIdString(rider._id), rider]),
-  );
-  const payrollSummary = payrollMonths.reduce(
-    (total, month) => {
-      const monthTotal = payrollRiders.reduce((riderTotal, rider) => {
-        const createdAt = rider.createdAt ? new Date(rider.createdAt) : null;
-        const monthEnd = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0, 23, 59, 59, 999);
-        if (createdAt && createdAt > monthEnd) return riderTotal;
-        const amount = summarizePayrollAmount(
-          rider,
-          payrollCycleMap.get(`${objectIdString(rider._id)}:${month}`),
-        );
-        return {
-          baseSalary: riderTotal.baseSalary + amount.baseSalary,
-          platformBonus: riderTotal.platformBonus + amount.platformBonus,
-          penalties: riderTotal.penalties + amount.penalties,
-          netPayable: riderTotal.netPayable + amount.netPayable,
-          pending: riderTotal.pending + amount.pending,
-          paid: riderTotal.paid + amount.paid,
-        };
-      }, { baseSalary: 0, platformBonus: 0, penalties: 0, netPayable: 0, pending: 0, paid: 0 });
+  const paidPayrollCyclesByRider = new Map<string, Array<Record<string, any>>>();
+  payrollCycles.forEach((cycle) => {
+    const riderId = objectIdString(cycle.riderId);
+    paidPayrollCyclesByRider.set(riderId, [
+      ...(paidPayrollCyclesByRider.get(riderId) ?? []),
+      cycle,
+    ]);
+  });
+  const payrollSummary = payrollCycles.reduce(
+    (total, cycle) => {
+      const amount = summarizePayrollAmount(
+        { payroll: { monthlySalary: numberValue(cycle.baseSalary) } },
+        cycle,
+      );
       return {
-        months: total.months + 1,
-        baseSalary: total.baseSalary + monthTotal.baseSalary,
-        platformBonus: total.platformBonus + monthTotal.platformBonus,
-        penalties: total.penalties + monthTotal.penalties,
-        netPayable: total.netPayable + monthTotal.netPayable,
-        pending: total.pending + monthTotal.pending,
-        paid: total.paid + monthTotal.paid,
+        months: payrollMonths.length,
+        baseSalary: total.baseSalary + amount.baseSalary,
+        platformBonus: total.platformBonus + amount.platformBonus,
+        penalties: total.penalties + amount.penalties,
+        netPayable: total.netPayable + amount.netPayable,
+        pending: 0,
+        paid: total.paid + amount.netPayable,
       };
     },
-    { months: 0, baseSalary: 0, platformBonus: 0, penalties: 0, netPayable: 0, pending: 0, paid: 0 },
+    { months: payrollMonths.length, baseSalary: 0, platformBonus: 0, penalties: 0, netPayable: 0, pending: 0, paid: 0 },
   );
   const deliveredOrders = numberValue(delivered.deliveredOrders);
   const deliveredRevenue = numberValue(delivered.deliveredRevenue);
@@ -797,18 +781,16 @@ export async function getAdminReports(params: ReportParams) {
       name: stringValue(row.riderName, "Rider"),
       phone: stringValue(row.riderPhone),
       deliveredTrips: numberValue(row.deliveredTrips),
-      ...payrollMonths.reduce(
-        (total, month) => {
-          const rider = payrollRiderMap.get(stringValue(row._id));
-          if (!rider) return total;
+      ...(paidPayrollCyclesByRider.get(stringValue(row._id)) ?? []).reduce(
+        (total, cycle) => {
           const amount = summarizePayrollAmount(
-            rider,
-            payrollCycleMap.get(`${stringValue(row._id)}:${month}`),
+            { payroll: { monthlySalary: numberValue(cycle.baseSalary) } },
+            cycle,
           );
           return {
             payrollExpense: total.payrollExpense + amount.netPayable,
-            payrollPending: total.payrollPending + amount.pending,
-            payrollPaid: total.payrollPaid + amount.paid,
+            payrollPending: 0,
+            payrollPaid: total.payrollPaid + amount.netPayable,
           };
         },
         { payrollExpense: 0, payrollPending: 0, payrollPaid: 0 },

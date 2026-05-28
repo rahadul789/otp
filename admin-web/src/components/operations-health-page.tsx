@@ -61,6 +61,15 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
+import { Switch } from "@/components/ui/switch"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type TimelineSeverityFilter = "all" | "critical" | "warning" | "info"
@@ -1372,6 +1381,16 @@ const refreshPolicyRows: Array<{
     label: "Live delivery map",
     helper: "Rider markers and active delivery map snapshots.",
   },
+  {
+    key: "sessionsMs",
+    label: "Sessions",
+    helper: "Admin session security table while Sessions page is open.",
+  },
+  {
+    key: "riderDetailsMs",
+    label: "Rider details drawer",
+    helper: "Selected rider profile/payroll/location drawer refresh.",
+  },
 ]
 
 type AutoHitApp = "Admin web" | "Owner web" | "Delivery app" | "Customer app"
@@ -1446,18 +1465,45 @@ const autoHitDefinitions: Array<{
     label: "Live delivery map",
     endpoint: "GET /admin/live-map",
     policyKey: "liveMapMs",
-    condition: "Only while Riders / Delivery page live tab is mounted",
+    condition: "Only while Live Map page or Riders live tab is mounted",
     mode: "conditional",
     note: "Keeps rider markers and live delivery map current.",
   },
   {
+    app: "Admin web",
+    label: "Sessions",
+    endpoint: "GET /admin/sessions",
+    policyKey: "sessionsMs",
+    condition: "Only while Sessions page is open",
+    mode: "conditional",
+    note: "Refreshes active device/session status for account security.",
+  },
+  {
+    app: "Admin web",
+    label: "Rider details drawer",
+    endpoint: "GET /admin/riders/:riderId",
+    policyKey: "riderDetailsMs",
+    condition: "Only while a rider drawer is open",
+    mode: "conditional",
+    note: "Keeps selected rider payroll, availability, and live status current.",
+  },
+  {
     app: "Owner web",
-    label: "Owner notifications",
+    label: "Owner web notifications",
     endpoint: "GET /owner/notifications",
     intervalMs: 30_000,
     condition: "When owner notification query is enabled",
     mode: "conditional",
     note: "Owner order/support notifications. Socket events also invalidate owner data.",
+  },
+  {
+    app: "Owner web",
+    label: "Owner app notifications",
+    endpoint: "GET /owner/notifications",
+    intervalMs: 20_000,
+    condition: "When restaurant owner app notification query is enabled",
+    mode: "conditional",
+    note: "Mobile owner app keeps notification count fresher than web.",
   },
   {
     app: "Owner web",
@@ -1475,16 +1521,16 @@ const autoHitDefinitions: Array<{
     intervalMs: 60_000,
     condition: "Only when rider is online, available, and not on an active trip",
     mode: "conditional",
-    note: "Keeps dispatch/admin aware of rider's latest area.",
+    note: "Uses Admin Settings live tracking passive heartbeat. Default is 60s.",
   },
   {
     app: "Delivery app",
     label: "Active trip location",
-    endpoint: "POST /rider/orders/:orderId/location",
-    intervalMs: 60_000,
-    condition: "Only while rider has an active delivery tracking screen/session",
+    endpoint: "PATCH /rider/profile/location + order tracking socket fanout",
+    intervalMs: 15_000,
+    condition: "Only while rider has picked up an order and live tracking is active",
     mode: "conditional",
-    note: "Also movement-based, so it may send less often if rider is stationary.",
+    note: "Uses Admin Settings live tracking update interval. Default is 15s and movement-gated by distance.",
   },
   {
     app: "Delivery app",
@@ -1580,10 +1626,26 @@ function getAutoHitInterval(
   return item.intervalMs ?? 0
 }
 
+function isAutoHitActive(
+  item: (typeof autoHitDefinitions)[number],
+  policy: AdminRefreshPolicy
+) {
+  if (item.mode === "event_based" || item.mode === "manual") return true
+  return getAutoHitInterval(item, policy) > 0
+}
+
 function RefreshPolicySheet() {
   const { policy, updatePolicy, resetPolicy } = useAdminRefreshPolicy()
+  const setPolicyActive = React.useCallback(
+    (key: keyof AdminRefreshPolicy, active: boolean) => {
+      updatePolicy({
+        [key]: active ? DEFAULT_ADMIN_REFRESH_POLICY[key] : 0,
+      })
+    },
+    [updatePolicy],
+  )
   const alwaysOnPerMinute = autoHitDefinitions
-    .filter((item) => item.mode === "always")
+    .filter((item) => item.mode === "always" && isAutoHitActive(item, policy))
     .reduce(
       (sum, item) => sum + requestsPerMinute(getAutoHitInterval(item, policy)),
       0,
@@ -1623,6 +1685,7 @@ function RefreshPolicySheet() {
           <TabsList className="flex h-auto w-full flex-wrap justify-start">
             <TabsTrigger value="settings">Refresh settings</TabsTrigger>
             <TabsTrigger value="auto-hits">Auto hits</TabsTrigger>
+            <TabsTrigger value="docs">Docs</TabsTrigger>
           </TabsList>
 
           <TabsContent value="settings" className="space-y-4">
@@ -1630,7 +1693,12 @@ function RefreshPolicySheet() {
               {refreshPolicyRows.map((row) => (
                 <Card key={row.key}>
                   <CardContent className="p-3">
-                    <div className="text-sm font-medium">{row.label}</div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium">{row.label}</div>
+                      <Badge variant={policy[row.key] ? "secondary" : "outline"}>
+                        {policy[row.key] ? "Active" : "Inactive"}
+                      </Badge>
+                    </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {row.helper}
                     </div>
@@ -1655,9 +1723,19 @@ function RefreshPolicySheet() {
                         )}
                       </div>
                     </div>
-                    <Badge variant="secondary">
-                      {formatRefreshInterval(policy[row.key])}
-                    </Badge>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-muted-foreground">
+                        {policy[row.key] ? "Active" : "Inactive"}
+                      </span>
+                      <Switch
+                        checked={policy[row.key] > 0}
+                        onCheckedChange={(checked) => setPolicyActive(row.key, checked)}
+                        aria-label={`${row.label} active`}
+                      />
+                      <Badge variant="secondary">
+                        {formatRefreshInterval(policy[row.key])}
+                      </Badge>
+                    </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {refreshOptions.map((option) => (
@@ -1748,6 +1826,7 @@ function RefreshPolicySheet() {
                 <CardContent className="space-y-2">
                   {group.items.map((item) => {
                     const interval = getAutoHitInterval(item, policy)
+                    const active = isAutoHitActive(item, policy)
                     return (
                       <div
                         key={`${item.app}-${item.label}-${item.endpoint}`}
@@ -1764,6 +1843,9 @@ function RefreshPolicySheet() {
                             {item.condition}
                           </div>
                           <div className="flex flex-wrap items-start justify-start gap-2 lg:justify-end">
+                            <Badge variant={active ? "secondary" : "outline"}>
+                              {active ? "Active" : "Inactive"}
+                            </Badge>
                             <Badge variant="outline">
                               {formatRefreshInterval(interval)}
                             </Badge>
@@ -1775,6 +1857,15 @@ function RefreshPolicySheet() {
                                 requestsPerMinute(interval),
                               )}
                             </Badge>
+                            {item.policyKey ? (
+                              <Switch
+                                checked={active}
+                                onCheckedChange={(checked) =>
+                                  setPolicyActive(item.policyKey!, checked)
+                                }
+                                aria-label={`${item.label} active`}
+                              />
+                            ) : null}
                           </div>
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground">
@@ -1786,6 +1877,238 @@ function RefreshPolicySheet() {
                 </CardContent>
               </Card>
             ))}
+          </TabsContent>
+
+          <TabsContent value="docs" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>রিফ্রেশ পলিসি ডকস</CardTitle>
+                <CardDescription>
+                  এই ট্যাবে admin-web, owner, rider এবং customer app এর auto API hit,
+                  socket এবং manual refresh behavior বাংলায় ব্যাখ্যা করা হয়েছে।
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border p-3">
+                    <div className="font-medium">Auto API hit মানে কী?</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      কোনো page open থাকলে বা admin signed-in থাকলে fixed interval এ backend থেকে নতুন data আনা হয়। Off করলে ওই interval stop হয়, কিন্তু manual refresh এবং socket event ঠিক থাকবে।
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="font-medium">Socket মানে কী?</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Order, notification, support বা rider update হলে backend realtime event পাঠায়। এটা fixed polling না, তাই load কম। Event আসলে related query refresh হয়।
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Part</TableHead>
+                        <TableHead>কি hit হয়</TableHead>
+                        <TableHead>কখন হয়</TableHead>
+                        <TableHead>দরকার আছে?</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow>
+                        <TableCell className="font-medium">Top nav notifications</TableCell>
+                        <TableCell>GET /admin/notifications</TableCell>
+                        <TableCell>Admin signed-in থাকলে policy interval অনুযায়ী</TableCell>
+                        <TableCell>হ্যাঁ, unread count fresh রাখার জন্য</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Dashboard</TableCell>
+                        <TableCell>/admin/reports, /admin/orders, /admin/restaurants, /admin/riders</TableCell>
+                        <TableCell>Dashboard auto-refresh toggle ON থাকলে</TableCell>
+                        <TableCell>Optional. Busy operations এ useful, normal use এ off রাখা যায়</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Operations Health</TableCell>
+                        <TableCell>GET /admin/operations/health</TableCell>
+                        <TableCell>Operations Health page open থাকলে</TableCell>
+                        <TableCell>হ্যাঁ, monitoring page এর জন্য</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Live map</TableCell>
+                        <TableCell>GET /admin/live-map</TableCell>
+                        <TableCell>Live Map page বা Riders live tab open থাকলে</TableCell>
+                        <TableCell>হ্যাঁ, তবে production এ admin সবসময় open রাখলে 30s safer</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Sessions</TableCell>
+                        <TableCell>GET /admin/sessions</TableCell>
+                        <TableCell>Sessions page open থাকলে</TableCell>
+                        <TableCell>Security এর জন্য useful. Off করলে manual refresh use করা যাবে</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Rider details drawer</TableCell>
+                        <TableCell>GET /admin/riders/:riderId</TableCell>
+                        <TableCell>Rider drawer open থাকলে</TableCell>
+                        <TableCell>Useful, কিন্তু 30s enough. Live map এর সাথে sync থাকে</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Owner web/app</TableCell>
+                        <TableCell>GET /owner/notifications + socket invalidation</TableCell>
+                        <TableCell>Owner signed-in এবং notification query enabled থাকলে</TableCell>
+                        <TableCell>দরকার আছে, কারণ new order/support notification দ্রুত দেখা লাগে</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Delivery app</TableCell>
+                        <TableCell>PATCH /rider/profile/location + socket</TableCell>
+                        <TableCell>Rider online/active trip থাকলে, Settings live tracking policy অনুযায়ী</TableCell>
+                        <TableCell>দরকার আছে, কিন্তু interval/distance setting দিয়ে load control হয়</TableCell>
+                      </TableRow>
+                      <TableRow>
+                        <TableCell className="font-medium">Customer app</TableCell>
+                        <TableCell>Screen query, pull refresh, socket invalidation</TableCell>
+                        <TableCell>Screen open, user refresh, অথবা realtime event হলে</TableCell>
+                        <TableCell>Fixed polling কম, তাই current approach healthy</TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="font-medium">Quick refresh behavior</div>
+                  <div className="overflow-hidden rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Feature</TableHead>
+                          <TableHead>Always?</TableHead>
+                          <TableHead>কখন refresh হয়</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow>
+                          <TableCell className="font-medium">Top nav notifications</TableCell>
+                          <TableCell>প্রায় always</TableCell>
+                          <TableCell>admin logged in থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Dashboard</TableCell>
+                          <TableCell>না</TableCell>
+                          <TableCell>Dashboard open + Dashboard toggle ON</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Operations Health</TableCell>
+                          <TableCell>না</TableCell>
+                          <TableCell>Operations Health page open থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Live Map</TableCell>
+                          <TableCell>না</TableCell>
+                          <TableCell>Live Map/Riders live tab open থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Sessions</TableCell>
+                          <TableCell>না</TableCell>
+                          <TableCell>Sessions page open থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Rider details</TableCell>
+                          <TableCell>না</TableCell>
+                          <TableCell>Rider drawer open থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Owner web/app</TableCell>
+                          <TableCell>admin-web না</TableCell>
+                          <TableCell>owner app/web open থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Delivery app location</TableCell>
+                          <TableCell>admin-web না</TableCell>
+                          <TableCell>rider online/active trip থাকলে</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Customer app</TableCell>
+                          <TableCell>admin-web না</TableCell>
+                          <TableCell>screen open/socket/manual refresh হলে</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="font-medium">Rate limiter docs</div>
+                  <p className="text-sm text-muted-foreground">
+                    Settings &gt; Security থেকে business-specific limiter গুলো change করা যায়। Broad/global limiter .env থেকে থাকে, আর Nginx production এ real IP detect করার জন্য TRUST_PROXY_HOPS=1 রাখা দরকার।
+                  </p>
+                  <div className="overflow-hidden rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Case</TableHead>
+                          <TableHead>Default policy</TableHead>
+                          <TableHead>Key</TableHead>
+                          <TableHead>কেন দরকার</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow>
+                          <TableCell className="font-medium">Global API</TableCell>
+                          <TableCell>RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MS</TableCell>
+                          <TableCell>IP</TableCell>
+                          <TableCell>Unknown spam, crawler, বা accidental loops থেকে পুরো API protect করে।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Sign-in / signup</TableCell>
+                          <TableCell>10 sign-in / 15m, 5 signup / 30m</TableCell>
+                          <TableCell>IP + phone/email</TableCell>
+                          <TableCell>Password guessing এবং repeated account creation control করে।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">OTP send / verify</TableCell>
+                          <TableCell>5 phone OTP / 10m, 12 IP OTP / 10m, 8 verify / 10m</TableCell>
+                          <TableCell>Phone/session/IP</TableCell>
+                          <TableCell>SMS cost, OTP abuse, wrong code brute force কমায়। DB guard daily/hourly count আলাদা করে রাখে।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Password recovery / refresh</TableCell>
+                          <TableCell>5 recovery / 15m, 30 refresh / 15m</TableCell>
+                          <TableCell>IP + identity</TableCell>
+                          <TableCell>Forgot-password abuse এবং broken token refresh loop থামায়।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Cart / order / payment</TableCell>
+                          <TableCell>300 quote, 12 order, 8 payment / 15m</TableCell>
+                          <TableCell>Customer or IP</TableCell>
+                          <TableCell>Checkout calculation, order spam, payment session spam control করে।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Support / analytics</TableCell>
+                          <TableCell>20 support, 240 analytics / 15m</TableCell>
+                          <TableCell>Customer or anonymous/session</TableCell>
+                          <TableCell>Support spam কমায়, analytics endpoint যেন অন্য request block না করে তা আলাদা রাখে।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Rider location</TableCell>
+                          <TableCell>900 updates / 15m</TableCell>
+                          <TableCell>Rider account</TableCell>
+                          <TableCell>Live tracking healthy রাখে, কিন্তু broken background loop হলে throttle করে।</TableCell>
+                        </TableRow>
+                        <TableRow>
+                          <TableCell className="font-medium">Admin / owner writes</TableCell>
+                          <TableCell>240 write requests / 15m</TableCell>
+                          <TableCell>Logged-in user</TableCell>
+                          <TableCell>Settings, finance, menu, order action এর repeated write loops থেকে system safe রাখে। GET/read request count হয় না।</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+                  Recommended: notifications 60s, operations health 30s, sessions 30s, rider details 30s, live map 15-30s। High load এর সময় live map 30s এবং dashboard auto-refresh off রাখা best।
+                </div>
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </SheetContent>

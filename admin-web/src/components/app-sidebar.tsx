@@ -86,10 +86,22 @@ export function AppSidebar({
               <SidebarGroupContent>
                 <SidebarMenu>
                   {group.items.map((item) => {
+                    const [itemPath, itemSearch = ""] = item.to.split("?")
+                    const itemHasSearch = item.to.includes("?")
+                    const currentFullPath = `${location.pathname}${location.search}`
+                    const hasActiveQuerySibling = group.items.some((sibling) => {
+                      if (!sibling.to.includes("?")) return false
+                      const [siblingPath] = sibling.to.split("?")
+                      return siblingPath === itemPath && currentFullPath === sibling.to
+                    })
                     const isActive =
                       item.to === "/"
                         ? location.pathname === "/"
-                        : location.pathname.startsWith(item.to)
+                        : itemHasSearch
+                          ? currentFullPath === `${itemPath}?${itemSearch}`
+                          : !hasActiveQuerySibling &&
+                            (location.pathname === itemPath ||
+                              location.pathname.startsWith(`${itemPath}/`))
                     const badge =
                       item.badgeKey && badges[item.badgeKey] > 0
                         ? badges[item.badgeKey]

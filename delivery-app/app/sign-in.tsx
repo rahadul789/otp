@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Redirect } from "expo-router";
+import { Redirect, useLocalSearchParams } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -57,6 +57,24 @@ function formatCountdown(seconds: number) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   return getDeliveryAuthErrorMessage(error, fallback);
+}
+
+function resolveAuthRedirectTarget(value?: string | string[]) {
+  const redirectTo = Array.isArray(value) ? value[0] : value;
+  if (typeof redirectTo !== "string") return "/(app)/available";
+
+  if (
+    redirectTo === "/(app)/available" ||
+    redirectTo === "/(app)/active" ||
+    redirectTo === "/(app)/map" ||
+    redirectTo === "/(app)/history" ||
+    redirectTo === "/(app)/profile" ||
+    /^\/orders\/[A-Za-z0-9_-]{6,80}$/.test(redirectTo)
+  ) {
+    return redirectTo;
+  }
+
+  return "/(app)/available";
 }
 
 function OtpCursor() {
@@ -151,6 +169,7 @@ function OtpCodeInput({
 }
 
 export default function SignInScreen() {
+  const params = useLocalSearchParams<{ redirectTo?: string }>();
   const rider = useRiderAuthStore((state) => state.rider);
   const passwordSigninMutation = useRiderPasswordSigninMutation();
   const otpSigninStartMutation = useStartRiderPhoneAuthMutation();
@@ -214,7 +233,7 @@ export default function SignInScreen() {
   }, [resendCountdown]);
 
   if (rider) {
-    return <Redirect href="/(app)/available" />;
+    return <Redirect href={resolveAuthRedirectTarget(params.redirectTo) as never} />;
   }
 
   function keepFormVisible() {

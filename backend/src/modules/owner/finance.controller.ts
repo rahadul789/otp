@@ -12,7 +12,7 @@ import {
   listPayoutHistoryWithFilters,
   listPayoutTransactions,
   listPayoutTransactionsWithFilters,
-  requestPayout,
+  requestOwnerPayout,
   updatePayoutMethod
 } from "./finance.service"
 
@@ -30,10 +30,6 @@ const payoutMethodUpdateSchema = z.discriminatedUnion("type", [
     branchName: z.string().min(1)
   })
 ])
-
-const payoutRequestSchema = z.object({
-  amount: z.number().int().positive()
-})
 
 const dashboardSummaryQuerySchema = z.object({
   preset: z
@@ -122,6 +118,16 @@ export const getOwnerPayoutTransactions = asyncHandler(
   }
 )
 
+export const postOwnerPayoutRequest = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const data = await requestOwnerPayout(getOwnerId(req))
+    return sendSuccess(res, {
+      message: "Payout request submitted for the full available balance",
+      data
+    })
+  }
+)
+
 export const putOwnerPayoutMethod = asyncHandler(
   async (req: AuthenticatedRequest, res: Response) => {
     const payload = payoutMethodUpdateSchema.parse(req.body)
@@ -134,21 +140,6 @@ export const putOwnerPayoutMethod = asyncHandler(
       message: data.verificationSessionId
         ? "Payout method saved. Verification required for this bKash number."
         : "Payout method updated successfully",
-      data
-    })
-  }
-)
-
-export const postOwnerPayoutRequest = asyncHandler(
-  async (req: AuthenticatedRequest, res: Response) => {
-    const payload = payoutRequestSchema.parse(req.body)
-    const data = await requestPayout({
-      ownerId: getOwnerId(req),
-      amount: payload.amount
-    })
-
-    return sendSuccess(res, {
-      message: "Payout request submitted successfully",
       data
     })
   }
