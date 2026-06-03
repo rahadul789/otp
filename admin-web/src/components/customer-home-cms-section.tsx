@@ -440,6 +440,9 @@ function normalizeContentForCms(content: PlatformContent | null) {
         homeCategories: {
           ...DEFAULT_HOME_CMS.homeCategories,
           ...homeCategories,
+          isActive: homeCategories.isActive ?? DEFAULT_HOME_CMS.homeCategories?.isActive ?? true,
+          title: homeCategories.title ?? DEFAULT_HOME_CMS.homeCategories?.title ?? "",
+          subtitle: homeCategories.subtitle ?? DEFAULT_HOME_CMS.homeCategories?.subtitle ?? "",
           items: arrayOrDefault(
             homeCategories.items,
             DEFAULT_HOME_CMS.homeCategories?.items ?? [],
