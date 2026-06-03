@@ -17,6 +17,8 @@ const sessionsQuerySchema = z.object({
   status: z
     .enum(["all", "active", "recent", "stale", "revoked", "expired"])
     .optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(10).max(100).optional(),
 })
@@ -37,6 +39,8 @@ export const getAdminSessionsController = asyncHandler(
     const query = sessionsQuerySchema.parse({
       role: getOptionalStringParam(req.query.role),
       status: getOptionalStringParam(req.query.status),
+      zoneId: getOptionalStringParam(req.query.zoneId),
+      districtId: getOptionalStringParam(req.query.districtId),
       page: getOptionalStringParam(req.query.page),
       pageSize: getOptionalStringParam(req.query.pageSize),
     })

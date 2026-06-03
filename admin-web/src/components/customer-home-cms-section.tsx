@@ -248,6 +248,7 @@ const DEFAULT_HOME_CMS: PlatformContent["customerApp"]["homeCms"] = {
   offerStrip: {
     isActive: true,
     showVoucherStrip: true,
+    showRestaurantOfferSection: true,
     mode: "voucher_strip",
     title: "Fresh offers near you",
     subtitle: "Limited-time savings from restaurants around you.",
@@ -262,6 +263,22 @@ const DEFAULT_HOME_CMS: PlatformContent["customerApp"]["homeCms"] = {
     backgroundColor: "#FFF0F6",
     textColor: "#3F2432",
     accentColor: "#FF5C93",
+  },
+  homeCategories: {
+    isActive: true,
+    title: "What are you craving?",
+    subtitle: "Quickly find popular food around you.",
+    items: [
+      { id: "biryani", label: "Biryani", searchQuery: "biryani", icon: "restaurant-outline", color: "#FFF0F6", position: 1, isActive: true },
+      { id: "burger", label: "Burger", searchQuery: "burger", icon: "fast-food-outline", color: "#FFF5D8", position: 2, isActive: true },
+      { id: "chicken", label: "Chicken", searchQuery: "chicken", icon: "flame-outline", color: "#EAF8F2", position: 3, isActive: true },
+      { id: "pizza", label: "Pizza", searchQuery: "pizza", icon: "pizza-outline", color: "#EDF4FF", position: 4, isActive: true },
+      { id: "fast-food", label: "Fast food", searchQuery: "fast food", icon: "fast-food-outline", color: "#FFEAF3", position: 5, isActive: true },
+      { id: "fish", label: "Fish", searchQuery: "fish", icon: "fish-outline", color: "#EAF7FF", position: 6, isActive: true },
+      { id: "dessert", label: "Dessert", searchQuery: "dessert", icon: "ice-cream-outline", color: "#F3EDFF", position: 7, isActive: true },
+      { id: "tea-coffee", label: "Tea & coffee", searchQuery: "tea coffee", icon: "cafe-outline", color: "#FFF1E8", position: 8, isActive: true },
+      { id: "healthy", label: "Healthy", searchQuery: "healthy", icon: "leaf-outline", color: "#EAF8F0", position: 9, isActive: true },
+    ],
   },
   modal: {
     isActive: false,
@@ -351,6 +368,19 @@ const DEFAULT_HOME_CMS: PlatformContent["customerApp"]["homeCms"] = {
   analyticsEvents: [],
 }
 
+const HOME_CATEGORY_ICON_OPTIONS = [
+  { value: "restaurant-outline", label: "Restaurant" },
+  { value: "fast-food-outline", label: "Fast food" },
+  { value: "flame-outline", label: "Chicken / spicy" },
+  { value: "ice-cream-outline", label: "Dessert" },
+  { value: "pizza-outline", label: "Pizza" },
+  { value: "cafe-outline", label: "Tea / coffee" },
+  { value: "fish-outline", label: "Fish" },
+  { value: "leaf-outline", label: "Healthy" },
+  { value: "pricetag-outline", label: "Offer" },
+  { value: "sparkles-outline", label: "Featured" },
+] as const
+
 function arrayOrDefault<T>(value: unknown, fallback: T[]) {
   return Array.isArray(value) ? (value as T[]) : fallback
 }
@@ -370,6 +400,9 @@ function normalizeContentForCms(content: PlatformContent | null) {
   >
   const modal = (homeCms.modal ?? {}) as Partial<
     PlatformContent["customerApp"]["homeCms"]["modal"]
+  >
+  const homeCategories = (homeCms.homeCategories ?? {}) as Partial<
+    NonNullable<PlatformContent["customerApp"]["homeCms"]["homeCategories"]>
   >
   const howToOrderGuide = (homeCms.howToOrderGuide ?? {}) as Partial<
     PlatformContent["customerApp"]["homeCms"]["howToOrderGuide"]
@@ -402,6 +435,14 @@ function normalizeContentForCms(content: PlatformContent | null) {
           carouselImages: arrayOrDefault(
             offerStrip.carouselImages,
             DEFAULT_HOME_CMS.offerStrip.carouselImages,
+          ),
+        },
+        homeCategories: {
+          ...DEFAULT_HOME_CMS.homeCategories,
+          ...homeCategories,
+          items: arrayOrDefault(
+            homeCategories.items,
+            DEFAULT_HOME_CMS.homeCategories?.items ?? [],
           ),
         },
         modal: {
@@ -583,6 +624,20 @@ export function CustomerHomeCmsSection({
 
   function updateOfferStrip<K extends keyof typeof currentCms.offerStrip>(key: K, value: (typeof currentCms.offerStrip)[K]) {
     updateCms({ ...currentCms, offerStrip: { ...currentCms.offerStrip, [key]: value } })
+  }
+
+  function updateHomeCategories(nextCategories: NonNullable<typeof currentCms.homeCategories>) {
+    updateCms({ ...currentCms, homeCategories: nextCategories })
+  }
+
+  function updateHomeCategoryItem(index: number, patch: Partial<NonNullable<typeof currentCms.homeCategories>["items"][number]>) {
+    const currentCategories = currentCms.homeCategories ?? DEFAULT_HOME_CMS.homeCategories!
+    updateHomeCategories({
+      ...currentCategories,
+      items: currentCategories.items.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item,
+      ),
+    })
   }
 
   function updateModal<K extends keyof typeof currentCms.modal>(key: K, value: (typeof currentCms.modal)[K]) {
@@ -1276,6 +1331,25 @@ export function CustomerHomeCmsSection({
                 <div className="relative rounded-2xl border bg-white px-3 py-3 text-sm font-semibold text-muted-foreground">
                   Search restaurants, burgers, desserts...
                 </div>
+                {currentCms.homeCategories?.isActive ? (
+                  <div className="space-y-2 rounded-2xl bg-white/70 p-2">
+                    <div className="flex gap-2 overflow-hidden">
+                      {currentCms.homeCategories.items
+                        .filter((item) => item.isActive !== false)
+                        .sort((left, right) => (left.position ?? 0) - (right.position ?? 0))
+                        .slice(0, 4)
+                        .map((item) => (
+                          <span
+                            key={item.id || item.label}
+                            className="shrink-0 rounded-xl px-3 py-2 text-[11px] font-black text-[#1F2430]"
+                            style={{ backgroundColor: item.color || "#FFF0F6" }}
+                          >
+                            {item.label}
+                          </span>
+                        ))}
+                    </div>
+                  </div>
+                ) : null}
                 {previewBlock.isActive && previewBlock.mode === "promo_block" ? (
                   previewBlock.variant === "carousel" ? (
                     <div className="relative overflow-hidden rounded-xl">
@@ -1321,6 +1395,31 @@ export function CustomerHomeCmsSection({
                     {["Tk 100 off", "Free delivery", "20% off"].map((label) => (
                       <span key={label} className="shrink-0 rounded-full bg-[#FFF1F6] px-3 py-2 text-xs font-black text-[#B23B70]">{label}</span>
                     ))}
+                  </div>
+                ) : null}
+                {previewBlock.showRestaurantOfferSection !== false ? (
+                  <div className="space-y-2 rounded-2xl bg-[#FFF8FB] p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black text-[#B23B70]">Offers for you</span>
+                      <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-[#B23B70]">
+                        Card badges stay on
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {["Sultan Biryani", "Haor Kitchen"].map((label) => (
+                        <div key={label} className="overflow-hidden rounded-xl bg-white shadow-sm">
+                          <div className="relative h-14 bg-[#FFE2EC]">
+                            <span className="absolute bottom-1 right-1 rounded-md bg-[#E4116F] px-1.5 py-0.5 text-[9px] font-black text-white">
+                              SAVE
+                            </span>
+                          </div>
+                          <div className="p-2">
+                            <p className="truncate text-[11px] font-black text-[#1F2430]">{label}</p>
+                            <p className="truncate text-[9px] font-semibold text-muted-foreground">Voucher visible on card</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ) : null}
                 {currentCms.howToOrderGuide.isActive ? (
@@ -1373,10 +1472,24 @@ export function CustomerHomeCmsSection({
             </div>
             <div className="flex items-center justify-between rounded-lg border p-3 lg:col-span-3">
               <div>
-                <Label>Show voucher offer strip</Label>
-                <p className="text-xs text-muted-foreground">Can be shown together with a custom block or carousel.</p>
+                <Label>Show home voucher chips</Label>
+                <p className="text-xs text-muted-foreground">
+                  Controls only the small horizontal voucher chips near the top of customer-app home.
+                </p>
               </div>
               <Switch checked={cms.offerStrip.showVoucherStrip} onCheckedChange={(checked) => updateOfferStrip("showVoucherStrip", checked)} />
+            </div>
+            <div className="flex items-center justify-between rounded-lg border p-3 lg:col-span-3">
+              <div>
+                <Label>Show restaurants-with-offers section</Label>
+                <p className="text-xs text-muted-foreground">
+                  Controls only the "Offers for you" restaurant section. Restaurant card offer badges stay visible when offers exist.
+                </p>
+              </div>
+              <Switch
+                checked={cms.offerStrip.showRestaurantOfferSection !== false}
+                onCheckedChange={(checked) => updateOfferStrip("showRestaurantOfferSection", checked)}
+              />
             </div>
             <div className="space-y-2">
               <Label>CMS slot content</Label>
@@ -1499,6 +1612,142 @@ export function CustomerHomeCmsSection({
           </div>
         </CmsDetailsCard>
         </div>
+
+        <CmsDetailsCard
+          title="Home food categories"
+          description="Customer home quick shortcuts. Pressing a chip opens the dedicated search screen."
+          icon={<MousePointerClick className="size-5" />}
+          summary={
+            <div className="hidden items-center gap-2 sm:flex">
+              <Badge variant={cms.homeCategories?.isActive ? "default" : "outline"}>
+                {cms.homeCategories?.isActive ? "Active" : "Off"}
+              </Badge>
+              <Badge variant="secondary">
+                {(cms.homeCategories?.items ?? []).filter((item) => item.isActive !== false).length} chips
+              </Badge>
+            </div>
+          }
+        >
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="flex items-center justify-between rounded-lg border p-3 md:col-span-2">
+              <div>
+                <Label>Show categories on home</Label>
+                <p className="text-xs text-muted-foreground">
+                  This only controls the home shortcut row. Browse and search still work normally.
+                </p>
+              </div>
+              <Switch
+                checked={cms.homeCategories?.isActive !== false}
+                onCheckedChange={(checked) =>
+                  updateHomeCategories({
+                    ...(cms.homeCategories ?? DEFAULT_HOME_CMS.homeCategories!),
+                    isActive: checked,
+                  })
+                }
+              />
+            </div>
+            <div className="space-y-3 md:col-span-2">
+              {(cms.homeCategories?.items ?? []).map((item, index) => (
+                <div key={item.id || `${item.label}-${index}`} className="grid gap-2 rounded-lg border bg-muted/20 p-3 md:grid-cols-[1fr_1fr_150px_90px_84px_auto] md:items-end">
+                  <div className="space-y-1.5">
+                    <Label>Label</Label>
+                    <Input
+                      value={item.label}
+                      onChange={(event) => updateHomeCategoryItem(index, { label: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Search query</Label>
+                    <Input
+                      value={item.searchQuery}
+                      onChange={(event) => updateHomeCategoryItem(index, { searchQuery: event.target.value })}
+                      placeholder="burger, chicken, dessert"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Icon</Label>
+                    <Select
+                      value={item.icon || "restaurant-outline"}
+                      onValueChange={(value) => updateHomeCategoryItem(index, { icon: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {HOME_CATEGORY_ICON_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Order</Label>
+                    <Input
+                      type="number"
+                      value={item.position ?? index + 1}
+                      onChange={(event) => updateHomeCategoryItem(index, { position: Number(event.target.value || index + 1) })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Color</Label>
+                    <Input
+                      type="color"
+                      value={item.color || "#FFF0F6"}
+                      onChange={(event) => updateHomeCategoryItem(index, { color: event.target.value })}
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <Switch
+                      checked={item.isActive !== false}
+                      onCheckedChange={(checked) => updateHomeCategoryItem(index, { isActive: checked })}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const currentCategories = cms.homeCategories ?? DEFAULT_HOME_CMS.homeCategories!
+                        updateHomeCategories({
+                          ...currentCategories,
+                          items: currentCategories.items.filter((_, itemIndex) => itemIndex !== index),
+                        })
+                      }}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const currentCategories = cms.homeCategories ?? DEFAULT_HOME_CMS.homeCategories!
+                  const nextIndex = currentCategories.items.length + 1
+                  updateHomeCategories({
+                    ...currentCategories,
+                    items: [
+                      ...currentCategories.items,
+                      {
+                        id: `category-${Date.now()}`,
+                        label: "New category",
+                        searchQuery: "new",
+                        icon: "restaurant-outline",
+                        color: "#FFF0F6",
+                        position: nextIndex,
+                        isActive: true,
+                      },
+                    ],
+                  })
+                }}
+              >
+                Add category chip
+              </Button>
+            </div>
+          </div>
+        </CmsDetailsCard>
 
         <CmsDetailsCard
           title="How to order guide"

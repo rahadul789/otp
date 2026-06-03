@@ -17,6 +17,7 @@ import { buildQueryString, compactQueryParams } from "@/src/lib/query-params";
 import type {
   CustomerDiscoveryHome,
   CustomerRestaurantDetails,
+  DiscoverableRestaurantsPage,
   DiscoverableRestaurant,
 } from "@/src/types/restaurant";
 import { useAppBannerStore } from "@/src/store/app-banner-store";
@@ -29,6 +30,14 @@ type NearbyRestaurantsParams = {
   longitude?: number;
   radiusKm: number;
   search?: string;
+};
+
+type RestaurantDiscoveryPageParams = NearbyRestaurantsParams & {
+  pageSize?: number;
+  filter?: "all" | "open" | "offers" | "featured";
+  sortBy?: "nearest" | "fastest" | "topRated";
+  minimumRating?: number;
+  maximumLowestPrice?: number;
 };
 
 type CustomerSavedLocationResponse = {
@@ -315,6 +324,47 @@ export function useNearbyRestaurantsQuery(params: NearbyRestaurantsParams) {
   });
 }
 
+export function useRestaurantDiscoveryInfiniteQuery(
+  params: RestaurantDiscoveryPageParams,
+  enabled = true,
+) {
+  const baseQuery = compactQueryParams({
+    latitude: typeof params.latitude === "number" ? params.latitude : undefined,
+    longitude: typeof params.longitude === "number" ? params.longitude : undefined,
+    radiusKm: params.radiusKm,
+    search: params.search?.trim(),
+    pageSize: params.pageSize ?? 12,
+    filter: params.filter && params.filter !== "all" ? params.filter : undefined,
+    sortBy: params.sortBy,
+    minimumRating: params.minimumRating,
+    maximumLowestPrice: params.maximumLowestPrice,
+  });
+  const queryKey = buildQueryString(baseQuery);
+
+  return useInfiniteQuery({
+    queryKey: ["customer", "restaurant-discovery-pages", queryKey],
+    enabled:
+      enabled &&
+      typeof params.latitude === "number" &&
+      typeof params.longitude === "number",
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }) => {
+      const query = buildQueryString({
+        ...baseQuery,
+        page: pageParam,
+      });
+      const response = await apiGet<DiscoverableRestaurantsPage>(
+        `/customer/restaurants/search?${query}`,
+      );
+      return response.data;
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.hasNextPage ? lastPage.nextPage : undefined,
+  });
+}
+
 export function useCustomerDiscoveryHomeQuery(params: {
   latitude?: number;
   longitude?: number;
@@ -331,6 +381,8 @@ export function useCustomerDiscoveryHomeQuery(params: {
   return useQuery({
     queryKey: ["customer", "discovery-home", query],
     placeholderData: keepPreviousData,
+    staleTime: 2 * 60_000,
+    gcTime: 10 * 60_000,
     queryFn: async () => {
       const response = await apiGet<CustomerDiscoveryHome>(
         `/customer/discovery/home${query ? `?${query}` : ""}`

@@ -23,6 +23,7 @@ import {
   listCustomerFavoriteRestaurants,
   listCustomerOrders,
   listDiscoverableRestaurants,
+  listDiscoverableRestaurantsPage,
   logoutCustomerSession,
   initiateBkashPayment,
   removeCustomerSavedLocation,
@@ -162,6 +163,15 @@ const discoveryListQuerySchema = z.object({
   latitude: z.coerce.number().optional(),
   longitude: z.coerce.number().optional(),
   radiusKm: z.coerce.number().positive().max(30).optional()
+})
+
+const discoverySearchQuerySchema = discoveryListQuerySchema.extend({
+  page: z.coerce.number().int().positive().optional(),
+  pageSize: z.coerce.number().int().positive().max(30).optional(),
+  filter: z.enum(["all", "open", "offers", "featured"]).optional(),
+  sortBy: z.enum(["nearest", "fastest", "topRated"]).optional(),
+  minimumRating: z.coerce.number().min(0).max(5).optional(),
+  maximumLowestPrice: z.coerce.number().min(0).optional()
 })
 
 const restaurantDetailsQuerySchema = z.object({
@@ -639,6 +649,25 @@ export const getCustomerDiscovery = asyncHandler(async (req: Request, res: Respo
     radiusKm: req.query.radiusKm
   })
   const data = await listDiscoverableRestaurants(query)
+
+  return sendSuccess(res, { data })
+})
+
+export const getCustomerDiscoverySearch = asyncHandler(async (req: Request, res: Response) => {
+  const query = discoverySearchQuerySchema.parse({
+    search: getStringValue(req.query.search) || undefined,
+    collectionKey: getStringValue(req.query.collectionKey) || undefined,
+    latitude: req.query.latitude,
+    longitude: req.query.longitude,
+    radiusKm: req.query.radiusKm,
+    page: req.query.page,
+    pageSize: req.query.pageSize,
+    filter: getStringValue(req.query.filter) || undefined,
+    sortBy: getStringValue(req.query.sortBy) || undefined,
+    minimumRating: req.query.minimumRating,
+    maximumLowestPrice: req.query.maximumLowestPrice,
+  })
+  const data = await listDiscoverableRestaurantsPage(query)
 
   return sendSuccess(res, { data })
 })

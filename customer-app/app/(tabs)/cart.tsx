@@ -1,11 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { ActivityIndicator, Animated, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Pressable, ScrollView, Text, View } from "react-native";
 import { useEffect, useMemo, useRef } from "react";
 
 import { styles } from "@/src/components/cart/cart-screen.styles";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
+import { RemoteImage } from "@/src/components/remote-image";
 import { Screen } from "@/src/components/screen";
 import { useCustomerCartQuoteQuery, useCustomerRestaurantDetailsQuery } from "@/src/hooks/use-customer-api";
 import { useIsOnline } from "@/src/hooks/use-network-status";
@@ -387,13 +388,14 @@ export default function CartScreen() {
 
                         return (
                           <>
-                      {item.imageUrl ? (
-                        <Image source={{ uri: item.imageUrl }} style={styles.itemImage} />
-                      ) : (
-                        <View style={styles.itemFallback}>
-                          <Ionicons name="fast-food-outline" size={20} color={palette.primary} />
-                        </View>
-                      )}
+                      <RemoteImage
+                        uri={item.imageUrl}
+                        style={styles.itemImage}
+                        fallbackIcon="fast-food-outline"
+                        fallbackIconSize={20}
+                        fallbackTint={palette.primary}
+                        accessibilityLabel={`${item.name} cart item photo`}
+                      />
 
                       <View style={styles.itemCopy}>
                         <Text style={styles.itemName}>{item.name}</Text>

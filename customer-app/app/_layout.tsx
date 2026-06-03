@@ -26,6 +26,7 @@ export default function RootLayout() {
           <Stack.Screen name="support" />
           <Stack.Screen name="support-chat" />
           <Stack.Screen name="favorite-restaurants" />
+          <Stack.Screen name="search" />
           <Stack.Screen name="order-help" />
           <Stack.Screen name="promo-details" />
           <Stack.Screen name="voucher-help" />

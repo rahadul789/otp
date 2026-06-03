@@ -12,6 +12,7 @@ import { toast } from "sonner"
 
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import {
+  getAdminServiceAreas,
   listAdminFinanceLedger,
   listAdminRestaurants,
   type AdminFinanceLedgerEntry,
@@ -154,6 +155,7 @@ export function FinanceLedgerPage() {
   const [entryType, setEntryType] = React.useState<EntryTypeFilter>("all")
   const [settlementStatus, setSettlementStatus] = React.useState<SettlementFilter>("all")
   const [restaurantId, setRestaurantId] = React.useState("all")
+  const [zoneId, setZoneId] = React.useState("all")
   const [sortBy, setSortBy] = React.useState<LedgerSort>("newest")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(20)
@@ -161,7 +163,7 @@ export function FinanceLedgerPage() {
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, entryType, settlementStatus, restaurantId, sortBy, pageSize])
+  }, [debouncedSearch, entryType, settlementStatus, restaurantId, zoneId, sortBy, pageSize])
 
   const restaurantsQuery = useQuery({
     queryKey: ["admin-restaurants", "finance-ledger-filter"],
@@ -172,14 +174,20 @@ export function FinanceLedgerPage() {
       }),
   })
 
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "finance-ledger-filter"],
+    queryFn: getAdminServiceAreas,
+  })
+
   const ledgerQuery = useQuery({
-    queryKey: ["admin-finance-ledger", debouncedSearch, entryType, settlementStatus, restaurantId, sortBy, page, pageSize],
+    queryKey: ["admin-finance-ledger", debouncedSearch, entryType, settlementStatus, restaurantId, zoneId, sortBy, page, pageSize],
     queryFn: () =>
       listAdminFinanceLedger({
         search: debouncedSearch,
         entryType,
         settlementStatus,
         restaurantId: restaurantId === "all" ? undefined : restaurantId,
+        zoneId: zoneId === "all" ? undefined : zoneId,
         sortBy,
         page,
         pageSize,
@@ -261,7 +269,7 @@ export function FinanceLedgerPage() {
       </div>
 
       <Card>
-        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(220px,1fr)_190px_150px_160px_160px_120px]">
+        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(220px,1fr)_190px_170px_150px_160px_160px_120px]">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -280,6 +288,19 @@ export function FinanceLedgerPage() {
               {(restaurantsQuery.data?.items ?? []).map((restaurant) => (
                 <SelectItem key={restaurant.id} value={restaurant.id}>
                   {restaurant.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={zoneId} onValueChange={setZoneId}>
+            <SelectTrigger>
+              <SelectValue placeholder="Zone" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All zones</SelectItem>
+              {(serviceAreasQuery.data?.zones ?? []).map((zone) => (
+                <SelectItem key={zone.id} value={zone.id}>
+                  {zone.name}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -367,6 +388,11 @@ export function FinanceLedgerPage() {
                         <TableCell>
                           <div className="font-medium">{row.restaurantName || "Unknown"}</div>
                           <div className="text-xs text-muted-foreground">{row.restaurantCity}</div>
+                          {row.serviceArea?.zoneName ? (
+                            <Badge variant="outline" className="mt-1 border-violet-200 bg-violet-50 text-violet-700">
+                              {row.serviceArea.zoneName}
+                            </Badge>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <div>{row.orderNumber || row.sourceEntityId || "N/A"}</div>

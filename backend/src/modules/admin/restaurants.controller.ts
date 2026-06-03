@@ -26,6 +26,8 @@ const listRestaurantsQuerySchema = z.object({
   search: z.string().optional(),
   visibility: z.enum(["all", "visible", "hidden"]).optional(),
   runtime: z.enum(["all", "online", "offline"]).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   sortBy: z
     .enum(["newestUpdated", "mostOrders", "highestRating", "completionHigh"])
     .optional(),
@@ -50,6 +52,7 @@ const createRestaurantSchema = z.object({
   latitude: z.number().nullable().optional(),
   longitude: z.number().nullable().optional(),
   preparationTimeMinutes: z.number().int().positive().nullable().optional(),
+  serviceZoneId: z.string().trim().optional(),
   commissionRate: z.number().min(0).max(100).optional(),
   isVisible: z.boolean().optional(),
 });

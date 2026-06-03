@@ -71,6 +71,11 @@ export const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 5,
   },
+  orderCardCompact: {
+    paddingVertical: 12,
+    gap: 8,
+    borderRadius: 18,
+  },
   orderTopRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -81,6 +86,12 @@ export const styles = StyleSheet.create({
   orderRestaurant: {
     fontSize: 17,
     lineHeight: 22,
+    fontWeight: "800",
+    color: palette.foreground,
+  },
+  orderIdCompact: {
+    fontSize: 13,
+    lineHeight: 17,
     fontWeight: "800",
     color: palette.foreground,
   },
@@ -195,6 +206,34 @@ export const styles = StyleSheet.create({
     justifyContent: "flex-end",
     gap: 6,
   },
+  compactHistoryItems: {
+    gap: 3,
+    paddingTop: 1,
+  },
+  compactHistoryItemText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    color: palette.foreground,
+  },
+  compactHistoryMoreText: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+  },
+  compactHistoryBottomRow: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  compactHistoryActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   reorderButton: {
     minHeight: 36,
     borderRadius: 999,
@@ -205,6 +244,10 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
+  },
+  reorderButtonCompact: {
+    minHeight: 32,
+    paddingHorizontal: 10,
   },
   reorderButtonDisabled: {
     opacity: 0.7,

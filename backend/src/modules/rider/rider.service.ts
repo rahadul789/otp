@@ -36,6 +36,10 @@ import {
   updateOrderRiderLocation
 } from "../owner/operational.service"
 import { getPlatformContent } from "../public/content.service"
+import {
+  assertRiderAllowedForServiceArea,
+  buildServiceAreaOrderFilterForRider
+} from "../service-area/service-area.service"
 import { syncRiderAvailabilitySession } from "./availability-session.service"
 
 const RIDER_REFRESH_EXPIRY_DAYS = 3650
@@ -47,7 +51,7 @@ const DISABLED_RIDER_PUSH_TOKEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 const RIDER_ORDER_LOCATION_WRITE_INTERVAL_MS = 10 * 1000
 const RIDER_ORDER_LOCATION_QUEUE_IDLE_MS = 30 * 60 * 1000
 const RIDER_ORDER_LOCATION_QUEUE_PRUNE_SIZE = 500
-const RIDER_LIST_PROFILE_SELECT = "_id status verification isAvailableForAssignments activeTrackingOrderId"
+const RIDER_LIST_PROFILE_SELECT = "_id status verification isAvailableForAssignments activeTrackingOrderId serviceArea"
 const RIDER_LIVE_MAP_PROFILE_SELECT = `${RIDER_LIST_PROFILE_SELECT} fullName phone vehicleType lastKnownLocation`
 const RIDER_ORDER_LIST_SELECT = [
   "_id",
@@ -59,6 +63,7 @@ const RIDER_ORDER_LIST_SELECT = [
   "paymentMethod",
   "paymentStatus",
   "pricing",
+  "serviceAreaSnapshot",
   "customerSnapshot.name",
   "customerSnapshot.fullName",
   "customerSnapshot.phone",
@@ -79,6 +84,7 @@ const RIDER_LIVE_MAP_ORDER_SELECT = [
   "orderNumber",
   "status",
   "pricing",
+  "serviceAreaSnapshot",
   "customerSnapshot.name",
   "customerSnapshot.fullName",
   "customerSnapshot.deliveryAddress",
@@ -1308,9 +1314,14 @@ export async function listRiderOrders(params: {
     return []
   }
 
+  const serviceAreaOrderFilter = buildServiceAreaOrderFilterForRider(rider)
   const query =
     scope === "available"
-      ? { status: "ReadyForPickup", $or: [{ riderId: "" }, { riderId: { $exists: false } }] }
+      ? {
+          status: "ReadyForPickup",
+          $or: [{ riderId: "" }, { riderId: { $exists: false } }],
+          ...serviceAreaOrderFilter
+        }
       : scope === "history"
         ? { riderId, status: { $in: ["Delivered", "Cancelled", "Rejected"] } }
         : { riderId, status: { $in: ["ReadyForPickup", "PickedUp"] } }
@@ -1337,16 +1348,26 @@ export async function getRiderLiveMap(params: { riderId: string }) {
 
   assertRiderAccessible(rider)
   const riderId = String(rider._id ?? params.riderId)
+  const serviceAreaOrderFilter = buildServiceAreaOrderFilterForRider(rider)
 
   const orders = await OrderModel.find({
     $or: [
       {
         status: { $in: ["Accepted", "Preparing"] },
-        $or: [{ riderId: "" }, { riderId }, { riderId: { $exists: false } }]
+        $or: [{ riderId: "" }, { riderId }, { riderId: { $exists: false } }],
+        ...serviceAreaOrderFilter
       },
       {
         status: "ReadyForPickup",
-        $or: [{ riderId: "" }, { riderId: riderId }, { riderId: { $exists: false } }]
+        $or: [
+          { riderId },
+          {
+            $and: [
+              { $or: [{ riderId: "" }, { riderId: { $exists: false } }] },
+              serviceAreaOrderFilter
+            ]
+          }
+        ]
       },
       { status: "PickedUp", riderId }
     ]
@@ -1475,6 +1496,12 @@ export async function getRiderOrderDetails(params: { riderId: string; orderId: s
 
   const orderRiderId = typeof order.riderId === "string" ? order.riderId : ""
   const isAvailableOrder = order.status === "ReadyForPickup" && !orderRiderId
+  if (isAvailableOrder) {
+    assertRiderAllowedForServiceArea({
+      rider,
+      serviceAreaSnapshot: order.serviceAreaSnapshot
+    })
+  }
 
   if (!isAvailableOrder && orderRiderId !== rider.id) {
     throw new AppError(StatusCodes.FORBIDDEN, "FORBIDDEN", "You do not have access to this order")
@@ -1523,6 +1550,11 @@ export async function acceptRiderOrder(params: { riderId: string; orderId: strin
       "This order is already assigned to another rider"
     )
   }
+
+  assertRiderAllowedForServiceArea({
+    rider,
+    serviceAreaSnapshot: order.serviceAreaSnapshot
+  })
 
   const [activeAssignedOrdersCount, maxActiveOrdersPerRider] = await Promise.all([
     OrderModel.countDocuments({
@@ -1596,6 +1628,11 @@ export async function pickupRiderOrder(params: { riderId: string; orderId: strin
       "This order is already assigned to another rider"
     )
   }
+
+  assertRiderAllowedForServiceArea({
+    rider,
+    serviceAreaSnapshot: order.serviceAreaSnapshot
+  })
 
   if (!order.riderId) {
     order.riderId = rider.id

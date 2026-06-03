@@ -192,6 +192,7 @@ export function AppBottomSheet({
   const panResponder = useMemo(
     () =>
       PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: (_, gesture) =>
           Math.abs(gesture.dy) > 4 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
         onPanResponderMove: (_, gesture) => {
@@ -304,9 +305,6 @@ export function AppBottomSheet({
                     </Text>
                   ) : null}
                 </View>
-                <Pressable style={[styles.closeButton, { backgroundColor: isDark ? "#252A36" : palette.surfaceMuted }]} onPress={requestClose}>
-                  <Ionicons name="close" size={18} color={textColor} />
-                </Pressable>
               </View>
             ) : null}
           </View>
@@ -391,13 +389,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     fontWeight: "600",
-  },
-  closeButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
   },
   body: {
     flex: 1,

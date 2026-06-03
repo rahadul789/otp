@@ -14,12 +14,18 @@ import {
 import { CustomerModel } from "../customer/customer.model";
 import { ReviewModel } from "../owner/experience.model";
 import { OrderModel } from "../owner/operational.model";
+import {
+  buildRestaurantServiceAreaScopeFilter,
+  resolveServiceZoneForCoordinates,
+} from "../service-area/service-area.service";
 
 type AdminReviewModerationStatus = "visible" | "hidden" | "flagged";
 
 type ListAdminReviewsParams = {
   search?: string;
   restaurantId?: string;
+  zoneId?: string;
+  districtId?: string;
   status?: "all" | AdminReviewModerationStatus;
   rating?: "all" | "1" | "2" | "3" | "4" | "5";
   reply?: "all" | "replied" | "not_replied";
@@ -95,7 +101,7 @@ async function writeReviewAudit(params: {
   });
 }
 
-function buildReviewQuery(params: ListAdminReviewsParams) {
+async function buildReviewQuery(params: ListAdminReviewsParams) {
   const query: Record<string, any> = {};
   if (
     params.restaurantId &&
@@ -103,6 +109,12 @@ function buildReviewQuery(params: ListAdminReviewsParams) {
     mongoose.Types.ObjectId.isValid(params.restaurantId)
   ) {
     query.restaurantId = new mongoose.Types.ObjectId(params.restaurantId);
+  } else {
+    const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+    if (Object.keys(restaurantScopeFilter).length) {
+      const restaurantIds = await RestaurantModel.distinct("_id", restaurantScopeFilter);
+      query.restaurantId = { $in: restaurantIds };
+    }
   }
   if (params.status && params.status !== "all") {
     query.moderationStatus = params.status;
@@ -297,7 +309,7 @@ export async function listReviewCases(status?: string) {
 export async function listAdminReviews(params: ListAdminReviewsParams) {
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
-  const query = buildReviewQuery(params);
+  const query = await buildReviewQuery(params);
   const sort: Record<string, 1 | -1> =
     params.sortBy === "oldest"
       ? { createdAt: 1 }
@@ -312,7 +324,10 @@ export async function listAdminReviews(params: ListAdminReviewsParams) {
     params.restaurantId !== "all" &&
     mongoose.Types.ObjectId.isValid(params.restaurantId)
       ? { restaurantId: new mongoose.Types.ObjectId(params.restaurantId) }
-      : {};
+      : query.restaurantId
+        ? { restaurantId: query.restaurantId }
+        : {};
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
 
   const [reviews, total, summaryRows, restaurants] = await Promise.all([
     ReviewModel.find(query)
@@ -399,7 +414,7 @@ export async function listAdminReviews(params: ListAdminReviewsParams) {
         },
       },
     ]),
-    RestaurantModel.find({}, { name: 1, address: 1 })
+    RestaurantModel.find(restaurantScopeFilter, { name: 1, address: 1 })
       .sort({ name: 1 })
       .limit(500)
       .lean(),
@@ -732,6 +747,10 @@ export async function approveReviewCase(reviewCaseId: string, adminId: string) {
     );
   }
 
+  const serviceArea = await resolveServiceZoneForCoordinates({
+    latitude: draft.location?.latitude,
+    longitude: draft.location?.longitude,
+  });
   const restaurantPayload = {
     ownerId: owner._id,
     name: restaurantName,
@@ -758,6 +777,7 @@ export async function approveReviewCase(reviewCaseId: string, adminId: string) {
       draft.location?.latitude,
       draft.location?.longitude,
     ),
+    serviceArea: serviceArea?.snapshot ?? {},
     runtime: {
       isOnline: false,
       isVisible: true,

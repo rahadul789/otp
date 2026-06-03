@@ -21,6 +21,7 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import {
   createAdminFinancePayout,
   getAdminFinancePayoutDetails,
+  getAdminServiceAreas,
   listAdminPayoutMethodApprovals,
   listAdminFinancePayouts,
   reconcileAdminRestaurantFinance,
@@ -612,6 +613,7 @@ export function FinancePayoutsPage() {
   const [search, setSearch] = React.useState("")
   const [eligibility, setEligibility] =
     React.useState<PayoutEligibilityFilter>("all")
+  const [zoneId, setZoneId] = React.useState("all")
   const [sortBy, setSortBy] = React.useState<PayoutSort>("available_desc")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(20)
@@ -641,7 +643,7 @@ export function FinancePayoutsPage() {
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, eligibility, sortBy, pageSize])
+  }, [debouncedSearch, eligibility, zoneId, sortBy, pageSize])
 
   function openPayoutDetails(restaurantId: string) {
     const nextParams = new URLSearchParams(searchParams)
@@ -662,6 +664,7 @@ export function FinancePayoutsPage() {
       "admin-finance-payouts",
       debouncedSearch,
       eligibility,
+      zoneId,
       sortBy,
       page,
       pageSize,
@@ -670,10 +673,16 @@ export function FinancePayoutsPage() {
       listAdminFinancePayouts({
         search: debouncedSearch,
         eligibility,
+        zoneId: zoneId === "all" ? undefined : zoneId,
         sortBy,
         page,
         pageSize,
       }),
+  })
+
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "finance-payouts-filter"],
+    queryFn: getAdminServiceAreas,
   })
 
   const detailsQuery = useQuery({
@@ -951,7 +960,7 @@ export function FinancePayoutsPage() {
       ) : null}
 
       <Card>
-        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(260px,1fr)_180px_190px_120px]">
+        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(260px,1fr)_180px_180px_190px_120px]">
           <div className="relative">
             <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -975,6 +984,19 @@ export function FinancePayoutsPage() {
               <SelectItem value="eligible">Eligible</SelectItem>
               <SelectItem value="pending_request">Payout pending</SelectItem>
               <SelectItem value="blocked">Blocked</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={zoneId} onValueChange={setZoneId}>
+            <SelectTrigger>
+              <SelectValue placeholder="Zone" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All zones</SelectItem>
+              {(serviceAreasQuery.data?.zones ?? []).map((zone) => (
+                <SelectItem key={zone.id} value={zone.id}>
+                  {zone.name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Select
@@ -1050,6 +1072,11 @@ export function FinancePayoutsPage() {
                           <div className="text-xs text-muted-foreground">
                             {row.restaurant.city}
                           </div>
+                          {row.restaurant.serviceArea?.zoneName ? (
+                            <Badge variant="outline" className="mt-1 border-violet-200 bg-violet-50 text-violet-700">
+                              {row.restaurant.serviceArea.zoneName}
+                            </Badge>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <div>{row.owner.fullName}</div>

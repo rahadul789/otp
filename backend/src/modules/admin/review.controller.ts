@@ -34,6 +34,8 @@ const rejectReviewCaseSchema = z.object({
 const listAdminReviewsQuerySchema = z.object({
   search: z.string().optional(),
   restaurantId: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   status: z.enum(["all", "visible", "hidden", "flagged"]).optional(),
   rating: z.enum(["all", "1", "2", "3", "4", "5"]).optional(),
   reply: z.enum(["all", "replied", "not_replied"]).optional(),
@@ -91,6 +93,8 @@ export const getAdminReviews = asyncHandler(async (req: AuthenticatedRequest, re
   const query = listAdminReviewsQuerySchema.parse({
     search: getOptionalStringParam(req.query.search),
     restaurantId: getOptionalStringParam(req.query.restaurantId),
+    zoneId: getOptionalStringParam(req.query.zoneId),
+    districtId: getOptionalStringParam(req.query.districtId),
     status: getOptionalStringParam(req.query.status),
     rating: getOptionalStringParam(req.query.rating),
     reply: getOptionalStringParam(req.query.reply),

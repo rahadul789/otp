@@ -4,6 +4,7 @@ import {
   notifyAdminSessionExpired,
   setAdminSession
 } from "./admin-session"
+import { getAdminZoneScopeQueryParams } from "./admin-zone-scope"
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "http://localhost:5000/api/v1"
@@ -48,6 +49,23 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit) {
   }
 
     throw new ApiError(500, "Unexpected response from server.")
+}
+
+function withAdminZoneScope(path: string, init?: RequestInit & { skipAuth?: boolean }) {
+  const method = (init?.method ?? "GET").toUpperCase()
+  if (method !== "GET" || !path.startsWith("/admin/")) return path
+
+  const scope = getAdminZoneScopeQueryParams()
+  if (!("zoneId" in scope) && !("districtId" in scope)) return path
+
+  const url = new URL(path, "http://foodbela-admin.local")
+  if ("zoneId" in scope && scope.zoneId && !url.searchParams.has("zoneId")) {
+    url.searchParams.set("zoneId", scope.zoneId)
+  }
+  if ("districtId" in scope && scope.districtId && !url.searchParams.has("districtId")) {
+    url.searchParams.set("districtId", scope.districtId)
+  }
+  return `${url.pathname}${url.search}`
 }
 
 async function refreshAdminSession() {
@@ -119,7 +137,8 @@ export async function adminRequest<T>(
   }
 
   try {
-    return await fetchJson<T>(`${API_BASE_URL}${path}`, {
+    const scopedPath = withAdminZoneScope(path, init)
+    return await fetchJson<T>(`${API_BASE_URL}${scopedPath}`, {
       ...init,
       headers
     })
@@ -137,7 +156,8 @@ export async function adminRequest<T>(
         throw refreshError
       }
       headers.set("authorization", `Bearer ${newToken}`)
-      return await fetchJson<T>(`${API_BASE_URL}${path}`, {
+      const scopedPath = withAdminZoneScope(path, init)
+      return await fetchJson<T>(`${API_BASE_URL}${scopedPath}`, {
         ...init,
         headers
       })

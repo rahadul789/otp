@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Easing,
-  Image,
   Linking,
   Modal,
   Pressable,
@@ -12,7 +11,6 @@ import {
   ScrollView,
   type StyleProp,
   Text,
-  TextInput,
   View,
   type ViewStyle,
 } from "react-native";
@@ -28,6 +26,7 @@ import {
   recordHomeCmsEvent,
 } from "@/src/components/home/home-cms-blocks";
 import { styles } from "@/src/components/home/home-screen.styles";
+import { RemoteImage } from "@/src/components/remote-image";
 import { RestaurantHeroCard } from "@/src/components/restaurant-hero-card";
 import { Screen } from "@/src/components/screen";
 import { SectionHeader } from "@/src/components/section-header";
@@ -202,14 +201,6 @@ function HomeHeroSkeleton({
   return (
     <View style={styles.homeHeroSkeleton}>
       <ShimmerBlock translateX={translateX} style={styles.homeBannerSkeleton} />
-      <View style={styles.skeletonChipRow}>
-        <ShimmerBlock translateX={translateX} style={styles.skeletonChipWide} />
-        <ShimmerBlock translateX={translateX} style={styles.skeletonChip} />
-        <ShimmerBlock
-          translateX={translateX}
-          style={styles.skeletonChipSmall}
-        />
-      </View>
     </View>
   );
 }
@@ -313,7 +304,7 @@ function mapRestaurantCardSubtitle(restaurant: DiscoverableRestaurant) {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const [searchQuery, setSearchQuery] = useState("");
+  const searchQuery = "";
   const [modalCampaign, setModalCampaign] =
     useState<CustomerCampaignPlacement | null>(null);
   const [showHomeCmsModal, setShowHomeCmsModal] = useState(false);
@@ -373,19 +364,28 @@ export default function HomeScreen() {
     () => (!isSearching ? (homeFeed?.campaignPlacements ?? []) : []),
     [homeFeed?.campaignPlacements, isSearching],
   );
-  const stripOffers = useMemo(
+  const homeCategoryItems = useMemo(
     () =>
+      (homeCms?.homeCategories?.items ?? [])
+        .filter((item) => item.isActive !== false && item.label.trim())
+        .sort((left, right) => (left.position ?? 0) - (right.position ?? 0))
+        .slice(0, 10),
+    [homeCms?.homeCategories?.items],
+  );
+  const shouldShowVoucherStrip =
+    !isSearching &&
+    Boolean(
       homeCms?.offerStrip.isActive &&
-      homeCms.offerStrip.mode === "voucher_strip"
-        ? activeOffers
-        : homeCms?.offerStrip.showVoucherStrip
-          ? activeOffers
-          : [],
+        homeCms.offerStrip.showVoucherStrip !== false,
+    );
+  const shouldShowRestaurantOfferSection =
+    !isSearching &&
+    homeCms?.offerStrip.showRestaurantOfferSection !== false;
+  const stripOffers = useMemo(
+    () => (shouldShowVoucherStrip ? activeOffers : []),
     [
       activeOffers,
-      homeCms?.offerStrip.isActive,
-      homeCms?.offerStrip.mode,
-      homeCms?.offerStrip.showVoucherStrip,
+      shouldShowVoucherStrip,
     ],
   );
   const offerLabelByRestaurantId = useMemo(
@@ -432,9 +432,9 @@ export default function HomeScreen() {
   }, [homeFeed?.featuredRestaurants, isSearching, nearbyRestaurants]);
 
   const offerRestaurants = useMemo(() => {
-    if (isSearching) return [];
+    if (!shouldShowRestaurantOfferSection) return [];
     return (homeFeed?.restaurantsWithOffers ?? []).slice(0, 8);
-  }, [homeFeed?.restaurantsWithOffers, isSearching]);
+  }, [homeFeed?.restaurantsWithOffers, shouldShowRestaurantOfferSection]);
   const nearbyRestaurantsForSection = useMemo(() => {
     const featuredIds = new Set(
       featuredRestaurants.map((restaurant) => restaurant._id),
@@ -526,12 +526,19 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!homeCms?.offerStrip.isActive) return;
-    if (homeCms.offerStrip.mode === "voucher_strip") {
+    if (
+      homeCms.offerStrip.mode === "voucher_strip" &&
+      homeCms.offerStrip.showVoucherStrip !== false
+    ) {
       recordHomeCmsEvent("strip_impression");
     } else if (homeCms.offerStrip.mode === "promo_block") {
       recordHomeCmsEvent("block_impression");
     }
-  }, [homeCms?.offerStrip.isActive, homeCms?.offerStrip.mode]);
+  }, [
+    homeCms?.offerStrip.isActive,
+    homeCms?.offerStrip.mode,
+    homeCms?.offerStrip.showVoucherStrip,
+  ]);
 
   useEffect(() => {
     if (!homeCms?.modal.isActive || isSearching) return;
@@ -642,6 +649,15 @@ export default function HomeScreen() {
     router.push("/location-picker");
   };
 
+  const openSearchScreen = (query?: string) => {
+    router.push({
+      pathname: "/search",
+      params: query?.trim()
+        ? { query: query.trim() }
+        : { focus: "1" },
+    });
+  };
+
   const handleMissingLocationPress = () => {
     if (permissionGranted === false) {
       void openLocationPermissionSettings();
@@ -736,9 +752,12 @@ export default function HomeScreen() {
                 ]}
               >
                 {customer?.profileImage?.url ? (
-                  <Image
-                    source={{ uri: customer.profileImage.url }}
+                  <RemoteImage
+                    uri={customer.profileImage.url}
                     style={styles.profileImage}
+                    fallbackIcon="person-outline"
+                    fallbackIconSize={18}
+                    accessibilityLabel="Profile photo"
                   />
                 ) : customer ? (
                   <Text style={styles.profileBubbleText}>
@@ -755,30 +774,58 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          <View style={styles.searchBar}>
-            <Ionicons name="search" size={18} color={palette.mutedForeground} />
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search restaurants, burgers, desserts..."
-              placeholderTextColor="rgba(95, 76, 86, 0.52)"
-              style={styles.searchInput}
-              returnKeyType="search"
-              autoCapitalize="none"
-              autoCorrect={false}
-              spellCheck={false}
-            />
-            {searchQuery.trim().length > 0 ? (
-              <Pressable
-                onPress={() => setSearchQuery("")}
-                style={styles.clearButton}
-              >
-                <Ionicons
-                  name="close"
-                  size={16}
-                  color={palette.mutedForeground}
+          <View style={styles.searchCategoryPanel}>
+            <Pressable style={styles.searchBar} onPress={() => openSearchScreen()}>
+              <View style={styles.searchIconBubble}>
+                <Ionicons name="search" size={17} color={palette.secondary} />
+              </View>
+              <Text style={styles.searchInput}>
+                Search food or restaurant
+              </Text>
+              <Ionicons name="arrow-forward" size={15} color={palette.placeholder} />
+            </Pressable>
+
+            {!isSearching &&
+            homeCms?.homeCategories?.isActive !== false &&
+            homeCategoryItems.length > 0 ? (
+              <View style={styles.homeCategoryBlock}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.homeCategoryRow}
+                >
+                  {homeCategoryItems.map((item, index) => (
+                    <Pressable
+                      key={item.id || `${item.label}-${index}`}
+                      style={[
+                        styles.homeCategoryChip,
+                        { backgroundColor: item.color || "#FFF0F6" },
+                      ]}
+                      onPress={() => openSearchScreen(item.searchQuery || item.label)}
+                    >
+                      <View style={styles.homeCategoryIconWrap}>
+                        <Ionicons
+                          name={(item.icon || "restaurant-outline") as keyof typeof Ionicons.glyphMap}
+                          size={14}
+                          color={palette.foreground}
+                        />
+                      </View>
+                      <Text style={styles.homeCategoryChipText} numberOfLines={1}>
+                        {item.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : shouldShowHomeFeedSkeleton ? (
+              <View style={styles.skeletonChipRow}>
+                <ShimmerBlock translateX={shimmerTranslateX} style={styles.skeletonChipWide} />
+                <ShimmerBlock translateX={shimmerTranslateX} style={styles.skeletonChip} />
+                <ShimmerBlock
+                  translateX={shimmerTranslateX}
+                  style={styles.skeletonChipSmall}
                 />
-              </Pressable>
+              </View>
             ) : null}
           </View>
 
@@ -950,10 +997,8 @@ export default function HomeScreen() {
               </View>
             ) : (
               <EmptyStateCard
-                title="No matching restaurants found"
-                description="Try a different search or change your delivery point."
-                actionLabel="Change location"
-                onPress={openLocationPicker}
+                title="No food or restaurant found"
+                description="Try another food name, cuisine, or restaurant spelling. You can also clear the search and browse nearby places."
               />
             )}
           </View>
@@ -1213,9 +1258,11 @@ export default function HomeScreen() {
         {modalCampaign ? (
           <>
             {modalCampaign.display.imageUrl ? (
-              <Image
-                source={{ uri: modalCampaign.display.imageUrl }}
+              <RemoteImage
+                uri={modalCampaign.display.imageUrl}
                 style={styles.campaignModalImage}
+                fallbackIcon="sparkles-outline"
+                accessibilityLabel={modalCampaign.display.title || modalCampaign.name}
               />
             ) : null}
             {resolveCustomerRoute(modalCampaign.display.ctaPath, null) ? (
@@ -1269,8 +1316,8 @@ export default function HomeScreen() {
               </Pressable>
 
               {homeCms.modal.imageUrl ? (
-                <Image
-                  source={{ uri: homeCms.modal.imageUrl }}
+                <RemoteImage
+                  uri={homeCms.modal.imageUrl}
                   style={[
                     styles.homeModalImage,
                     !homeCms.modal.title.trim() &&
@@ -1278,6 +1325,8 @@ export default function HomeScreen() {
                       ? styles.homeModalImageOnly
                       : null,
                   ]}
+                  fallbackIcon="image-outline"
+                  accessibilityLabel={homeCms.modal.title || "Foodbela announcement"}
                 />
               ) : null}
 

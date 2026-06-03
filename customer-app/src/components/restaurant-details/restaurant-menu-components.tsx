@@ -3,7 +3,6 @@ import { useRouter } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Animated,
-  Image,
   Keyboard,
   Pressable,
   ScrollView,
@@ -13,6 +12,7 @@ import {
   type GestureResponderEvent,
 } from "react-native";
 
+import { RemoteImage } from "@/src/components/remote-image";
 import { formatCurrency } from "@/src/lib/currency";
 import { buildStartingPrice, hasCustomizations } from "@/src/lib/restaurant-menu";
 import { useCartStore } from "@/src/store/cart-store";
@@ -247,13 +247,14 @@ const SearchResultCard = memo(function SearchResultCard({
       style={[styles.searchResultCard, isUnavailable ? styles.searchResultCardMuted : null]}
     >
       <View style={styles.searchResultMedia}>
-        {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={styles.searchResultImage} />
-        ) : (
-          <View style={styles.searchResultImageFallback}>
-            <Ionicons name="restaurant-outline" size={18} color={palette.mutedForeground} />
-          </View>
-        )}
+        <RemoteImage
+          uri={imageUrl}
+          style={styles.searchResultImage}
+          fallbackIcon="restaurant-outline"
+          fallbackIconSize={18}
+          fallbackTint={palette.mutedForeground}
+          accessibilityLabel={`${item.name} food photo`}
+        />
       </View>
       <View style={styles.searchResultCopy}>
         <View style={styles.searchResultTitleRow}>
@@ -644,11 +645,12 @@ export const ConnectedPopularItemCard = memo(function ConnectedPopularItemCard({
         if (!isDisabled) onPressCard(item);
       }}
     >
-      {item.images?.[0]?.url ? (
-        <Image source={{ uri: item.images[0].url }} style={styles.popularImage} />
-      ) : (
-        <View style={styles.popularImageFallback} />
-      )}
+      <RemoteImage
+        uri={item.images?.[0]?.url}
+        style={styles.popularImage}
+        fallbackIcon="fast-food-outline"
+        accessibilityLabel={`${item.name} popular food photo`}
+      />
       <View style={styles.popularMetaBadge}>
         <Ionicons name="flame" size={12} color={palette.primary} />
         <Text style={styles.popularMetaBadgeText}>Popular</Text>
@@ -770,11 +772,12 @@ export const MenuCard = memo(function MenuCard({
       </View>
 
       <View style={styles.mediaColumn}>
-        {item.images?.[0]?.url ? (
-          <Image source={{ uri: item.images[0].url }} style={styles.menuImage} />
-        ) : (
-          <View style={styles.menuImageFallback} />
-        )}
+        <RemoteImage
+          uri={item.images?.[0]?.url}
+          style={styles.menuImage}
+          fallbackIcon="fast-food-outline"
+          accessibilityLabel={`${item.name} food photo`}
+        />
 
           <InlineMenuQuantityControl
             quantity={quantity}

@@ -24,6 +24,11 @@ const listCustomersQuerySchema = z.object({
     .enum(["all", "pending", "cancelled", "reviewed", "completed", "none"])
     .optional(),
   customerGroupKey: z.string().trim().optional(),
+  zoneId: z.string().trim().optional(),
+  districtId: z.string().trim().optional(),
+  preset: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
   sortBy: z.enum(["newest", "recentLogin", "mostOrders", "highestSpend"]).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
@@ -49,10 +54,14 @@ const detailsQuerySchema = z.object({
   preset: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  zoneId: z.string().trim().optional(),
+  districtId: z.string().trim().optional(),
 });
 
 const listCustomerOrdersQuerySchema = detailsQuerySchema.extend({
   restaurantId: z.string().optional(),
+  zoneId: z.string().trim().optional(),
+  districtId: z.string().trim().optional(),
   status: z.enum(["all", "live", "delivered", "cancelled"]).optional(),
   search: z.string().optional(),
   sortBy: z.enum(["newest", "oldest", "highestValue"]).optional(),
@@ -83,8 +92,11 @@ export const getAdminCustomers = asyncHandler(
 );
 
 export const getAdminCustomerGroups = asyncHandler(
-  async (_req: AuthenticatedRequest, res: Response) => {
-    const data = await listAdminCustomerGroups();
+  async (req: AuthenticatedRequest, res: Response) => {
+    const query = listCustomersQuerySchema
+      .pick({ zoneId: true, districtId: true })
+      .parse(req.query);
+    const data = await listAdminCustomerGroups(query);
 
     return sendSuccess(res, { data });
   },

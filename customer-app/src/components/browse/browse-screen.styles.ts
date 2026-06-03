@@ -7,6 +7,19 @@ export const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 40,
   },
+  footerLoader: {
+    minHeight: 64,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  footerLoaderText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    color: palette.mutedForeground,
+  },
   headerWrap: {
     paddingTop: 12,
     paddingBottom: 16,

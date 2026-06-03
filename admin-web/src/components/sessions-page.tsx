@@ -23,6 +23,10 @@ import {
   type AdminSessionRole,
   type AdminSessionStatus,
 } from "@/lib/admin-api"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import { useAdminRefreshPolicy } from "@/lib/refresh-policy"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -229,12 +233,25 @@ export function SessionsPage() {
   const [role, setRole] = React.useState<RoleFilter>("all")
   const [status, setStatus] = React.useState<StatusFilter>("active")
   const [page, setPage] = React.useState(1)
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
   const [pendingRevoke, setPendingRevoke] =
     React.useState<PendingRevokeAction | null>(null)
   const pageSize = 50
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id || "all"}`
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+        setPage(1)
+      }),
+    []
+  )
 
   const sessionsQuery = useQuery({
-    queryKey: ["admin-sessions", role, status, page, pageSize],
+    queryKey: ["admin-sessions", role, status, page, pageSize, adminScopeKey],
     queryFn: () =>
       listAdminSessions({
         role,

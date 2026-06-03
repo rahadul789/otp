@@ -78,6 +78,8 @@ const voucherSchema = z.object({
 
 const ownerVoucherListQuerySchema = z.object({
   search: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   lifecycle: z.enum(["all", "Active", "Scheduled", "Expired", "Draft", "Archived"]).optional(),
   mode: z.enum(["all", "auto", "coupon"]).optional(),
   type: z.enum(["all", "flat", "percentage", "free-delivery"]).optional(),
@@ -159,6 +161,8 @@ export const patchOwnerVoucher = asyncHandler(async (req: AuthenticatedRequest, 
 export const getAdminVouchers = asyncHandler(async (req: Request, res: Response) => {
   const query = adminVoucherListQuerySchema.parse({
     restaurantId: getStringParam(req.query.restaurantId) || undefined,
+    zoneId: getStringParam(req.query.zoneId) || undefined,
+    districtId: getStringParam(req.query.districtId) || undefined,
     scopeType: getStringParam(req.query.scopeType) || undefined,
     search: getStringParam(req.query.search) || undefined,
     lifecycle: getStringParam(req.query.lifecycle) || undefined,

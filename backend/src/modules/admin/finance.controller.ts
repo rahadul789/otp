@@ -29,6 +29,8 @@ const pageQuerySchema = {
 const payoutsQuerySchema = z.object({
   ...pageQuerySchema,
   search: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   eligibility: z
     .enum(["all", "eligible", "blocked", "pending_request"])
     .optional(),
@@ -41,6 +43,8 @@ const ledgerQuerySchema = z.object({
   ...pageQuerySchema,
   search: z.string().optional(),
   restaurantId: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   entryType: z.enum(["all", "earning", "refund", "payout", "adjustment"]).optional(),
   settlementStatus: z.enum(["all", "pending", "available", "paid_out"]).optional(),
   sortBy: z.enum(["newest", "oldest", "highest_net", "lowest_net"]).optional(),
@@ -50,6 +54,8 @@ const refundsQuerySchema = z.object({
   ...pageQuerySchema,
   search: z.string().optional(),
   restaurantId: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   status: z
     .enum(["all", "refund_pending", "refunded", "refund_rejected", "needs_review"])
     .optional(),
@@ -81,6 +87,8 @@ const walletQuerySchema = z.object({
       "other",
     ])
     .optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 const moneyTransactionsQuerySchema = z.object({
@@ -108,6 +116,8 @@ const moneyTransactionsQuerySchema = z.object({
     ])
     .optional(),
   source: z.enum(["all", "order", "payout", "refund", "payroll", "wallet"]).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 const platformFinanceQuerySchema = z.object({
@@ -126,6 +136,8 @@ const platformFinanceQuerySchema = z.object({
     .optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 const createPayoutSchema = z.object({

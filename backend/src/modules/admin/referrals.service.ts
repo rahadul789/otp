@@ -233,14 +233,14 @@ function serializeReferralRow(row: Record<string, any>) {
     riskScore: numberValue(row.riskScore),
     referrer: {
       id: objectIdString(referrer._id),
-      fullName: stringValue(referrer.fullName, "Foodbela User"),
+      fullName: stringValue(referrer.fullName, "Your name"),
       phone: stringValue(referrer.phone),
       status: stringValue(referrer.status),
       referralCode: stringValue(referrer.referralCode),
     },
     referredCustomer: {
       id: objectIdString(row._id),
-      fullName: stringValue(row.fullName, "Foodbela User"),
+      fullName: stringValue(row.fullName, "Your name"),
       phone: stringValue(row.phone),
       status: stringValue(row.status),
       referralCode: stringValue(row.referralCode),
@@ -413,7 +413,7 @@ export async function listAdminReferrals(params: ReferralListParams = {}) {
     summary: buildSummary(statusRows, rewardValue),
     topReferrers: topReferrerRows.map((row) => ({
       id: objectIdString(row._id),
-      fullName: stringValue(row.fullName, "Foodbela User"),
+      fullName: stringValue(row.fullName, "Your name"),
       phone: stringValue(row.phone),
       referralCode: stringValue(row.referralCode),
       totalReferrals: numberValue(row.totalReferrals),

@@ -27,8 +27,15 @@ const testPushSchema = z.object({
   customerId: z.string().trim().min(1),
 })
 
-export const getAdminPlatformContent = asyncHandler(async (_req: Request, res: Response) => {
-  const data = await getAdminEditablePlatformContent()
+function getAreaScope(req: Request) {
+  return {
+    zoneId: typeof req.query.zoneId === "string" ? req.query.zoneId : undefined,
+    districtId: typeof req.query.districtId === "string" ? req.query.districtId : undefined,
+  }
+}
+
+export const getAdminPlatformContent = asyncHandler(async (req: Request, res: Response) => {
+  const data = await getAdminEditablePlatformContent(getAreaScope(req))
   return sendSuccess(res, { data })
 })
 
@@ -36,6 +43,7 @@ export const putAdminPlatformContent = asyncHandler(async (req: Request, res: Re
   const data = await updatePlatformContent({
     adminId: req.user?.id ?? "",
     content: req.body,
+    scope: getAreaScope(req),
   })
 
   return sendSuccess(res, {

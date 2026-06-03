@@ -2,8 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   FlatList,
-  Image,
   Pressable,
   ScrollView,
   Text,
@@ -16,13 +16,14 @@ import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { RestaurantListSkeleton } from "@/src/components/loading-skeleton";
 import { styles } from "@/src/components/browse/browse-screen.styles";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
+import { RemoteImage } from "@/src/components/remote-image";
 import { RestaurantHeroCard } from "@/src/components/restaurant-hero-card";
 import { Screen } from "@/src/components/screen";
 import { DELIVERY_RADIUS_KM } from "@/src/config/service-area";
 import {
   useCustomerDiscoveryHomeQuery,
   useCustomerFavoriteRestaurantIdsQuery,
-  useNearbyRestaurantsQuery,
+  useRestaurantDiscoveryInfiniteQuery,
   useCustomerToggleFavoriteRestaurantMutation,
 } from "@/src/hooks/use-customer-api";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
@@ -108,6 +109,7 @@ function formatVisitedTime(value?: string) {
 export default function BrowseScreen() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<BrowseFilter>("all");
   const [sortBy, setSortBy] = useState<BrowseSort>("nearest");
   const [minimumRating, setMinimumRating] = useState<BrowseRating>(0);
@@ -138,11 +140,24 @@ export default function BrowseScreen() {
   const isOnline = useIsOnline();
   const permissionGranted = useLocationStore((state) => state.permissionGranted);
 
-  const nearbyRestaurantsQuery = useNearbyRestaurantsQuery({
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, searchQuery.trim().length <= 2 ? 180 : 280);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const nearbyRestaurantsQuery = useRestaurantDiscoveryInfiniteQuery({
     latitude: selectedLocation?.latitude,
     longitude: selectedLocation?.longitude,
     radiusKm: DELIVERY_RADIUS_KM,
-    search: searchQuery,
+    search: debouncedSearchQuery,
+    filter: activeFilter,
+    sortBy,
+    minimumRating,
+    maximumLowestPrice,
+    pageSize: 12,
   });
 
   const homeDiscoveryQuery = useCustomerDiscoveryHomeQuery({
@@ -154,18 +169,12 @@ export default function BrowseScreen() {
   const toggleFavoriteMutation = useCustomerToggleFavoriteRestaurantMutation();
 
   const restaurants = useMemo(
-    () => nearbyRestaurantsQuery.data ?? [],
+    () => nearbyRestaurantsQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [nearbyRestaurantsQuery.data]
   );
+  const totalRestaurantCount =
+    nearbyRestaurantsQuery.data?.pages[0]?.total ?? restaurants.length;
 
-  const featuredIds = useMemo(
-    () => new Set((homeDiscoveryQuery.data?.featuredRestaurants ?? []).map((item) => item._id)),
-    [homeDiscoveryQuery.data?.featuredRestaurants]
-  );
-  const offerIds = useMemo(
-    () => new Set((homeDiscoveryQuery.data?.restaurantsWithOffers ?? []).map((item) => item._id)),
-    [homeDiscoveryQuery.data?.restaurantsWithOffers]
-  );
   const offerLabelByRestaurantId = useMemo(
     () => buildRestaurantOfferMap(homeDiscoveryQuery.data?.activeOffers ?? []),
     [homeDiscoveryQuery.data?.activeOffers]
@@ -213,42 +222,7 @@ export default function BrowseScreen() {
     ? toggleFavoriteMutation.variables
     : null;
 
-  const filteredRestaurants = useMemo(() => {
-    const next = restaurants.filter((restaurant) => {
-      if (activeFilter === "open") return restaurant.isOpen !== false;
-      if (activeFilter === "offers") return offerIds.has(restaurant._id);
-      if (activeFilter === "featured") return featuredIds.has(restaurant._id);
-      return true;
-    }).filter((restaurant) => {
-      if (!minimumRating) return true;
-      return (restaurant.avgRating ?? 0) >= minimumRating;
-    }).filter((restaurant) => {
-      if (!maximumLowestPrice) return true;
-      if (typeof restaurant.lowestMenuPrice !== "number") return false;
-      return restaurant.lowestMenuPrice <= maximumLowestPrice;
-    });
-
-    return [...next].sort((left, right) => {
-      if (sortBy === "fastest") {
-        return (left.preparationTimeMinutes ?? Number.MAX_SAFE_INTEGER) -
-          (right.preparationTimeMinutes ?? Number.MAX_SAFE_INTEGER);
-      }
-
-      if (sortBy === "topRated") {
-        return (right.avgRating ?? 0) - (left.avgRating ?? 0);
-      }
-
-      return (left.distanceKm ?? Number.MAX_SAFE_INTEGER) - (right.distanceKm ?? Number.MAX_SAFE_INTEGER);
-    });
-  }, [
-    activeFilter,
-    featuredIds,
-    maximumLowestPrice,
-    minimumRating,
-    offerIds,
-    restaurants,
-    sortBy,
-  ]);
+  const filteredRestaurants = restaurants;
 
   const activeFilterLabel = useMemo(() => {
     switch (activeFilter) {
@@ -371,6 +345,23 @@ export default function BrowseScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
         ItemSeparatorComponent={() => <View style={{ height: 14 }} />}
+        onEndReachedThreshold={0.35}
+        onEndReached={() => {
+          if (
+            nearbyRestaurantsQuery.hasNextPage &&
+            !nearbyRestaurantsQuery.isFetchingNextPage
+          ) {
+            void nearbyRestaurantsQuery.fetchNextPage();
+          }
+        }}
+        ListFooterComponent={
+          nearbyRestaurantsQuery.isFetchingNextPage ? (
+            <View style={styles.footerLoader}>
+              <ActivityIndicator size="small" color={palette.secondary} />
+              <Text style={styles.footerLoaderText}>Loading more restaurants</Text>
+            </View>
+          ) : null
+        }
         ListHeaderComponent={
           <View style={styles.headerWrap}>
             <View style={styles.headerCard}>
@@ -410,8 +401,8 @@ export default function BrowseScreen() {
 
               <View style={styles.sortRow}>
                 <Text style={styles.sortSummary}>
-                  {filteredRestaurants.length} result
-                  {filteredRestaurants.length === 1 ? "" : "s"} • {activeFilterLabel}
+                  {totalRestaurantCount} result
+                  {totalRestaurantCount === 1 ? "" : "s"} • {activeFilterLabel}
                 </Text>
                 {activeFilterCount > 0 ? (
                   <Pressable
@@ -493,22 +484,14 @@ export default function BrowseScreen() {
                           }
                         >
                           <View style={styles.recentVisitedThumb}>
-                            {restaurant.imageUrl ? (
-                              <Image
-                                source={{ uri: restaurant.imageUrl }}
-                                style={styles.recentVisitedImage}
-                              />
-                            ) : (
-                              <View
-                                style={styles.recentVisitedImageFallback}
-                              >
-                                <Ionicons
-                                  name="restaurant-outline"
-                                  size={18}
-                                  color={palette.secondary}
-                                />
-                              </View>
-                            )}
+                            <RemoteImage
+                              uri={restaurant.imageUrl}
+                              style={styles.recentVisitedImage}
+                              fallbackIcon="restaurant-outline"
+                              fallbackIconSize={18}
+                              fallbackTint={palette.secondary}
+                              accessibilityLabel={`${restaurant.name} restaurant photo`}
+                            />
                           </View>
                           <View style={styles.recentVisitedCopy}>
                             <Text
@@ -600,15 +583,19 @@ export default function BrowseScreen() {
           ) : (
             <EmptyStateCard
               title={
-                isOnline ? "No restaurants found" : "Restaurants are unavailable offline"
+                isOnline && searchQuery.trim()
+                  ? "No matching food found"
+                  : isOnline
+                    ? "No restaurants found"
+                    : "Restaurants are unavailable offline"
               }
               description={
-                isOnline
-                  ? "Try another search, filter, or location to see more restaurants."
+                isOnline && searchQuery.trim()
+                  ? "Try another spelling, food name, cuisine, or restaurant. Your location is still selected."
+                  : isOnline
+                    ? "Try another filter or search to see more restaurants in this area."
                   : "Check your internet connection to load restaurants for this area again."
               }
-              actionLabel={isOnline ? "Choose location" : undefined}
-              onPress={isOnline ? openLocationPicker : undefined}
             />
           )
         }

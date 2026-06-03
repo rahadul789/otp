@@ -9,6 +9,8 @@ import {
   CreditCard,
   Headphones,
   Loader2,
+  Globe2,
+  MapPin,
   Megaphone,
   MessageSquareText,
   Moon,
@@ -77,6 +79,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { Switch } from "@/components/ui/switch"
 import {
   bootstrapAdmin,
+  getAdminServiceAreas,
   getAdminReports,
   getAdminSmsBalance,
   listAdminOrders,
@@ -90,6 +93,12 @@ import {
   type AdminNotificationCenterItem,
   type AdminReportsPreset,
 } from "@/lib/admin-api"
+import {
+  getAdminZoneScope,
+  setAdminZoneScope,
+  subscribeAdminZoneScope,
+  type AdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import {
   clearAdminSession,
   ADMIN_SESSION_EXPIRED_EVENT,
@@ -172,6 +181,11 @@ const LiveMapPage = React.lazy(() =>
     default: module.LiveMapPage,
   }))
 )
+const ServiceAreasPage = React.lazy(() =>
+  import("@/components/service-areas-page").then((module) => ({
+    default: module.ServiceAreasPage,
+  }))
+)
 const PaymentsPage = React.lazy(() =>
   import("@/components/payments-page").then((module) => ({
     default: module.PaymentsPage,
@@ -240,6 +254,11 @@ const CustomerAnalyticsPage = React.lazy(() =>
 const ReferralsPage = React.lazy(() =>
   import("@/components/referrals-page").then((module) => ({
     default: module.ReferralsPage,
+  }))
+)
+const WebsitePage = React.lazy(() =>
+  import("@/components/website-page").then((module) => ({
+    default: module.WebsitePage,
   }))
 )
 const SettingsPage = React.lazy(() =>
@@ -799,12 +818,16 @@ function formatNavNotificationTime(value?: string | null) {
 }
 
 function navNotificationIcon(
-  item: Pick<AdminNotificationCenterItem, "source" | "type" | "deliveryStatus">
+  item: Pick<
+    AdminNotificationCenterItem,
+    "source" | "type" | "deliveryStatus" | "entityType" | "path"
+  >
 ) {
   if (item.deliveryStatus === "failed") return XCircle
   if (item.deliveryStatus === "critical") return XCircle
   if (item.deliveryStatus === "warning") return ShieldCheck
   if (item.deliveryStatus === "sent") return CheckCircle2
+  if (item.entityType === "website_lead" || item.path?.startsWith("/website")) return Globe2
   if (item.source === "ops" && item.type.includes("support")) return Headphones
   if (item.source === "ops" && item.type.includes("rider")) return Truck
   if (
@@ -846,7 +869,8 @@ function resolveAdminNotificationPath(item: AdminNotificationCenterItem) {
     item.path?.startsWith("/payouts") ||
     item.path?.startsWith("/ledger") ||
     item.path?.startsWith("/refunds") ||
-    item.path?.startsWith("/reports")
+    item.path?.startsWith("/reports") ||
+    item.path?.startsWith("/website")
   ) {
     return item.path
   }
@@ -974,6 +998,134 @@ function AdminGlobalSearch({
         </div>
       ) : null}
     </div>
+  )
+}
+
+function AdminZoneScopeSelector() {
+  const queryClient = useQueryClient()
+  const [scope, setScope] = React.useState<AdminZoneScope>(() => getAdminZoneScope())
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "scope-selector"],
+    queryFn: getAdminServiceAreas,
+    staleTime: 60_000,
+  })
+  const districts = serviceAreasQuery.data?.districts ?? []
+  const zones = serviceAreasQuery.data?.zones ?? []
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setScope(getAdminZoneScope())
+      }),
+    []
+  )
+
+  React.useEffect(() => {
+    if (scope.type === "all" || serviceAreasQuery.isLoading) return
+    const stillExists =
+      scope.type === "district"
+        ? districts.some((district) => district.id === scope.id)
+        : zones.some((zone) => zone.id === scope.id)
+    if (!stillExists) {
+      setAdminZoneScope({ type: "all", id: "", label: "All areas" })
+    }
+  }, [districts, serviceAreasQuery.isLoading, scope, zones])
+
+  function changeScope(nextScope: AdminZoneScope) {
+    setAdminZoneScope(nextScope)
+    void queryClient.invalidateQueries()
+  }
+
+  const selectedLabel = scope.type === "all" ? "All areas" : scope.label
+  const selectedDetail =
+    scope.type === "zone"
+      ? "Zone scoped"
+      : scope.type === "district"
+        ? "District scoped"
+        : "Platform wide"
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className="hidden h-9 max-w-[220px] justify-start gap-2 rounded-full px-3 lg:inline-flex"
+        >
+          {scope.type === "all" ? <Globe2 className="size-4" /> : <MapPin className="size-4" />}
+          <span className="min-w-0 text-left">
+            <span className="block truncate text-xs font-semibold">{selectedLabel}</span>
+            <span className="block truncate text-[10px] text-muted-foreground">{selectedDetail}</span>
+          </span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="max-h-[min(70vh,32rem)] w-[min(92vw,22rem)] overflow-y-auto">
+        <DropdownMenuLabel>Admin area scope</DropdownMenuLabel>
+        <DropdownMenuItem
+          onClick={() => changeScope({ type: "all", id: "", label: "All areas" })}
+        >
+          <Globe2 className="size-4" />
+          <span>
+            <span className="block text-sm font-medium">All areas</span>
+            <span className="block text-xs text-muted-foreground">
+              Show platform-wide data
+            </span>
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {serviceAreasQuery.isLoading ? (
+          <DropdownMenuItem disabled>
+            <Loader2 className="size-4 animate-spin" />
+            Loading service areas
+          </DropdownMenuItem>
+        ) : null}
+        {!serviceAreasQuery.isLoading && zones.length === 0 ? (
+          <DropdownMenuItem disabled>No service zone created yet</DropdownMenuItem>
+        ) : null}
+        {districts.map((district) => (
+          <React.Fragment key={district.id}>
+            <DropdownMenuItem
+              onClick={() =>
+                changeScope({
+                  type: "district",
+                  id: district.id,
+                  label: district.name,
+                })
+              }
+            >
+              <MapPin className="size-4" />
+              <span>
+                <span className="block text-sm font-medium">{district.name}</span>
+                <span className="block text-xs text-muted-foreground">
+                  All zones in this district
+                </span>
+              </span>
+            </DropdownMenuItem>
+            {district.zones.map((zone) => (
+              <DropdownMenuItem
+                key={zone.id}
+                className="pl-8"
+                onClick={() =>
+                  changeScope({
+                    type: "zone",
+                    id: zone.id,
+                    label: zone.name,
+                  })
+                }
+              >
+                <span className="size-2 rounded-full bg-primary" />
+                <span>
+                  <span className="block text-sm">{zone.name}</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {zone.radiusKm} km radius - {zone.status}
+                  </span>
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </React.Fragment>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -1137,6 +1289,7 @@ function AdminLayout() {
               </div>
 
               <div className="flex items-center gap-2">
+                <AdminZoneScopeSelector />
                 <Button
                   variant="outline"
                   size="icon"
@@ -2950,6 +3103,14 @@ const router = createBrowserRouter([
         ),
       },
       {
+        path: "service-areas",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <ServiceAreasPage />
+          </React.Suspense>
+        ),
+      },
+      {
         path: "payments",
         element: (
           <React.Suspense fallback={<RouteLoading />}>
@@ -3058,6 +3219,14 @@ const router = createBrowserRouter([
         element: (
           <React.Suspense fallback={<RouteLoading />}>
             <ReferralsPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "website",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <WebsitePage />
           </React.Suspense>
         ),
       },

@@ -25,6 +25,11 @@ import {
   markAdminOperationalAlertRead,
   markAllAdminOperationalAlertsRead,
 } from "./admin-alert.service";
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+  buildRiderServiceAreaScopeFilter,
+} from "../service-area/service-area.service";
 
 type NotificationSource = "all" | "customer" | "owner" | "rider" | "campaign" | "scheduled" | "ops";
 type NotificationStatus = "all" | "read" | "unread";
@@ -32,6 +37,8 @@ type RecipientType = "customers" | "owners" | "riders";
 type RecipientAudience = "all" | "selected";
 
 type ListParams = {
+  zoneId?: string;
+  districtId?: string;
   source?: NotificationSource;
   status?: NotificationStatus;
   search?: string;
@@ -47,6 +54,8 @@ type CampaignRecipientReport = {
 };
 
 type SendParams = {
+  zoneId?: string;
+  districtId?: string;
   recipientType: RecipientType;
   audience: RecipientAudience;
   recipientIds?: string[];
@@ -109,6 +118,28 @@ function objectIdString(value: unknown) {
   if (value instanceof mongoose.Types.ObjectId) return value.toString();
   if (typeof value === "object" && "toString" in value) return String(value);
   return "";
+}
+
+function hasAreaScope(params: { zoneId?: string; districtId?: string }) {
+  return Boolean(params.zoneId?.trim() || params.districtId?.trim());
+}
+
+async function getScopedCustomerIds(params: { zoneId?: string; districtId?: string }) {
+  if (!hasAreaScope(params)) return null;
+  return OrderModel.distinct("customerId", {
+    ...buildOrderServiceAreaScopeFilter(params),
+    customerId: { $type: "string", $ne: "" },
+  });
+}
+
+async function getScopedRestaurantIds(params: { zoneId?: string; districtId?: string }) {
+  if (!hasAreaScope(params)) return null;
+  return RestaurantModel.distinct("_id", buildRestaurantServiceAreaScopeFilter(params));
+}
+
+async function getScopedRiderIds(params: { zoneId?: string; districtId?: string }) {
+  if (!hasAreaScope(params)) return null;
+  return RiderModel.distinct("_id", buildRiderServiceAreaScopeFilter(params));
 }
 
 function serializeDate(value: unknown) {
@@ -268,7 +299,12 @@ async function getCustomerNotificationItems(
   fetchLimit: number,
   settings: Awaited<ReturnType<typeof getAdminNotificationSettings>>,
 ): Promise<NotificationQueryResult> {
+  const scopedCustomerIds = await getScopedCustomerIds(params);
+  const scopeStages = scopedCustomerIds
+    ? [{ $match: { _id: { $in: objectIdValues(scopedCustomerIds) } } }]
+    : [];
   const [result] = await CustomerModel.aggregate([
+    ...scopeStages,
     {
       $project: {
         fullName: 1,
@@ -394,6 +430,10 @@ async function getOwnerNotificationItems(
   settings: Awaited<ReturnType<typeof getAdminNotificationSettings>>,
 ): Promise<NotificationQueryResult> {
   const query = buildOwnerNotificationQuery(params, settings);
+  const scopedRestaurantIds = await getScopedRestaurantIds(params);
+  if (scopedRestaurantIds) {
+    query.restaurantId = { $in: scopedRestaurantIds };
+  }
   const [rows, total, unread] = await Promise.all([
     NotificationModel.find(query)
     .sort({ createdAt: -1 })
@@ -404,6 +444,7 @@ async function getOwnerNotificationItems(
     NotificationModel.countDocuments(query),
     NotificationModel.countDocuments({
       entityType: { $ne: "admin_notification" },
+      ...(scopedRestaurantIds ? { restaurantId: { $in: scopedRestaurantIds } } : {}),
       isRead: { $ne: true },
     }),
   ]);
@@ -437,7 +478,12 @@ async function getRiderNotificationItems(
   params: ListParams,
   fetchLimit: number,
 ): Promise<NotificationQueryResult> {
+  const scopedRiderIds = await getScopedRiderIds(params);
+  const scopeStages = scopedRiderIds
+    ? [{ $match: { _id: { $in: objectIdValues(scopedRiderIds) } } }]
+    : [];
   const [result] = await RiderModel.aggregate([
+    ...scopeStages,
     {
       $project: {
         fullName: 1,
@@ -509,8 +555,19 @@ async function getRiderNotificationItems(
   };
 }
 
-async function getEmbeddedNotificationSummary(model: typeof CustomerModel | typeof RiderModel) {
+async function getEmbeddedNotificationSummary(
+  model: typeof CustomerModel | typeof RiderModel,
+  params: ListParams = {},
+) {
+  const scopedIds =
+    model === CustomerModel
+      ? await getScopedCustomerIds(params)
+      : await getScopedRiderIds(params);
+  const scopeStages = scopedIds
+    ? [{ $match: { _id: { $in: objectIdValues(scopedIds) } } }]
+    : [];
   const [result] = await model.aggregate([
+    ...scopeStages,
     {
       $facet: {
         tokenTotals: [
@@ -709,6 +766,7 @@ async function getScheduledItems() {
 export async function listAdminNotifications(params: ListParams = {}) {
   const { page, pageSize } = normalizePage(params);
   const cacheKey = [
+    params.zoneId ? `zone:${params.zoneId}` : params.districtId ? `district:${params.districtId}` : "all",
     params.source ?? "all",
     params.status ?? "all",
     params.search?.trim().toLowerCase() ?? "",
@@ -740,8 +798,8 @@ export async function listAdminNotifications(params: ListParams = {}) {
         ? getScheduledItems()
         : Promise.resolve([]),
       shouldLoadSource(params, "ops") ? listAdminOperationalAlerts() : Promise.resolve([]),
-      getEmbeddedNotificationSummary(CustomerModel),
-      getEmbeddedNotificationSummary(RiderModel),
+      getEmbeddedNotificationSummary(CustomerModel, params),
+      getEmbeddedNotificationSummary(RiderModel, params),
     ]);
 
   const allItems = [
@@ -816,13 +874,22 @@ export async function listAdminNotifications(params: ListParams = {}) {
 
 async function resolveCustomerTargets(params: SendParams) {
   const query: Record<string, unknown> = { status: "active" };
+  const scopedCustomerIds = await getScopedCustomerIds(params);
+  if (scopedCustomerIds) {
+    query._id = { $in: scopedCustomerIds };
+  }
   const audienceType = params.customerAudienceType ?? (params.audience === "selected" ? "selected_users" : "all_users");
   if (params.audience === "selected" || audienceType === "selected_users") {
-    query._id = { $in: (params.recipientIds ?? []).filter(Boolean) };
+    query._id = {
+      ...(typeof query._id === "object" && query._id ? query._id : {}),
+      $in: scopedCustomerIds
+        ? (params.recipientIds ?? []).filter((id) => scopedCustomerIds.map(String).includes(String(id)))
+        : (params.recipientIds ?? []).filter(Boolean),
+    };
   } else if (audienceType === "new_users") {
-    query._id = { $nin: await OrderModel.distinct("customerId", {}) };
+    query._id = { ...(typeof query._id === "object" && query._id ? query._id : {}), $nin: await OrderModel.distinct("customerId", buildOrderServiceAreaScopeFilter(params)) };
   } else if (audienceType === "returning_users") {
-    query._id = { $in: await OrderModel.distinct("customerId", {}) };
+    query._id = { ...(typeof query._id === "object" && query._id ? query._id : {}), $in: await OrderModel.distinct("customerId", buildOrderServiceAreaScopeFilter(params)) };
   }
 
   if (params.customerGroupKey?.startsWith("manual:")) {
@@ -846,15 +913,15 @@ async function resolveCustomerTargets(params: SendParams) {
     };
   } else if (params.customerGroupKey === "ordered_last_30_days") {
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const customerIds = await OrderModel.distinct("customerId", { createdAt: { $gte: since } });
+    const customerIds = await OrderModel.distinct("customerId", { ...buildOrderServiceAreaScopeFilter(params), createdAt: { $gte: since } });
     query._id = { ...(typeof query._id === "object" && query._id ? query._id : {}), $in: customerIds };
   } else if (params.customerGroupKey === "inactive_30_days") {
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const customerIds = await OrderModel.distinct("customerId", { createdAt: { $gte: since } });
+    const customerIds = await OrderModel.distinct("customerId", { ...buildOrderServiceAreaScopeFilter(params), createdAt: { $gte: since } });
     query._id = { ...(typeof query._id === "object" && query._id ? query._id : {}), $nin: customerIds };
   } else if (params.customerGroupKey === "high_value_customers") {
     const rows = await OrderModel.aggregate([
-      { $match: { status: "Delivered" } },
+      { $match: { ...buildOrderServiceAreaScopeFilter(params), status: "Delivered" } },
       { $group: { _id: "$customerId", totalSpend: { $sum: { $toDouble: { $ifNull: ["$pricing.total", 0] } } } } },
       { $match: { totalSpend: { $gte: 1000 } } },
       { $limit: 2000 },
@@ -865,6 +932,7 @@ async function resolveCustomerTargets(params: SendParams) {
 
   if (params.restaurantScope === "selected_restaurants" && params.selectedRestaurantIds?.length) {
     const customerIds = await OrderModel.distinct("customerId", {
+      ...buildOrderServiceAreaScopeFilter(params),
       restaurantId: { $in: params.selectedRestaurantIds },
     });
     query._id = query._id
@@ -876,8 +944,17 @@ async function resolveCustomerTargets(params: SendParams) {
 
 async function resolveRestaurantTargets(params: SendParams) {
   const query: Record<string, unknown> = { activeRestaurantId: { $ne: null } };
+  const scopedRestaurantIds = await getScopedRestaurantIds(params);
+  if (scopedRestaurantIds) {
+    query.activeRestaurantId = { $in: scopedRestaurantIds };
+  }
   if (params.audience === "selected") {
-    query.activeRestaurantId = { $in: (params.recipientIds ?? []).filter(Boolean) };
+    const selectedIds = (params.recipientIds ?? []).filter(Boolean);
+    query.activeRestaurantId = {
+      $in: scopedRestaurantIds
+        ? selectedIds.filter((id) => scopedRestaurantIds.map(String).includes(String(id)))
+        : selectedIds,
+    };
   }
   const owners = await OwnerModel.find(query)
     .select("_id fullName phone activeRestaurantId")
@@ -896,8 +973,17 @@ async function resolveRestaurantTargets(params: SendParams) {
 
 async function resolveRiderTargets(params: SendParams) {
   const query: Record<string, unknown> = { status: "active" };
+  const scopedRiderIds = await getScopedRiderIds(params);
+  if (scopedRiderIds) {
+    query._id = { $in: scopedRiderIds };
+  }
   if (params.audience === "selected") {
-    query._id = { $in: (params.recipientIds ?? []).filter(Boolean) };
+    const selectedIds = (params.recipientIds ?? []).filter(Boolean);
+    query._id = {
+      $in: scopedRiderIds
+        ? selectedIds.filter((id) => scopedRiderIds.map(String).includes(String(id)))
+        : selectedIds,
+    };
   }
   return RiderModel.find(query).select("_id fullName phone pushTokens").limit(5000).lean();
 }

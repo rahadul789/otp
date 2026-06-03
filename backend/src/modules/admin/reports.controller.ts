@@ -12,6 +12,8 @@ const reportsQuerySchema = z.object({
     .optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 function getStringParam(value: unknown) {
@@ -30,6 +32,8 @@ export const getAdminReportsController = asyncHandler(async (req: AuthenticatedR
     preset: getOptionalStringParam(req.query.preset),
     from: getOptionalStringParam(req.query.from),
     to: getOptionalStringParam(req.query.to),
+    zoneId: getOptionalStringParam(req.query.zoneId),
+    districtId: getOptionalStringParam(req.query.districtId),
   });
   const data = await getAdminReports(query);
   return sendSuccess(res, { data });

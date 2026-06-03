@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -23,6 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { styles } from "@/src/components/support/support-chat.styles";
 import { Screen } from "@/src/components/screen";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
+import { RemoteImage } from "@/src/components/remote-image";
 import {
   type CustomerSupportCase,
   type CustomerSupportCaseAttachment,
@@ -542,10 +542,11 @@ export default function SupportChatScreen() {
               <Pressable
                 onPress={() => setPreviewImageUri(item.localImageUri ?? null)}
               >
-                <Image
-                  source={{ uri: item.localImageUri }}
+                <RemoteImage
+                  uri={item.localImageUri}
                   style={styles.messageImage}
-                  contentFit="cover"
+                  fallbackIcon="image-outline"
+                  accessibilityLabel="Support chat image"
                 />
               </Pressable>
             ) : null}
@@ -554,10 +555,11 @@ export default function SupportChatScreen() {
                 key={`${item.id}-${attachment.url}`}
                 onPress={() => setPreviewImageUri(attachment.url)}
               >
-                <Image
-                  source={{ uri: attachment.url }}
+                <RemoteImage
+                  uri={attachment.url}
                   style={styles.messageImage}
-                  contentFit="cover"
+                  fallbackIcon="image-outline"
+                  accessibilityLabel="Support chat attachment"
                 />
               </Pressable>
             ))}
@@ -716,10 +718,11 @@ export default function SupportChatScreen() {
           >
             {pendingImageUri ? (
               <View style={styles.previewCard}>
-                <Image
-                  source={{ uri: pendingImageUri }}
+                <RemoteImage
+                  uri={pendingImageUri}
                   style={styles.previewImage}
-                  contentFit="cover"
+                  fallbackIcon="image-outline"
+                  accessibilityLabel="Pending support photo"
                 />
                 {isUploading ? (
                   <View style={styles.previewOverlay}>
@@ -880,10 +883,12 @@ export default function SupportChatScreen() {
                 <Ionicons name="close" size={20} color="#fff" />
               </Pressable>
               {previewImageUri ? (
-                <Image
-                  source={{ uri: previewImageUri }}
+                <RemoteImage
+                  uri={previewImageUri}
                   style={styles.previewModalImage}
                   contentFit="contain"
+                  fallbackIcon="image-outline"
+                  accessibilityLabel="Support photo preview"
                 />
               ) : null}
             </View>

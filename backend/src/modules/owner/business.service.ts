@@ -20,6 +20,7 @@ import {
   RestaurantModel
 } from "../auth/auth.model"
 import { sendPushToCustomer } from "../customer/push.service"
+import { resolveServiceZoneForCoordinates } from "../service-area/service-area.service"
 import { createOwnerNotification } from "./operational.service"
 import { ReviewModel, SupportCaseModel } from "./experience.model"
 import { OrderModel } from "./operational.model"
@@ -296,6 +297,11 @@ export async function updateStoreSettings(params: {
       nextLocation.latitude,
       nextLocation.longitude
     )
+    const serviceArea = await resolveServiceZoneForCoordinates({
+      latitude: nextLocation.latitude,
+      longitude: nextLocation.longitude
+    })
+    restaurant.serviceArea = (serviceArea?.snapshot ?? {}) as any
   }
 
   if (params.notifications !== undefined) {

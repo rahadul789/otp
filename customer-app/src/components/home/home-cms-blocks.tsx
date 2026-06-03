@@ -3,7 +3,6 @@ import { useRouter } from "expo-router";
 import { useEffect, useRef } from "react";
 import {
   Animated,
-  Image,
   Linking,
   Pressable,
   ScrollView,
@@ -13,6 +12,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 
+import { RemoteImage } from "@/src/components/remote-image";
 import { apiPost } from "@/src/lib/api";
 import { resolveCustomerRoute } from "@/src/lib/customer-routes";
 import type {
@@ -144,7 +144,12 @@ export function CampaignPlacementCard({
       onPress={hasAction ? handlePress : undefined}
     >
       {display.variant === "image" && display.imageUrl ? (
-        <Image source={{ uri: display.imageUrl }} style={styles.campaignImage} />
+        <RemoteImage
+          uri={display.imageUrl}
+          style={styles.campaignImage}
+          fallbackIcon="pricetag-outline"
+          accessibilityLabel={`${title} campaign image`}
+        />
       ) : null}
       {display.variant === "carousel" && display.carouselImageUrls?.length ? (
         <ScrollView
@@ -153,10 +158,11 @@ export function CampaignPlacementCard({
           style={styles.campaignCarousel}
         >
           {display.carouselImageUrls.slice(0, 4).map((imageUrl) => (
-            <Image
+            <RemoteImage
               key={imageUrl}
-              source={{ uri: imageUrl }}
+              uri={imageUrl}
               style={styles.campaignCarouselImage}
+              fallbackIcon="pricetag-outline"
             />
           ))}
         </ScrollView>
@@ -227,9 +233,11 @@ export function HomeCmsPromoBlock({ cms }: { cms: CustomerHomeCms }) {
               key={imageUrl.url}
               style={[styles.cmsCarouselOnlySlide, { width: slideWidth }]}
             >
-              <Image
-                source={{ uri: imageUrl.url }}
+              <RemoteImage
+                uri={imageUrl.url}
                 style={styles.cmsCarouselOnlyImage}
+                fallbackIcon="pricetag-outline"
+                accessibilityLabel="Foodbela offer banner"
               />
             </View>
           ))}
@@ -276,10 +284,20 @@ export function HomeCmsPromoBlock({ cms }: { cms: CustomerHomeCms }) {
       ]}
     >
       {block.variant === "image" && block.imageUrl ? (
-        <Image source={{ uri: block.imageUrl }} style={styles.cmsImageOnly} />
+        <RemoteImage
+          uri={block.imageUrl}
+          style={styles.cmsImageOnly}
+          fallbackIcon="pricetag-outline"
+          accessibilityLabel={block.title || "Foodbela offer"}
+        />
       ) : null}
       {block.variant === "image_text" && block.imageUrl ? (
-        <Image source={{ uri: block.imageUrl }} style={styles.cmsBlockImage} />
+        <RemoteImage
+          uri={block.imageUrl}
+          style={styles.cmsBlockImage}
+          fallbackIcon="pricetag-outline"
+          accessibilityLabel={block.title || "Foodbela offer"}
+        />
       ) : null}
       {block.variant !== "image" ? (
         <View style={styles.cmsBlockCopy}>
@@ -354,6 +372,24 @@ export function HowToOrderGuideBlock({ cms }: { cms: CustomerHomeCms }) {
         ]}
         onPress={openGuide}
       >
+        <Ionicons
+          name="play-circle-outline"
+          size={88}
+          color="rgba(255,255,255,0.34)"
+          style={styles.guideDecorPlay}
+        />
+        <Ionicons
+          name="book-outline"
+          size={52}
+          color="rgba(255,255,255,0.24)"
+          style={styles.guideDecorBook}
+        />
+        <Ionicons
+          name="fast-food-outline"
+          size={48}
+          color="rgba(255,255,255,0.22)"
+          style={styles.guideDecorFood}
+        />
         <View style={styles.guideIcon}>
           <Ionicons
             name="play-circle"
@@ -406,7 +442,12 @@ export function HowToOrderGuideBlock({ cms }: { cms: CustomerHomeCms }) {
           {guide.guideImages.slice(0, 6).map((image, index) => (
             <View key={`${image.url}-${index}`} style={styles.guideImageCard}>
               <Pressable onPress={() => recordHomeCmsEvent("guide_image_click")}>
-                <Image source={{ uri: image.url }} style={styles.guideImage} />
+                <RemoteImage
+                  uri={image.url}
+                  style={styles.guideImage}
+                  fallbackIcon="book-outline"
+                  accessibilityLabel={image.title || `How to order step ${index + 1}`}
+                />
               </Pressable>
               <Text style={styles.guideImageTitle} numberOfLines={1}>
                 {image.title || `Step ${index + 1}`}
@@ -602,6 +643,7 @@ const styles = StyleSheet.create({
   },
   guideCard: {
     marginHorizontal: 20,
+    overflow: "hidden",
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
@@ -614,6 +656,21 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 3,
+  },
+  guideDecorPlay: {
+    position: "absolute",
+    right: -18,
+    top: -20,
+  },
+  guideDecorBook: {
+    position: "absolute",
+    left: 112,
+    bottom: -18,
+  },
+  guideDecorFood: {
+    position: "absolute",
+    right: 92,
+    bottom: -15,
   },
   guideIcon: {
     width: 42,

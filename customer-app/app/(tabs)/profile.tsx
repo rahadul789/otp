@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -7,6 +6,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { ShimmerBlock } from "@/src/components/loading-skeleton";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
+import { RemoteImage } from "@/src/components/remote-image";
 import { Screen } from "@/src/components/screen";
 import {
   useCustomerFavoriteRestaurantIdsQuery,
@@ -25,6 +25,14 @@ import {
   usePaymentPreferencesStore,
 } from "@/src/store/payment-preferences-store";
 import { palette } from "@/src/theme/palette";
+
+function getCustomerDisplayName(fullName?: string | null) {
+  const trimmed = fullName?.trim() ?? "";
+  if (!trimmed || trimmed.toLowerCase() === "foodbela user") {
+    return "Your name";
+  }
+  return trimmed;
+}
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -50,7 +58,10 @@ export default function ProfileScreen() {
     ? `Tk ${Math.round(referralSummary.rewardAmount)}`
     : "Reward";
 
-  const displayName = useMemo(() => customer?.fullName || "Customer", [customer?.fullName]);
+  const displayName = useMemo(
+    () => getCustomerDisplayName(customer?.fullName),
+    [customer?.fullName],
+  );
   const heroLocationText = useMemo(() => {
     const typedAddress = selectedLocation?.addressDetails?.trim();
     return (
@@ -118,10 +129,12 @@ export default function ProfileScreen() {
               <View style={styles.identityCard}>
                 <View style={styles.avatar}>
                   {customer?.profileImage?.url ? (
-                    <Image
-                      source={{ uri: customer.profileImage.url }}
+                    <RemoteImage
+                      uri={customer.profileImage.url}
                       style={styles.avatarImage}
-                      contentFit="cover"
+                      fallbackIcon="person-outline"
+                      fallbackIconSize={24}
+                      accessibilityLabel="Profile photo"
                     />
                   ) : (
                     <Text style={styles.avatarText}>{initials}</Text>
@@ -196,7 +209,7 @@ export default function ProfileScreen() {
                     label="Refer"
                     value={referralRewardLabel}
                     caption="Per reward"
-                    tint="#F0F7FF"
+                    tint="#FFF0F6"
                     highlight
                     onPress={() => router.push("/referrals")}
                   />
@@ -253,7 +266,7 @@ export default function ProfileScreen() {
                 ) : shouldShowReferral ? (
                   <ProfileNavCard
                     icon="gift-outline"
-                    tint="#F0F7FF"
+                    tint="#FFF0F6"
                     title="Refer & earn"
                     caption={`${referralRewardLabel} reward available`}
                     highlight
@@ -777,7 +790,8 @@ const styles = StyleSheet.create({
   },
   overviewCardHighlighted: {
     borderWidth: 1,
-    borderColor: "rgba(216, 27, 96, 0.24)",
+    borderColor: "rgba(228, 17, 111, 0.34)",
+    shadowOpacity: 0.14,
   },
   referralSkeletonCard: {
     backgroundColor: "#F0F7FF",
@@ -1106,7 +1120,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 16,
-    backgroundColor: palette.primary,
+    backgroundColor: palette.secondary,
   },
   confirmPrimaryText: {
     fontSize: 14,

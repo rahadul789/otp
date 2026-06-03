@@ -83,7 +83,7 @@ export default function VerifyScreen() {
   const scrollToOtpField = useCallback(() => {
     scheduleTimeout(() => {
       scrollViewRef.current?.scrollTo({
-        y: Platform.OS === "android" ? 154 : 122,
+        y: Platform.OS === "android" ? 132 : 104,
         animated: true,
       });
     }, 80);

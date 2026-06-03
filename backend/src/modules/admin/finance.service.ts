@@ -24,6 +24,11 @@ import {
 import { NotificationModel, OrderModel } from "../owner/operational.model";
 import { sendPushToOwner } from "../owner/push.service";
 import { getOperationalFinanceSettings } from "../public/content.service";
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+  buildRiderServiceAreaScopeFilter,
+} from "../service-area/service-area.service";
 import { AdminAuditLogModel, AdminModel } from "./admin.model";
 import { resolveAdminOperationalAlertByDedupeKey } from "./admin-alert.service";
 import { notifyOwnerPayoutStatus } from "./payout-owner-notifications";
@@ -49,10 +54,14 @@ type PlatformFinanceParams = {
   preset?: FinancePreset;
   from?: string;
   to?: string;
+  zoneId?: string;
+  districtId?: string;
 };
 
 type PayoutListParams = PageParams & {
   search?: string;
+  zoneId?: string;
+  districtId?: string;
   eligibility?: "all" | "eligible" | "blocked" | "pending_request";
   sortBy?: "available_desc" | "pending_desc" | "recent_request" | "name_asc";
 };
@@ -60,6 +69,8 @@ type PayoutListParams = PageParams & {
 type LedgerListParams = PageParams & {
   search?: string;
   restaurantId?: string;
+  zoneId?: string;
+  districtId?: string;
   entryType?: "all" | "earning" | "refund" | "payout" | "adjustment";
   settlementStatus?: "all" | "pending" | "available" | "paid_out";
   sortBy?: "newest" | "oldest" | "highest_net" | "lowest_net";
@@ -68,6 +79,8 @@ type LedgerListParams = PageParams & {
 type RefundListParams = PageParams & {
   search?: string;
   restaurantId?: string;
+  zoneId?: string;
+  districtId?: string;
   status?: "all" | "refund_pending" | "refunded" | "refund_rejected" | "needs_review";
   sortBy?: "newest" | "oldest" | "highest_value" | "recently_updated";
 };
@@ -76,6 +89,8 @@ type WalletEntryListParams = PageParams & {
   preset?: FinancePreset;
   from?: string;
   to?: string;
+  zoneId?: string;
+  districtId?: string;
   direction?: "all" | "credit" | "debit";
   category?:
     | "all"
@@ -95,6 +110,8 @@ type MoneyTransactionListParams = PageParams & {
   preset?: FinancePreset;
   from?: string;
   to?: string;
+  zoneId?: string;
+  districtId?: string;
   search?: string;
   direction?: "all" | "credit" | "debit";
   category?:
@@ -468,20 +485,31 @@ function summarizePayrollAmount(
   };
 }
 
-async function getPlatformPayrollSummary(rangeStart: Date, rangeEnd: Date) {
+async function getPlatformPayrollSummary(
+  rangeStart: Date,
+  rangeEnd: Date,
+  riderScopeFilter: Record<string, unknown> = {},
+) {
   const safeMonths = monthKeysBetween(rangeStart, rangeEnd);
-  const [riders, cycles] = await Promise.all([
-    RiderModel.find({
-      $or: [
-        { "payroll.isPayrollEnabled": { $ne: false } },
-        { payroll: { $exists: false } },
-      ],
-    }).lean(),
-    RiderPayrollCycleModel.find({
-      status: "paid",
-      paidAt: { $gte: rangeStart, $lte: rangeEnd },
-    }).lean(),
-  ]);
+  const riders = await RiderModel.find({
+    ...riderScopeFilter,
+    $or: [
+      { "payroll.isPayrollEnabled": { $ne: false } },
+      { payroll: { $exists: false } },
+    ],
+  }).lean();
+  const riderIds = riders
+    .map((rider) => rider._id)
+    .filter((id): id is mongoose.Types.ObjectId => id instanceof mongoose.Types.ObjectId);
+  const scopedPayroll = Object.keys(riderScopeFilter).length > 0;
+  const cycles =
+    scopedPayroll && riderIds.length === 0
+      ? []
+      : await RiderPayrollCycleModel.find({
+          status: "paid",
+          paidAt: { $gte: rangeStart, $lte: rangeEnd },
+          ...(scopedPayroll ? { riderId: { $in: riderIds } } : {}),
+        }).lean();
 
   const paidSummary = cycles.reduce(
     (total, cycle) => {
@@ -1206,6 +1234,7 @@ function mapRestaurantFinanceRow(params: {
       address: stringValue(params.restaurant.address?.address),
       isOnline: params.restaurant.runtime?.isOnline === true,
       isVisible: params.restaurant.runtime?.isVisible !== false,
+      serviceArea: params.restaurant.serviceArea ?? {},
       logoUrl: stringValue(params.restaurant.logo?.url),
     },
     owner: {
@@ -1228,6 +1257,28 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
   const onlinePaymentDate = onlinePaymentDateExpression();
   const refundPaidDate = refundPaidDateExpression();
   const effectiveRangeStage = { $match: rangeMatchOn("effectiveAt", range.start, range.end) };
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+  const hasServiceAreaScope =
+    Object.keys(orderScopeFilter).length > 0 ||
+    Object.keys(restaurantScopeFilter).length > 0 ||
+    Boolean(params.zoneId || params.districtId);
+  const scopedRestaurantIds = Object.keys(restaurantScopeFilter).length
+    ? (
+        await RestaurantModel.find(restaurantScopeFilter)
+          .select({ _id: 1 })
+          .lean()
+      ).map((restaurant) => restaurant._id)
+    : null;
+  const payoutScopeMatch = scopedRestaurantIds
+    ? { restaurantId: { $in: scopedRestaurantIds } }
+    : {};
+  const riderScopeFilter = buildRiderServiceAreaScopeFilter(params);
+  const scopedLedgerEarningMatch = { entryType: "earning", ...orderScopeFilter };
+  const scopedWalletLedgerMatch = {
+    entryType: { $in: [...walletLedgerEntryTypes] },
+    ...orderScopeFilter,
+  };
 
   await matureAvailableLedgerEntries();
 
@@ -1256,7 +1307,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
     payrollSummary,
   ] = await Promise.all([
     aggregatePayableLedgerEntries(
-      { entryType: "earning" },
+      scopedLedgerEarningMatch,
       [
         effectiveRangeStage,
         {
@@ -1293,7 +1344,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       ],
     ) as Promise<Array<Record<string, any>>>,
     aggregatePayableLedgerEntries(
-      { entryType: { $in: [...walletLedgerEntryTypes] } },
+      scopedWalletLedgerMatch,
       [
         {
           $group: {
@@ -1330,7 +1381,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       ],
     ) as Promise<Array<Record<string, any>>>,
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -1399,6 +1450,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         $match: {
           paymentMethod: "Bkash",
           paymentStatus: { $in: ["paid", "refund_pending", "refunded", "refund_rejected"] },
+          ...orderScopeFilter,
         },
       },
       { $addFields: { reportPaidAt: onlinePaymentDate } },
@@ -1416,6 +1468,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         $match: {
           paymentMethod: "Bkash",
           paymentStatus: "refunded",
+          ...orderScopeFilter,
         },
       },
       { $addFields: { reportRefundedAt: refundPaidDate } },
@@ -1434,6 +1487,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
           status: { $in: ["Cancelled", "Rejected"] },
           paymentMethod: "Bkash",
           paymentStatus: { $in: ["paid", "refund_pending"] },
+          ...orderScopeFilter,
         },
       },
       {
@@ -1448,6 +1502,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       {
         $match: {
           status: "completed",
+          ...payoutScopeMatch,
           $or: [
             { processedAt: { $gte: range.start, $lte: range.end } },
             {
@@ -1467,6 +1522,9 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
     ]),
     PayoutBatchModel.aggregate<Record<string, any>>([
       {
+        $match: payoutScopeMatch,
+      },
+      {
         $group: {
           _id: "$status",
           amount: { $sum: { $ifNull: ["$amount", 0] } },
@@ -1475,7 +1533,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       },
     ]),
     aggregatePayableLedgerEntries(
-      { entryType: "earning" },
+      scopedLedgerEarningMatch,
       [
         effectiveRangeStage,
         {
@@ -1489,7 +1547,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       ],
     ) as Promise<Array<Record<string, any>>>,
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -1534,6 +1592,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         $match: {
           paymentMethod: "Bkash",
           paymentStatus: { $in: ["paid", "refund_pending", "refunded", "refund_rejected"] },
+          ...orderScopeFilter,
         },
       },
       { $addFields: { reportPaidAt: onlinePaymentDate } },
@@ -1552,6 +1611,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         $match: {
           paymentMethod: "Bkash",
           paymentStatus: "refunded",
+          ...orderScopeFilter,
         },
       },
       { $addFields: { reportRefundedAt: refundPaidDate } },
@@ -1574,6 +1634,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         $match: {
           status: "completed",
           payoutCompletedAt: { $gte: range.start, $lte: range.end },
+          ...payoutScopeMatch,
         },
       },
       {
@@ -1585,7 +1646,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       { $sort: { _id: 1 } },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -1607,7 +1668,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       { $sort: { amount: -1 } },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       { $unwind: { path: "$appliedVouchers", preserveNullAndEmptyArrays: false } },
@@ -1636,7 +1697,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       { $limit: 8 },
     ]),
     aggregatePayableLedgerEntries(
-      { entryType: "earning" },
+      scopedLedgerEarningMatch,
       [
         effectiveRangeStage,
         {
@@ -1669,6 +1730,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         $match: {
           status: "Delivered",
           riderId: { $type: "string", $ne: "" },
+          ...orderScopeFilter,
         },
       },
       { $addFields: { reportDeliveredAt: deliveredDate } },
@@ -1686,81 +1748,88 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
       { $sort: { deliveryFees: -1 } },
       { $limit: 10 },
     ]),
-    PlatformFinanceEntryModel.aggregate<Record<string, any>>([
-      {
-        $match: {
+    hasServiceAreaScope
+      ? Promise.resolve([])
+      : PlatformFinanceEntryModel.aggregate<Record<string, any>>([
+          {
+            $match: {
+              status: "posted",
+              occurredAt: { $gte: range.start, $lte: range.end },
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              creditAmount: {
+                $sum: {
+                  $cond: [{ $eq: ["$direction", "credit"] }, { $ifNull: ["$amount", 0] }, 0],
+                },
+              },
+              debitAmount: {
+                $sum: {
+                  $cond: [{ $eq: ["$direction", "debit"] }, { $ifNull: ["$amount", 0] }, 0],
+                },
+              },
+              manualIncome: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $eq: ["$direction", "credit"] }, { $eq: ["$category", "manual_income"] }] },
+                    { $ifNull: ["$amount", 0] },
+                    0,
+                  ],
+                },
+              },
+              manualExpense: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $eq: ["$direction", "debit"] }, { $in: ["$category", ["manual_expense", "deploy_hosting"]] }] },
+                    { $ifNull: ["$amount", 0] },
+                    0,
+                  ],
+                },
+              },
+              adjustmentCredit: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $eq: ["$direction", "credit"] }, { $eq: ["$category", "adjustment"] }] },
+                    { $ifNull: ["$amount", 0] },
+                    0,
+                  ],
+                },
+              },
+              adjustmentDebit: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $eq: ["$direction", "debit"] }, { $eq: ["$category", "adjustment"] }] },
+                    { $ifNull: ["$amount", 0] },
+                    0,
+                  ],
+                },
+              },
+              count: { $sum: 1 },
+            },
+          },
+        ]),
+    hasServiceAreaScope
+      ? Promise.resolve([])
+      : PlatformFinanceEntryModel.find({
           status: "posted",
           occurredAt: { $gte: range.start, $lte: range.end },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          creditAmount: {
-            $sum: {
-              $cond: [{ $eq: ["$direction", "credit"] }, { $ifNull: ["$amount", 0] }, 0],
-            },
-          },
-          debitAmount: {
-            $sum: {
-              $cond: [{ $eq: ["$direction", "debit"] }, { $ifNull: ["$amount", 0] }, 0],
-            },
-          },
-          manualIncome: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ["$direction", "credit"] }, { $eq: ["$category", "manual_income"] }] },
-                { $ifNull: ["$amount", 0] },
-                0,
-              ],
-            },
-          },
-          manualExpense: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ["$direction", "debit"] }, { $in: ["$category", ["manual_expense", "deploy_hosting"]] }] },
-                { $ifNull: ["$amount", 0] },
-                0,
-              ],
-            },
-          },
-          adjustmentCredit: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ["$direction", "credit"] }, { $eq: ["$category", "adjustment"] }] },
-                { $ifNull: ["$amount", 0] },
-                0,
-              ],
-            },
-          },
-          adjustmentDebit: {
-            $sum: {
-              $cond: [
-                { $and: [{ $eq: ["$direction", "debit"] }, { $eq: ["$category", "adjustment"] }] },
-                { $ifNull: ["$amount", 0] },
-                0,
-              ],
-            },
-          },
-          count: { $sum: 1 },
-        },
-      },
-    ]),
-    PlatformFinanceEntryModel.find({
-      status: "posted",
-      occurredAt: { $gte: range.start, $lte: range.end },
-    })
-      .sort({ occurredAt: -1, createdAt: -1 })
-      .limit(10)
-      .lean(),
-    DailyFinanceSnapshotModel.find()
-      .sort({ dateKey: -1, closedAt: -1 })
-      .limit(7)
-      .lean(),
+        })
+          .sort({ occurredAt: -1, createdAt: -1 })
+          .limit(10)
+          .lean(),
+    hasServiceAreaScope
+      ? Promise.resolve([])
+      : DailyFinanceSnapshotModel.find()
+          .sort({ dateKey: -1, closedAt: -1 })
+          .limit(7)
+          .lean(),
     OrderModel.find({
       status: "Delivered",
       paymentMethod: "Cash",
       paymentStatus: { $ne: "paid" },
+      ...orderScopeFilter,
     })
       .sort({ updatedAt: -1, createdAt: -1 })
       .limit(8)
@@ -1775,7 +1844,7 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
         createdAt: 1,
       })
       .lean(),
-    getPlatformPayrollSummary(range.start, range.end),
+    getPlatformPayrollSummary(range.start, range.end, riderScopeFilter),
   ]);
 
   const ledger = ledgerRows[0] ?? {};
@@ -2122,6 +2191,9 @@ export async function getAdminPlatformFinance(params: PlatformFinanceParams = {}
     notes: [
       "Platform cash is an operational estimate from order payments, refunds, payouts, and rider payroll. It is not a bank statement.",
       "Restaurant payout is a liability, not a platform expense. Platform profit uses commission, delivery fee, platform-funded discounts, and rider payroll.",
+      ...(hasServiceAreaScope
+        ? ["Manual wallet entries and daily close snapshots are platform-wide, so they are shown only in All areas view."]
+        : []),
     ],
   };
 }
@@ -2130,6 +2202,20 @@ export async function listAdminPlatformWalletEntries(params: WalletEntryListPara
   const range = buildFinanceRange(params);
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
+  const hasServiceAreaScope = Boolean(params.zoneId || params.districtId);
+  if (hasServiceAreaScope) {
+    return {
+      items: [],
+      ...buildPagination(0, page, pageSize),
+      summary: {
+        creditAmount: 0,
+        debitAmount: 0,
+        netAmount: 0,
+        postedCount: 0,
+      },
+    };
+  }
+
   const query: Record<string, unknown> = {
     occurredAt: { $gte: range.start, $lte: range.end },
   };
@@ -2403,6 +2489,21 @@ export async function listAdminMoneyTransactions(params: MoneyTransactionListPar
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
   const search = params.search?.trim().toLowerCase() ?? "";
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+  const riderScopeFilter = buildRiderServiceAreaScopeFilter(params);
+  const hasServiceAreaScope = Boolean(params.zoneId || params.districtId);
+  const [scopedRestaurantsForScope, scopedRidersForScope] = await Promise.all([
+    Object.keys(restaurantScopeFilter).length
+      ? RestaurantModel.find(restaurantScopeFilter).select({ _id: 1 }).lean()
+      : Promise.resolve(null),
+    Object.keys(riderScopeFilter).length
+      ? RiderModel.find(riderScopeFilter).select({ _id: 1 }).lean()
+      : Promise.resolve(null),
+  ]);
+  const scopedRestaurantIds =
+    scopedRestaurantsForScope?.map((restaurant) => restaurant._id) ?? null;
+  const scopedRiderIds = scopedRidersForScope?.map((rider) => rider._id) ?? null;
 
   const [
     onlineOrders,
@@ -2413,6 +2514,7 @@ export async function listAdminMoneyTransactions(params: MoneyTransactionListPar
     walletEntries,
   ] = await Promise.all([
     OrderModel.find({
+      ...orderScopeFilter,
       paymentMethod: "Bkash",
       paymentStatus: { $in: ["paid", "refund_pending", "refunded", "refund_rejected"] },
       $or: [
@@ -2437,6 +2539,7 @@ export async function listAdminMoneyTransactions(params: MoneyTransactionListPar
       })
       .lean(),
     OrderModel.find({
+      ...orderScopeFilter,
       status: "Delivered",
       paymentMethod: "Cash",
       paymentStatus: "paid",
@@ -2463,6 +2566,7 @@ export async function listAdminMoneyTransactions(params: MoneyTransactionListPar
       })
       .lean(),
     OrderModel.find({
+      ...orderScopeFilter,
       paymentMethod: "Bkash",
       paymentStatus: "refunded",
       $or: [
@@ -2488,6 +2592,7 @@ export async function listAdminMoneyTransactions(params: MoneyTransactionListPar
       .lean(),
     PayoutBatchModel.find({
       status: "completed",
+      ...(scopedRestaurantIds ? { restaurantId: { $in: scopedRestaurantIds } } : {}),
       $or: [
         { processedAt: { $gte: range.start, $lte: range.end } },
         {
@@ -2502,17 +2607,20 @@ export async function listAdminMoneyTransactions(params: MoneyTransactionListPar
     RiderPayrollCycleModel.find({
       status: "paid",
       paidAt: { $gte: range.start, $lte: range.end },
+      ...(scopedRiderIds ? { riderId: { $in: scopedRiderIds } } : {}),
     })
       .sort({ paidAt: -1 })
       .limit(5000)
       .lean(),
-    PlatformFinanceEntryModel.find({
-      status: "posted",
-      occurredAt: { $gte: range.start, $lte: range.end },
-    })
-      .sort({ occurredAt: -1, createdAt: -1 })
-      .limit(5000)
-      .lean(),
+    hasServiceAreaScope
+      ? Promise.resolve([])
+      : PlatformFinanceEntryModel.find({
+          status: "posted",
+          occurredAt: { $gte: range.start, $lte: range.end },
+        })
+          .sort({ occurredAt: -1, createdAt: -1 })
+          .limit(5000)
+          .lean(),
   ]);
 
   const restaurantIds = [
@@ -2801,7 +2909,9 @@ export async function listAdminFinancePayouts(params: PayoutListParams) {
   const pageSize = clampPageSize(params.pageSize);
   const search = params.search?.trim() ?? "";
   const searchRegex = search ? new RegExp(escapeRegex(search), "i") : null;
-  const restaurantQuery: Record<string, unknown> = {};
+  const restaurantQuery: Record<string, unknown> = {
+    ...buildRestaurantServiceAreaScopeFilter(params),
+  };
   if (searchRegex) {
     restaurantQuery.$or = [
       { name: searchRegex },
@@ -2820,6 +2930,7 @@ export async function listAdminFinancePayouts(params: PayoutListParams) {
       address: 1,
       contact: 1,
       runtime: 1,
+      serviceArea: 1,
       logo: 1,
       updatedAt: 1,
     })
@@ -3198,6 +3309,7 @@ export async function getAdminFinancePayoutDetails(restaurantId: string) {
       sourceEntityId: stringValue(entry.sourceEntityId),
       sourceLabel: getLedgerSourceLabel(entry),
       isCarryForward: isCarryForwardLedgerEntry(entry),
+      serviceArea: entry.serviceAreaSnapshot ?? {},
       entryType: stringValue(entry.entryType),
       grossAmount: numberValue(entry.grossAmount),
       commissionBase: numberValue(entry.commissionBase),
@@ -3485,6 +3597,7 @@ export async function listAdminFinanceLedger(params: LedgerListParams) {
   const restaurantId = toObjectId(params.restaurantId);
 
   if (restaurantId) query.restaurantId = restaurantId;
+  Object.assign(query, buildOrderServiceAreaScopeFilter(params));
   if (params.entryType && params.entryType !== "all") {
     query.entryType = params.entryType;
   }
@@ -3766,6 +3879,7 @@ export async function listAdminFinanceRefunds(params: RefundListParams) {
   };
 
   if (restaurantId) query.restaurantId = restaurantId;
+  Object.assign(query, buildOrderServiceAreaScopeFilter(params));
 
   if (params.status && params.status !== "all") {
     if (params.status === "needs_review") {
@@ -3844,6 +3958,7 @@ export async function listAdminFinanceRefunds(params: RefundListParams) {
       restaurantId: objectIdString(order.restaurantId),
       restaurantName: stringValue(restaurant?.name),
       restaurantCity: stringValue(restaurant?.address?.city, "Netrokona"),
+      serviceArea: order.serviceAreaSnapshot ?? {},
       customerId: stringValue(order.customerId),
       customerName: stringValue(
         order.customerSnapshot?.fullName,

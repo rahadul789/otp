@@ -47,6 +47,10 @@ import {
   type AdminNotificationRecipientReportStatus,
   type AdminNotificationSendPayload,
 } from "@/lib/admin-api"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -856,6 +860,10 @@ export function NotificationsPage() {
   const [scheduleMode, setScheduleMode] = React.useState(false)
   const [scheduledAt, setScheduledAt] = React.useState("")
   const [testRecipientId, setTestRecipientId] = React.useState("")
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id || "all"}`
   const [form, setForm] = React.useState<AdminNotificationSendPayload>({
     recipientType: "customers",
     audience: "all",
@@ -884,8 +892,32 @@ export function NotificationsPage() {
     pushEnabled: true,
   })
 
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+        setSelectedItem(null)
+        setPage(1)
+        setForm((current) => ({
+          ...current,
+          recipientIds: [],
+          selectedRestaurantIds: [],
+          customerGroupKey: "",
+        }))
+      }),
+    []
+  )
+
   const notificationsQuery = useQuery({
-    queryKey: ["admin-notifications", source, status, search, page, pageSize],
+    queryKey: [
+      "admin-notifications",
+      source,
+      status,
+      search,
+      page,
+      pageSize,
+      adminScopeKey,
+    ],
     queryFn: () =>
       listAdminNotifications({
         source,
@@ -901,6 +933,7 @@ export function NotificationsPage() {
       "admin-notification-recipients",
       selectedCampaignId,
       recipientReportStatus,
+      adminScopeKey,
     ],
     enabled: Boolean(selectedItem && isCampaignLike(selectedItem) && selectedCampaignId),
     queryFn: () =>
@@ -930,27 +963,27 @@ export function NotificationsPage() {
     form.contentType !== "text" || Boolean(form.imageUrl)
 
   const customersQuery = useQuery({
-    queryKey: ["admin-customers", "notification-targets"],
+    queryKey: ["admin-customers", "notification-targets", adminScopeKey],
     queryFn: () =>
       listAdminCustomers({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
     enabled: needsCustomerTargets,
   })
 
   const customerGroupsQuery = useQuery({
-    queryKey: ["admin-customer-groups", "notification-targets"],
+    queryKey: ["admin-customer-groups", "notification-targets", adminScopeKey],
     queryFn: listAdminCustomerGroups,
     enabled: needsCustomerGroups,
   })
 
   const restaurantsQuery = useQuery({
-    queryKey: ["admin-restaurants", "notification-targets"],
+    queryKey: ["admin-restaurants", "notification-targets", adminScopeKey],
     queryFn: () =>
       listAdminRestaurants({ page: 1, pageSize: 50, sortBy: "newestUpdated" }),
     enabled: needsRestaurantTargets,
   })
 
   const ridersQuery = useQuery({
-    queryKey: ["admin-riders", "notification-targets"],
+    queryKey: ["admin-riders", "notification-targets", adminScopeKey],
     queryFn: () =>
       listAdminRiders({ page: 1, pageSize: 50, sortBy: "recentLogin" }),
     enabled: needsRiderTargets,

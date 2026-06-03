@@ -24,6 +24,13 @@ import {
   MenuItemModel,
   OrderModel,
 } from "../owner/operational.model";
+import {
+  buildRestaurantServiceAreaScopeFilter,
+  buildServiceAreaSnapshot,
+  calculateServiceDistanceKm,
+  resolveServiceZoneForCoordinates,
+} from "../service-area/service-area.service";
+import { ServiceZoneModel } from "../service-area/service-area.model";
 import { notifyOwnerPayoutStatus } from "./payout-owner-notifications";
 
 const LIVE_ORDER_STATUSES = [
@@ -39,6 +46,8 @@ type RestaurantListParams = {
   search?: string;
   visibility?: "all" | "visible" | "hidden";
   runtime?: "all" | "online" | "offline";
+  zoneId?: string;
+  districtId?: string;
   sortBy?: "newestUpdated" | "mostOrders" | "highestRating" | "completionHigh";
   page?: number;
   pageSize?: number;
@@ -72,6 +81,7 @@ type CreateRestaurantParams = {
   city?: string;
   latitude?: number | null;
   longitude?: number | null;
+  serviceZoneId?: string;
   preparationTimeMinutes?: number | null;
   commissionRate?: number;
   isVisible?: boolean;
@@ -335,7 +345,9 @@ function getRestaurantOrderDelayState(
 }
 
 function buildRestaurantQuery(params: RestaurantListParams) {
-  const query: Record<string, unknown> = {};
+  const query: Record<string, unknown> = {
+    ...buildRestaurantServiceAreaScopeFilter(params),
+  };
 
   if (params.search?.trim()) {
     const search = params.search.trim();
@@ -1182,6 +1194,52 @@ export async function createAdminRestaurant(params: CreateRestaurantParams) {
 
   const restaurantName = params.name.trim();
   const commissionRate = normalizeCommissionRate(params.commissionRate);
+  const selectedZone =
+    params.serviceZoneId?.trim()
+      ? await ServiceZoneModel.findById(params.serviceZoneId.trim()).lean()
+      : null;
+  if (params.serviceZoneId?.trim() && !selectedZone) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "SERVICE_ZONE_NOT_FOUND",
+      "Selected service zone was not found.",
+    );
+  }
+  const latitude = params.latitude ?? selectedZone?.center?.latitude ?? null;
+  const longitude = params.longitude ?? selectedZone?.center?.longitude ?? null;
+  const serviceArea = selectedZone
+    ? {
+        snapshot: buildServiceAreaSnapshot(
+          selectedZone,
+          typeof latitude === "number" && typeof longitude === "number"
+            ? calculateServiceDistanceKm(
+                latitude,
+                longitude,
+                Number(selectedZone.center?.latitude ?? 0),
+                Number(selectedZone.center?.longitude ?? 0),
+              )
+            : null,
+        ),
+      }
+    : await resolveServiceZoneForCoordinates({
+        latitude,
+        longitude,
+      });
+  if (selectedZone && typeof latitude === "number" && typeof longitude === "number") {
+    const distanceFromZoneCenterKm = calculateServiceDistanceKm(
+      latitude,
+      longitude,
+      Number(selectedZone.center?.latitude ?? 0),
+      Number(selectedZone.center?.longitude ?? 0),
+    );
+    if (distanceFromZoneCenterKm > Number(selectedZone.radiusKm ?? 0)) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "RESTAURANT_OUTSIDE_SELECTED_SERVICE_ZONE",
+        "Restaurant location must be inside the selected service zone.",
+      );
+    }
+  }
   const restaurant = await RestaurantModel.create({
     ownerId: owner._id,
     name: restaurantName,
@@ -1199,10 +1257,11 @@ export async function createAdminRestaurant(params: CreateRestaurantParams) {
       city: params.city ?? "Netrokona",
     },
     location: {
-      latitude: params.latitude ?? null,
-      longitude: params.longitude ?? null,
+      latitude,
+      longitude,
     },
-    locationPoint: buildLocationPoint(params.latitude, params.longitude),
+    locationPoint: buildLocationPoint(latitude, longitude),
+    serviceArea: serviceArea?.snapshot ?? {},
     runtime: {
       isOnline: false,
       isVisible: params.isVisible ?? true,
@@ -2322,6 +2381,7 @@ export async function reconcileAdminRestaurantFinance(params: {
         platformDiscountCost,
         deliveryCost,
         netAmount,
+        serviceAreaSnapshot: order.serviceAreaSnapshot ?? {},
         settlementStatus,
         availableAt,
       });
@@ -2344,6 +2404,8 @@ export async function reconcileAdminRestaurantFinance(params: {
       numberValue(existingLedger.platformDiscountCost) !== platformDiscountCost ||
       numberValue(existingLedger.deliveryCost) !== deliveryCost ||
       numberValue(existingLedger.netAmount) !== netAmount ||
+      JSON.stringify(existingLedger.serviceAreaSnapshot ?? {}) !==
+        JSON.stringify(order.serviceAreaSnapshot ?? {}) ||
       existingLedger.settlementStatus !== settlementStatus ||
       serializeDate(existingLedger.availableAt) !== serializeDate(availableAt);
 
@@ -2355,6 +2417,7 @@ export async function reconcileAdminRestaurantFinance(params: {
       existingLedger.platformDiscountCost = platformDiscountCost;
       existingLedger.deliveryCost = deliveryCost;
       existingLedger.netAmount = netAmount;
+      existingLedger.serviceAreaSnapshot = order.serviceAreaSnapshot ?? {};
       existingLedger.settlementStatus = settlementStatus;
       existingLedger.availableAt = availableAt;
       await existingLedger.save();

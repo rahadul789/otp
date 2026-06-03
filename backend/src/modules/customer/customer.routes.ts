@@ -27,6 +27,7 @@ import {
   getCustomerNotificationCampaign,
   deleteCustomerPushToken,
   getCustomerDiscovery,
+  getCustomerDiscoverySearch,
   getCustomerDiscoveryHomePage,
   getCustomerFavoriteRestaurants,
   postCustomerVoucherDisplayEvent,
@@ -149,6 +150,7 @@ customerRouter.get("/discovery/home", getCustomerDiscoveryHomePage)
 customerRouter.post("/vouchers/display-event", postCustomerVoucherDisplayEvent)
 customerRouter.post("/push-events/open", requireAuth, requireRole("customer"), postCustomerPushOpenEvent)
 customerRouter.get("/restaurants", getCustomerDiscovery)
+customerRouter.get("/restaurants/search", getCustomerDiscoverySearch)
 customerRouter.get("/restaurants/:restaurantId", getCustomerRestaurant)
 customerRouter.post("/cart/quote", customerCartQuoteLimiter, postCustomerCartQuote)
 customerRouter.get("/payments/bkash/callback", getBkashCallback)

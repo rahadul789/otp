@@ -3,6 +3,10 @@ import { CustomerAnalyticsEventModel } from "../customer/customer-analytics.mode
 import { CustomerModel } from "../customer/customer.model"
 import { OrderModel } from "../owner/operational.model"
 import { RestaurantModel } from "../auth/auth.model"
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+} from "../service-area/service-area.service"
 
 type AnalyticsRow = Record<string, any>
 
@@ -28,6 +32,8 @@ export type AdminCustomerAnalyticsQuery = {
   from?: string
   to?: string
   limit?: number
+  zoneId?: string
+  districtId?: string
 }
 
 export type AdminCustomerAnalyticsEventsQuery = AdminCustomerAnalyticsQuery & {
@@ -317,6 +323,8 @@ type CustomersResponse = {
     day7OrderRate: number
     day30OrderRate: number
   }
+  recentUsers: CustomerRow[]
+  topOrderUsers: CustomerRow[]
   repeatCustomers: CustomerRow[]
   abandonedCheckouts: AbandonedCheckoutRow[]
   guestSessions: Array<{
@@ -574,6 +582,83 @@ function makeMatch(range: AnalyticsRange) {
   }
 }
 
+function hasAreaScope(params: { zoneId?: string; districtId?: string }) {
+  return Boolean(params.zoneId?.trim() || params.districtId?.trim())
+}
+
+async function buildAnalyticsScopeCondition(params: {
+  zoneId?: string
+  districtId?: string
+}) {
+  if (!hasAreaScope(params)) return null
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params)
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params)
+  const [orders, restaurants] = await Promise.all([
+    Object.keys(orderScopeFilter).length
+      ? OrderModel.find(orderScopeFilter)
+          .select({ _id: 1, customerId: 1, restaurantId: 1 })
+          .limit(10000)
+          .lean()
+      : Promise.resolve([]),
+    Object.keys(restaurantScopeFilter).length
+      ? RestaurantModel.find(restaurantScopeFilter).select({ _id: 1 }).lean()
+      : Promise.resolve([]),
+  ])
+  const orderIds = orders.map((order) => stringValue(order._id)).filter(Boolean)
+  const customerIds = [
+    ...new Set(orders.map((order) => stringValue(order.customerId)).filter(Boolean)),
+  ]
+  const restaurantIds = [
+    ...new Set([
+      ...restaurants.map((restaurant) => stringValue(restaurant._id)).filter(Boolean),
+      ...orders.map((order) => stringValue(order.restaurantId)).filter(Boolean),
+    ]),
+  ]
+
+  const conditions: AnalyticsRow[] = []
+  if (params.zoneId) {
+    conditions.push(
+      { "metadata.serviceArea.zoneId": params.zoneId },
+      { "metadata.serviceAreaSnapshot.zoneId": params.zoneId },
+      { "metadata.zoneId": params.zoneId },
+    )
+  }
+  if (params.districtId) {
+    conditions.push(
+      { "metadata.serviceArea.districtId": params.districtId },
+      { "metadata.serviceAreaSnapshot.districtId": params.districtId },
+      { "metadata.districtId": params.districtId },
+    )
+  }
+  if (customerIds.length) conditions.push({ customerId: { $in: customerIds } })
+  if (restaurantIds.length) {
+    conditions.push(
+      { entityType: "restaurant", entityId: { $in: restaurantIds } },
+      { "metadata.restaurantId": { $in: restaurantIds } },
+    )
+  }
+  if (orderIds.length) {
+    conditions.push(
+      { entityType: "order", entityId: { $in: orderIds } },
+      { "metadata.orderId": { $in: orderIds } },
+    )
+  }
+
+  return conditions.length ? { $or: conditions } : { _id: { $exists: false } }
+}
+
+async function buildScopedAnalyticsMatch(
+  match: AnalyticsRow,
+  params: AdminCustomerAnalyticsQuery,
+) {
+  const scopeCondition = await buildAnalyticsScopeCondition(params)
+  if (!scopeCondition) return match
+  return {
+    ...match,
+    $and: [...(Array.isArray(match.$and) ? match.$and : []), scopeCondition],
+  }
+}
+
 function buildTimeframe(range: AnalyticsRange): AdminCustomerAnalyticsTimeframe {
   return {
     preset: range.preset,
@@ -584,6 +669,10 @@ function buildTimeframe(range: AnalyticsRange): AdminCustomerAnalyticsTimeframe 
 
 function buildCacheKey(...parts: Array<string | number | boolean | null | undefined>) {
   return parts.map((part) => String(part ?? "")).join("|")
+}
+
+function cacheScopeKey(params: { zoneId?: string; districtId?: string }) {
+  return params.zoneId ? `zone:${params.zoneId}` : params.districtId ? `district:${params.districtId}` : "all"
 }
 
 function buildAlert(key: string, severity: "info" | "warning" | "critical", title: string, description: string, metric: number) {
@@ -662,7 +751,10 @@ function addNonEmptyDistinctFilter(match: AnalyticsRow, field: string) {
 
 async function buildEventsExplorer(params: AdminCustomerAnalyticsEventsQuery = {}): Promise<EventsExplorerResponse> {
   const range = resolveRange(params)
-  const match = buildEventsExplorerMatch(range, params)
+  const match = await buildScopedAnalyticsMatch(
+    buildEventsExplorerMatch(range, params),
+    params,
+  )
   const page = normalizePage(params.page)
   const pageSize = normalizePageSize(params.pageSize)
 
@@ -794,7 +886,7 @@ async function buildEventsExplorer(params: AdminCustomerAnalyticsEventsQuery = {
 
 async function buildOverview(params: AdminCustomerAnalyticsQuery): Promise<OverviewResponse> {
   const range = resolveRange(params)
-  const match = makeMatch(range)
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
 
   const [
     summaryRows,
@@ -1228,8 +1320,12 @@ async function buildOverview(params: AdminCustomerAnalyticsQuery): Promise<Overv
   }
 }
 
-async function buildSessionJourneys(range: AnalyticsRange, limit: number) {
-  const match = makeMatch(range)
+async function buildSessionJourneys(
+  range: AnalyticsRange,
+  limit: number,
+  params: AdminCustomerAnalyticsQuery,
+) {
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
   const journeys = await CustomerAnalyticsEventModel.aggregate<any>([
     { $match: { ...match, sessionId: { $ne: "" } } },
     { $sort: { sessionId: 1, occurredAt: 1 } },
@@ -1303,8 +1399,13 @@ async function buildSessionJourneys(range: AnalyticsRange, limit: number) {
   })
 }
 
-async function buildRestaurantFunnels(range: AnalyticsRange, limit: number): Promise<RestaurantFunnelRow[]> {
-  const match = makeMatch(range)
+async function buildRestaurantFunnels(
+  range: AnalyticsRange,
+  limit: number,
+  params: AdminCustomerAnalyticsQuery,
+): Promise<RestaurantFunnelRow[]> {
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params)
   const [restaurantViewRows, menuViewRows, orderRows] = (await Promise.all([
     CustomerAnalyticsEventModel.aggregate<any>([
       { $match: { ...match, eventType: "restaurant_view", entityId: { $ne: "" } } },
@@ -1338,6 +1439,7 @@ async function buildRestaurantFunnels(range: AnalyticsRange, limit: number): Pro
     OrderModel.aggregate<any>([
       {
         $match: {
+          ...orderScopeFilter,
           createdAt: { $gte: range.start, $lte: range.end },
           restaurantId: { $exists: true, $ne: null },
         },
@@ -1412,8 +1514,12 @@ async function buildRestaurantFunnels(range: AnalyticsRange, limit: number): Pro
   })
 }
 
-async function buildCheckoutDropOffPaths(range: AnalyticsRange, limit: number) {
-  const match = makeMatch(range)
+async function buildCheckoutDropOffPaths(
+  range: AnalyticsRange,
+  limit: number,
+  params: AdminCustomerAnalyticsQuery,
+) {
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
   const rows = await CustomerAnalyticsEventModel.aggregate<any>([
     { $match: { ...match, sessionId: { $ne: "" } } },
     { $sort: { sessionId: 1, occurredAt: 1 } },
@@ -1458,12 +1564,12 @@ async function buildCheckoutDropOffPaths(range: AnalyticsRange, limit: number) {
 async function buildFunnel(params: AdminCustomerAnalyticsQuery): Promise<FunnelResponse> {
   const range = resolveRange(params)
   const limit = normalizeLimit(params.limit)
-  const match = makeMatch(range)
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
 
   const funnelResults = await Promise.all([
-      buildSessionJourneys(range, limit),
-      buildRestaurantFunnels(range, limit),
-      buildCheckoutDropOffPaths(range, limit),
+      buildSessionJourneys(range, limit, params),
+      buildRestaurantFunnels(range, limit, params),
+      buildCheckoutDropOffPaths(range, limit, params),
       CustomerAnalyticsEventModel.aggregate<any>([
         { $match: { ...match, eventType: "search" } },
         {
@@ -1615,10 +1721,30 @@ async function buildFunnel(params: AdminCustomerAnalyticsQuery): Promise<FunnelR
   }
 }
 
-async function buildCustomerRows(range: AnalyticsRange, limit: number) {
-  const newCustomerDocs = await CustomerModel.find({
+async function buildCustomerRows(
+  range: AnalyticsRange,
+  limit: number,
+  params: AdminCustomerAnalyticsQuery,
+) {
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params)
+  const analyticsMatch = await buildScopedAnalyticsMatch(makeMatch(range), params)
+  const scopedCustomerIds = hasAreaScope(params)
+    ? (
+        await OrderModel.distinct("customerId", {
+          ...orderScopeFilter,
+          customerId: { $type: "string", $ne: "" },
+        })
+      )
+        .map((value) => stringValue(value))
+        .filter((value) => /^[a-f\d]{24}$/i.test(value))
+    : []
+  const customerQuery: AnalyticsRow = {
     createdAt: { $gte: range.start, $lte: range.end },
-  })
+  }
+  if (hasAreaScope(params)) {
+    customerQuery._id = { $in: scopedCustomerIds }
+  }
+  const newCustomerDocs = await CustomerModel.find(customerQuery)
     .select({
       fullName: 1,
       phone: 1,
@@ -1633,7 +1759,7 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
   const customerIds = newCustomerDocs.map((customer) => String(customer._id))
   const firstOrderRows = customerIds.length
     ? await OrderModel.aggregate<any>([
-        { $match: { customerId: { $in: customerIds } } },
+        { $match: { ...orderScopeFilter, customerId: { $in: customerIds } } },
         {
           $group: {
             _id: "$customerId",
@@ -1647,6 +1773,29 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
   const firstOrderMap = new Map(
     firstOrderRows.map((row) => [String(row._id), row]),
   )
+  const recentUsers = newCustomerDocs.slice(0, 10).map((customer) => {
+    const orderRow = firstOrderMap.get(String(customer._id))
+    const orders = countValue(orderRow?.orderCount)
+    const spend = countValue(orderRow?.revenue)
+    return {
+      customerId: String(customer._id),
+      fullName: String(customer.fullName ?? "Unknown customer"),
+      phone: String(customer.phone ?? ""),
+      status: String(customer.status ?? "active"),
+      createdAt: toIso(customer.createdAt),
+      lastLoginAt: toIso(customer.lastLoginAt),
+      lifetimeOrders: orders,
+      deliveredOrders: 0,
+      cancelledOrders: 0,
+      lifetimeSpend: spend,
+      averageOrderValue: orders > 0 ? Math.round((spend / orders) * 100) / 100 : 0,
+      firstOrderAt: toIso(orderRow?.firstOrderAt),
+      lastOrderAt: toIso(orderRow?.firstOrderAt),
+      favoritePaymentMethod: "unknown",
+      paymentMethods: [],
+      recentOrders: [],
+    }
+  })
 
   const newCustomers = newCustomerDocs.length
   const orderedWithin1Day = newCustomerDocs.filter((customer) => {
@@ -1672,7 +1821,7 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
   }).length
 
   const repeatRows = await OrderModel.aggregate<any>([
-    { $match: { customerId: { $ne: "" } } },
+    { $match: { ...orderScopeFilter, customerId: { $ne: "" } } },
     {
       $group: {
         _id: "$customerId",
@@ -1769,8 +1918,81 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
     }
   })
 
+  const topOrderRows = await OrderModel.aggregate<any>([
+    {
+      $match: {
+        ...orderScopeFilter,
+        createdAt: { $gte: range.start, $lte: range.end },
+        customerId: { $ne: "" },
+      },
+    },
+    {
+      $group: {
+        _id: "$customerId",
+        orders: { $sum: 1 },
+        deliveredOrders: { $sum: { $cond: [{ $eq: ["$status", "Delivered"] }, 1, 0] } },
+        cancelledOrders: {
+          $sum: { $cond: [{ $in: ["$status", ["Cancelled", "Rejected"]] }, 1, 0] },
+        },
+        lifetimeSpend: { $sum: { $ifNull: ["$pricing.total", 0] } },
+        firstOrderAt: { $min: "$createdAt" },
+        lastOrderAt: { $max: "$createdAt" },
+        paymentMethods: { $push: "$paymentMethod" },
+      },
+    },
+    { $sort: { orders: -1, lifetimeSpend: -1, lastOrderAt: -1 } },
+    { $limit: 10 },
+  ])
+  const topOrderCustomerIds = topOrderRows
+    .map((row) => String(row._id))
+    .filter((value) => /^[a-f\d]{24}$/i.test(value))
+  const topOrderCustomerDocs = topOrderCustomerIds.length
+    ? await CustomerModel.find({ _id: { $in: topOrderCustomerIds } })
+        .select({ fullName: 1, phone: 1, status: 1, createdAt: 1, lastLoginAt: 1 })
+        .lean() as any[]
+    : []
+  const topOrderCustomerMap = new Map(
+    topOrderCustomerDocs.map((customer) => [String(customer._id), customer]),
+  )
+  const topOrderUsers = topOrderRows.map((row) => {
+    const customer = topOrderCustomerMap.get(String(row._id))
+    const paymentMethodsRaw: unknown[] = Array.isArray((row as AnalyticsRow).paymentMethods)
+      ? (row as AnalyticsRow).paymentMethods
+      : []
+    const paymentMethodCounts = paymentMethodsRaw.reduce((acc: Record<string, number>, value: unknown) => {
+      const method = stringValue(value) || "unknown"
+      acc[method] = (acc[method] ?? 0) + 1
+      return acc
+    }, {} as Record<string, number>)
+    const orders = countValue((row as AnalyticsRow).orders)
+    const spend = countValue((row as AnalyticsRow).lifetimeSpend)
+    return {
+      customerId: String(row._id),
+      fullName: String(customer?.fullName ?? "Unknown customer"),
+      phone: String(customer?.phone ?? ""),
+      status: String(customer?.status ?? "active"),
+      createdAt: toIso(customer?.createdAt),
+      lastLoginAt: toIso(customer?.lastLoginAt),
+      lifetimeOrders: orders,
+      deliveredOrders: countValue((row as AnalyticsRow).deliveredOrders),
+      cancelledOrders: countValue((row as AnalyticsRow).cancelledOrders),
+      lifetimeSpend: spend,
+      averageOrderValue: orders > 0 ? Math.round((spend / orders) * 100) / 100 : 0,
+      firstOrderAt: toIso((row as AnalyticsRow).firstOrderAt),
+      lastOrderAt: toIso((row as AnalyticsRow).lastOrderAt),
+      favoritePaymentMethod:
+        Object.entries(paymentMethodCounts).sort((left, right) => right[1] - left[1])[0]?.[0] ??
+        "unknown",
+      paymentMethods: Object.entries(paymentMethodCounts).map(([label, count]) => ({
+        label,
+        count,
+      })),
+      recentOrders: [],
+    }
+  })
+
   const abandonedSessionRows = await CustomerAnalyticsEventModel.aggregate<any>([
-    { $match: { ...makeMatch(range), sessionId: { $ne: "" } } },
+    { $match: { ...analyticsMatch, sessionId: { $ne: "" } } },
     { $sort: { sessionId: 1, occurredAt: 1 } },
     {
       $group: {
@@ -1826,7 +2048,7 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
     (
       customerIds.length
         ? await OrderModel.aggregate<any>([
-            { $match: { customerId: { $in: customerIds } } },
+            { $match: { ...orderScopeFilter, customerId: { $in: customerIds } } },
             {
               $group: {
                 _id: "$customerId",
@@ -1887,7 +2109,7 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
   })
 
   const guestSessionRows = await CustomerAnalyticsEventModel.aggregate<any>([
-    { $match: { ...makeMatch(range), sessionId: { $ne: "" } } },
+    { $match: { ...analyticsMatch, sessionId: { $ne: "" } } },
     { $sort: { sessionId: 1, occurredAt: 1 } },
     {
       $group: {
@@ -1919,6 +2141,8 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
       day7OrderRate: newCustomers > 0 ? Math.round((orderedWithin7Days / newCustomers) * 100) : 0,
       day30OrderRate: newCustomers > 0 ? Math.round((orderedWithin30Days / newCustomers) * 100) : 0,
     },
+    recentUsers,
+    topOrderUsers,
     repeatCustomers,
     abandonedCheckouts,
     guestSessions: guestSessionRows.map((row) => ({
@@ -1936,7 +2160,8 @@ async function buildCustomerRows(range: AnalyticsRange, limit: number) {
 
 async function buildPayments(params: AdminCustomerAnalyticsQuery): Promise<PaymentsResponse> {
   const range = resolveRange(params)
-  const match = makeMatch(range)
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params)
 
   const [summaryRows, paymentEventRows, orderMethodsRows, failureStageRows] = (await Promise.all([
     CustomerAnalyticsEventModel.aggregate<any>([
@@ -1972,6 +2197,7 @@ async function buildPayments(params: AdminCustomerAnalyticsQuery): Promise<Payme
     OrderModel.aggregate<any>([
       {
         $match: {
+          ...orderScopeFilter,
           createdAt: { $gte: range.start, $lte: range.end },
         },
       },
@@ -2055,7 +2281,8 @@ async function buildPayments(params: AdminCustomerAnalyticsQuery): Promise<Payme
 
 async function buildActorDetail(params: AdminCustomerAnalyticsQuery & { customerId?: string; anonymousId?: string }): Promise<ActorDetailResponse> {
   const range = resolveRange(params)
-  const match = makeMatch(range)
+  const match = await buildScopedAnalyticsMatch(makeMatch(range), params)
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params)
   const customerId = params.customerId?.trim() ?? ""
   const anonymousId = params.anonymousId?.trim() ?? ""
   const actorType = customerId ? "customer" : "guest"
@@ -2083,7 +2310,11 @@ async function buildActorDetail(params: AdminCustomerAnalyticsQuery & { customer
       .lean()
       .exec(),
     customerId
-      ? OrderModel.find({ customerId })
+      ? OrderModel.find({
+          ...orderScopeFilter,
+          customerId,
+          createdAt: { $gte: range.start, $lte: range.end },
+        })
           .sort({ createdAt: -1 })
           .limit(20)
           .lean()
@@ -2220,25 +2451,25 @@ async function buildActorDetail(params: AdminCustomerAnalyticsQuery & { customer
 
 export async function getAdminCustomerAnalyticsOverview(params: AdminCustomerAnalyticsQuery = {}) {
   const range = resolveRange(params)
-  const key = buildCacheKey("overview", range.preset, range.start.toISOString(), range.end.toISOString(), params.limit ?? DEFAULT_LIMIT)
+  const key = buildCacheKey("overview", cacheScopeKey(params), range.preset, range.start.toISOString(), range.end.toISOString(), params.limit ?? DEFAULT_LIMIT)
   return overviewCache.getOrSet(key, () => buildOverview(params))
 }
 
 export async function getAdminCustomerAnalyticsFunnels(params: AdminCustomerAnalyticsQuery = {}) {
   const range = resolveRange(params)
-  const key = buildCacheKey("funnels", range.preset, range.start.toISOString(), range.end.toISOString(), params.limit ?? DEFAULT_LIMIT)
+  const key = buildCacheKey("funnels", cacheScopeKey(params), range.preset, range.start.toISOString(), range.end.toISOString(), params.limit ?? DEFAULT_LIMIT)
   return funnelCache.getOrSet(key, () => buildFunnel(params))
 }
 
 export async function getAdminCustomerAnalyticsCustomers(params: AdminCustomerAnalyticsQuery = {}) {
   const range = resolveRange(params)
-  const key = buildCacheKey("customers", range.preset, range.start.toISOString(), range.end.toISOString(), params.limit ?? DEFAULT_LIMIT)
-  return customerCache.getOrSet(key, () => buildCustomerRows(range, normalizeLimit(params.limit)))
+  const key = buildCacheKey("customers", cacheScopeKey(params), range.preset, range.start.toISOString(), range.end.toISOString(), params.limit ?? DEFAULT_LIMIT)
+  return customerCache.getOrSet(key, () => buildCustomerRows(range, normalizeLimit(params.limit), params))
 }
 
 export async function getAdminCustomerAnalyticsPayments(params: AdminCustomerAnalyticsQuery = {}) {
   const range = resolveRange(params)
-  const key = buildCacheKey("payments", range.preset, range.start.toISOString(), range.end.toISOString())
+  const key = buildCacheKey("payments", cacheScopeKey(params), range.preset, range.start.toISOString(), range.end.toISOString())
   return paymentsCache.getOrSet(key, () => buildPayments(params))
 }
 
@@ -2254,6 +2485,7 @@ export async function getAdminCustomerAnalyticsActorDetail(
   const range = resolveRange(params)
   const key = buildCacheKey(
     "actor-detail",
+    cacheScopeKey(params),
     range.preset,
     range.start.toISOString(),
     range.end.toISOString(),

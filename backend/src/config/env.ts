@@ -21,9 +21,9 @@ const envSchema = z.object({
         : value !== "false",
     ),
   CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
-  CUSTOMER_APP: z.string().default("http://192.168.1.5:8081"),
-  DELIVERY_APP: z.string().default("http://192.168.1.5:8082"),
-  RESTAURANT_APP: z.string().default("http://192.168.1.5:8083"),
+  CUSTOMER_APP: z.string().default("http://192.168.1.2:8081"),
+  DELIVERY_APP: z.string().default("http://192.168.1.2:8082"),
+  RESTAURANT_APP: z.string().default("http://192.168.1.2:8083"),
   ADMIN_PANEL_ORIGIN: z.string().default("http://localhost:5174"),
   JWT_ACCESS_SECRET: z.string().min(1, "JWT_ACCESS_SECRET is required"),
   JWT_REFRESH_SECRET: z.string().min(1, "JWT_REFRESH_SECRET is required"),
@@ -72,6 +72,10 @@ const envSchema = z.object({
     .default(15 * 60 * 1000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(2000),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
+  SERVICE_AREAS_ENABLED: z
+    .string()
+    .default("true")
+    .transform((value) => value !== "false"),
   MOCK_OTP_ENABLED: z
     .string()
     .default("true")

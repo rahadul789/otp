@@ -17,6 +17,8 @@ import {
 } from "./notifications.service";
 
 const listNotificationsQuerySchema = z.object({
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   source: z.enum(["all", "customer", "owner", "rider", "campaign", "scheduled", "ops"]).optional(),
   status: z.enum(["all", "read", "unread"]).optional(),
   search: z.string().optional(),
@@ -25,6 +27,8 @@ const listNotificationsQuerySchema = z.object({
 });
 
 const sendNotificationSchema = z.object({
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   recipientType: z.enum(["customers", "owners", "riders"]),
   audience: z.enum(["all", "selected"]),
   recipientIds: z.array(z.string().trim()).optional(),

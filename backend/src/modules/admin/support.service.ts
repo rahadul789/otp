@@ -10,6 +10,11 @@ import { createCustomerNotification, sendPushToCustomer } from "../customer/push
 import { SupportCaseModel } from "../owner/experience.model"
 import { createOwnerNotification } from "../owner/operational.service"
 import { OrderModel } from "../owner/operational.model"
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+  buildRiderServiceAreaScopeFilter,
+} from "../service-area/service-area.service"
 
 type SupportCaseStatus = "open" | "in_progress" | "resolved" | "closed"
 type SupportCasePriority = "low" | "medium" | "high"
@@ -21,6 +26,8 @@ const MAX_SUPPORT_CASE_INTERNAL_NOTES = 200
 
 type ListSupportCasesParams = {
   search?: string
+  zoneId?: string
+  districtId?: string
   source?: SupportCaseSource
   status?: "all" | SupportCaseStatus
   priority?: "all" | SupportCasePriority
@@ -123,7 +130,7 @@ async function writeSupportAudit(params: {
   })
 }
 
-function buildSupportQuery(params: ListSupportCasesParams) {
+async function buildSupportQuery(params: ListSupportCasesParams) {
   const query: Record<string, any> = {}
   if (params.source && params.source !== "all") query.source = params.source
   if (params.status && params.status !== "all") query.status = params.status
@@ -157,6 +164,27 @@ function buildSupportQuery(params: ListSupportCasesParams) {
           { "requesterSnapshot.phone": { $regex: search, $options: "i" } },
         ],
       },
+    ]
+  }
+  const [restaurantIds, orderIds, riderIds] = await Promise.all([
+    Object.keys(buildRestaurantServiceAreaScopeFilter(params)).length
+      ? RestaurantModel.distinct("_id", buildRestaurantServiceAreaScopeFilter(params))
+      : Promise.resolve([]),
+    Object.keys(buildOrderServiceAreaScopeFilter(params)).length
+      ? OrderModel.distinct("_id", buildOrderServiceAreaScopeFilter(params))
+      : Promise.resolve([]),
+    Object.keys(buildRiderServiceAreaScopeFilter(params)).length
+      ? RiderModel.distinct("_id", buildRiderServiceAreaScopeFilter(params))
+      : Promise.resolve([]),
+  ])
+  const scopeConditions: Record<string, any>[] = []
+  if (restaurantIds.length) scopeConditions.push({ restaurantId: { $in: restaurantIds } })
+  if (orderIds.length) scopeConditions.push({ orderId: { $in: orderIds } })
+  if (riderIds.length) scopeConditions.push({ riderId: { $in: riderIds } })
+  if (params.zoneId?.trim() || params.districtId?.trim()) {
+    query.$and = [
+      ...(query.$and ?? []),
+      scopeConditions.length ? { $or: scopeConditions } : { _id: { $exists: false } },
     ]
   }
   return query
@@ -260,7 +288,7 @@ async function hydrateSupportRows(cases: Array<Record<string, any>>) {
 export async function listSupportCases(params: ListSupportCasesParams = {}) {
   const page = clampPage(params.page)
   const pageSize = clampPageSize(params.pageSize)
-  const query = buildSupportQuery(params)
+  const query = await buildSupportQuery(params)
   const sort: Record<string, 1 | -1> =
     params.sortBy === "oldest"
       ? { createdAt: 1 }
@@ -275,6 +303,7 @@ export async function listSupportCases(params: ListSupportCasesParams = {}) {
     SupportCaseModel.find(query).sort(sort).skip((page - 1) * pageSize).limit(pageSize).lean(),
     SupportCaseModel.countDocuments(query),
     SupportCaseModel.aggregate<Record<string, any>>([
+      { $match: query },
       {
         $group: {
           _id: null,
@@ -297,7 +326,7 @@ export async function listSupportCases(params: ListSupportCasesParams = {}) {
         },
       },
     ]),
-    SupportCaseModel.distinct("categoryId"),
+    SupportCaseModel.distinct("categoryId", query),
     AdminModel.find({ status: "active" }, { fullName: 1, role: 1 }).sort({ fullName: 1 }).lean(),
   ])
   const items = await hydrateSupportRows(cases)

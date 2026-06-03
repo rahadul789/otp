@@ -30,6 +30,8 @@ const analyticsQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   limit: z.coerce.number().int().min(5).max(100).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 })
 
 const analyticsEventsQuerySchema = analyticsQuerySchema.extend({
@@ -64,6 +66,8 @@ export const getAdminCustomerAnalyticsOverviewController = asyncHandler(
       from: normalizeOptionalString(req.query.from),
       to: normalizeOptionalString(req.query.to),
       limit: normalizeOptionalString(req.query.limit),
+      zoneId: normalizeOptionalString(req.query.zoneId),
+      districtId: normalizeOptionalString(req.query.districtId),
     })
     const data = await getAdminCustomerAnalyticsOverview(query)
     return sendSuccess(res, { data })
@@ -77,6 +81,8 @@ export const getAdminCustomerAnalyticsFunnelsController = asyncHandler(
       from: normalizeOptionalString(req.query.from),
       to: normalizeOptionalString(req.query.to),
       limit: normalizeOptionalString(req.query.limit),
+      zoneId: normalizeOptionalString(req.query.zoneId),
+      districtId: normalizeOptionalString(req.query.districtId),
     })
     const data = await getAdminCustomerAnalyticsFunnels(query)
     return sendSuccess(res, { data })
@@ -90,6 +96,8 @@ export const getAdminCustomerAnalyticsCustomersController = asyncHandler(
       from: normalizeOptionalString(req.query.from),
       to: normalizeOptionalString(req.query.to),
       limit: normalizeOptionalString(req.query.limit),
+      zoneId: normalizeOptionalString(req.query.zoneId),
+      districtId: normalizeOptionalString(req.query.districtId),
     })
     const data = await getAdminCustomerAnalyticsCustomers(query)
     return sendSuccess(res, { data })
@@ -103,6 +111,8 @@ export const getAdminCustomerAnalyticsPaymentsController = asyncHandler(
       from: normalizeOptionalString(req.query.from),
       to: normalizeOptionalString(req.query.to),
       limit: normalizeOptionalString(req.query.limit),
+      zoneId: normalizeOptionalString(req.query.zoneId),
+      districtId: normalizeOptionalString(req.query.districtId),
     })
     const data = await getAdminCustomerAnalyticsPayments(query)
     return sendSuccess(res, { data })
@@ -116,6 +126,8 @@ export const getAdminCustomerAnalyticsEventsController = asyncHandler(
       from: normalizeOptionalString(req.query.from),
       to: normalizeOptionalString(req.query.to),
       limit: normalizeOptionalString(req.query.limit),
+      zoneId: normalizeOptionalString(req.query.zoneId),
+      districtId: normalizeOptionalString(req.query.districtId),
       eventType: normalizeOptionalString(req.query.eventType),
       actorType: normalizeOptionalString(req.query.actorType),
       search: normalizeOptionalString(req.query.search),
@@ -138,6 +150,8 @@ export const getAdminCustomerAnalyticsActorDetailController = asyncHandler(
       from: normalizeOptionalString(req.query.from),
       to: normalizeOptionalString(req.query.to),
       limit: normalizeOptionalString(req.query.limit),
+      zoneId: normalizeOptionalString(req.query.zoneId),
+      districtId: normalizeOptionalString(req.query.districtId),
       customerId: normalizeOptionalString(req.query.customerId),
       anonymousId: normalizeOptionalString(req.query.anonymousId),
     })

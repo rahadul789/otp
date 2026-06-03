@@ -136,6 +136,7 @@ export type CustomerHomeCms = {
   offerStrip: {
     isActive: boolean;
     showVoucherStrip?: boolean;
+    showRestaurantOfferSection?: boolean;
     mode: "voucher_strip" | "promo_block" | "hidden";
     title: string;
     subtitle: string;
@@ -150,6 +151,20 @@ export type CustomerHomeCms = {
     backgroundColor: string;
     textColor: string;
     accentColor: string;
+  };
+  homeCategories?: {
+    isActive: boolean;
+    title: string;
+    subtitle: string;
+    items: {
+      id?: string;
+      label: string;
+      searchQuery: string;
+      icon?: string;
+      color?: string;
+      position?: number;
+      isActive?: boolean;
+    }[];
   };
   modal: {
     isActive: boolean;
@@ -216,6 +231,16 @@ export type CustomerDiscoveryHome = {
   restaurantsWithOffers: DiscoverableRestaurant[];
   campaignPlacements?: CustomerCampaignPlacement[];
   activeOffers: CustomerVoucherOffer[];
+};
+
+export type DiscoverableRestaurantsPage = {
+  items: DiscoverableRestaurant[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  hasNextPage: boolean;
+  nextPage: number | null;
 };
 
 export type CustomerRestaurantDetails = {

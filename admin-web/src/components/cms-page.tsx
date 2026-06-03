@@ -1,3 +1,4 @@
+import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Image } from "lucide-react"
 import { toast } from "sonner"
@@ -15,6 +16,7 @@ import {
   updatePlatformContent,
   type PlatformContent,
 } from "@/lib/admin-cms-api"
+import { getAdminZoneScope, subscribeAdminZoneScope } from "@/lib/admin-zone-scope"
 
 import { CustomerHomeCmsSection } from "./customer-home-cms-section"
 
@@ -24,10 +26,14 @@ function formatCurrency(value?: number | null) {
 
 export function CmsPage() {
   const queryClient = useQueryClient()
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() => getAdminZoneScope())
+
+  React.useEffect(() => subscribeAdminZoneScope(() => setAdminZoneScope(getAdminZoneScope())), [])
 
   const platformContentQuery = useQuery({
-    queryKey: ["admin-platform-content"],
+    queryKey: ["admin-platform-content", adminZoneScope.type, adminZoneScope.id],
     queryFn: getPlatformContent,
+    enabled: adminZoneScope.type !== "all",
     staleTime: 30_000,
   })
 
@@ -157,30 +163,54 @@ export function CmsPage() {
             Manage customer-app home content, education blocks, and modals.
             Push campaigns are managed from Notifications.
           </p>
+          <p className="mt-2 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            Area zone: <span className="font-medium text-foreground">{adminZoneScope.label}</span>.
+            {adminZoneScope.type === "all"
+              ? " Select one district or zone first. CMS is zone based and cannot be edited from All areas."
+              : " Offer strip, modal, and home push content save for this area only."}
+          </p>
         </div>
       </div>
 
-      <CustomerHomeCmsSection
-        content={platformContentQuery.data?.content ?? null}
-        customers={[]}
-        restaurants={[]}
-        isLoading={platformContentQuery.isLoading}
-        isSaving={updateContentMutation.isPending}
-        isSending={sendHomePushMutation.isPending}
-        isCheckingReceipts={checkHomePushReceiptsMutation.isPending}
-        isRefreshingConversions={refreshHomePushConversionsMutation.isPending}
-        isScheduling={scheduleHomePushMutation.isPending}
-        isCancellingSchedule={cancelHomePushScheduleMutation.isPending}
-        isTestingPush={sendHomeTestPushMutation.isPending}
-        onSave={(content) => updateContentMutation.mutate(content)}
-        onSendPush={(content) => sendHomePushMutation.mutate(content)}
-        onCheckReceipts={() => checkHomePushReceiptsMutation.mutate()}
-        onRefreshConversions={() => refreshHomePushConversionsMutation.mutate()}
-        onSchedulePush={(content, scheduledAt) => scheduleHomePushMutation.mutate({ content, scheduledAt })}
-        onCancelSchedule={() => cancelHomePushScheduleMutation.mutate()}
-        onSendTestPush={(content, customerId) => sendHomeTestPushMutation.mutate({ content, customerId })}
-        hidePushCampaign
-      />
+      {adminZoneScope.type === "all" ? (
+        <Card>
+          <CardContent className="flex min-h-56 flex-col items-center justify-center gap-3 text-center">
+            <div className="rounded-full bg-primary/10 p-3 text-primary">
+              <Image className="size-6" />
+            </div>
+            <div>
+              <p className="font-semibold">Choose an area to edit CMS</p>
+              <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+                Home modal, offer strip, promotional blocks, and push content
+                are shown only inside the selected service area. This prevents a
+                Netrakona campaign from leaking into another district.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <CustomerHomeCmsSection
+          content={platformContentQuery.data?.content ?? null}
+          customers={[]}
+          restaurants={[]}
+          isLoading={platformContentQuery.isLoading}
+          isSaving={updateContentMutation.isPending}
+          isSending={sendHomePushMutation.isPending}
+          isCheckingReceipts={checkHomePushReceiptsMutation.isPending}
+          isRefreshingConversions={refreshHomePushConversionsMutation.isPending}
+          isScheduling={scheduleHomePushMutation.isPending}
+          isCancellingSchedule={cancelHomePushScheduleMutation.isPending}
+          isTestingPush={sendHomeTestPushMutation.isPending}
+          onSave={(content) => updateContentMutation.mutate(content)}
+          onSendPush={(content) => sendHomePushMutation.mutate(content)}
+          onCheckReceipts={() => checkHomePushReceiptsMutation.mutate()}
+          onRefreshConversions={() => refreshHomePushConversionsMutation.mutate()}
+          onSchedulePush={(content, scheduledAt) => scheduleHomePushMutation.mutate({ content, scheduledAt })}
+          onCancelSchedule={() => cancelHomePushScheduleMutation.mutate()}
+          onSendTestPush={(content, customerId) => sendHomeTestPushMutation.mutate({ content, customerId })}
+          hidePushCampaign
+        />
+      )}
     </>
   )
 }

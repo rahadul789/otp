@@ -14,6 +14,8 @@ import {
 const listCategoriesQuerySchema = z.object({
   search: z.string().optional(),
   restaurantId: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   status: z.enum(["all", "active", "archived"]).optional(),
   health: z.enum(["all", "empty", "needs_review", "duplicate", "healthy"]).optional(),
   sortBy: z.enum(["newest", "oldest", "mostItems", "emptyFirst", "name"]).optional(),

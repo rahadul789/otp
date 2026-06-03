@@ -221,6 +221,15 @@ function RewardRow({ reward }: { reward: CustomerReferralReward }) {
             : reward.status === "rejected"
               ? "Not eligible"
               : "Waiting for first order";
+  const supportHint =
+    reward.status === "rejected" || reward.status === "under_review"
+      ? "If you believe this was a mistake, contact Foodbela support from Profile > Support."
+      : "";
+  const skippedMessage =
+    reward.skippedReason ||
+    (reward.status === "rejected"
+      ? "Referral reward was blocked by Foodbela rules. Self-referral, same phone/device, or suspicious activity may not receive rewards."
+      : "");
 
   return (
     <View style={styles.rewardRow}>
@@ -257,8 +266,11 @@ function RewardRow({ reward }: { reward: CustomerReferralReward }) {
           {reward.referredCustomerName} joined
           {reward.referredAt ? ` on ${formatDateTimeAmPm(reward.referredAt)}` : ""}
         </Text>
-        {isSkipped && reward.skippedReason ? (
-          <Text style={styles.rewardSkipped}>{reward.skippedReason}</Text>
+        {(isSkipped || isReview) && skippedMessage ? (
+          <Text style={styles.rewardSkipped}>{skippedMessage}</Text>
+        ) : null}
+        {supportHint ? (
+          <Text style={styles.rewardSupportHint}>{supportHint}</Text>
         ) : null}
         {reward.voucher ? (
           <Text style={styles.rewardVoucher}>
@@ -520,6 +532,13 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontWeight: "700",
     color: palette.mutedForeground,
+  },
+  rewardSupportHint: {
+    marginTop: 4,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "800",
+    color: palette.secondary,
   },
   noRewardsCard: {
     minHeight: 120,

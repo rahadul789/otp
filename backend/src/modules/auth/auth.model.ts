@@ -16,6 +16,28 @@ const mediaAssetSchema = new Schema(
   { _id: false },
 );
 
+const restaurantServiceAreaSchema = new Schema(
+  {
+    districtId: { type: String, default: "", trim: true },
+    districtName: { type: String, default: "", trim: true },
+    zoneId: { type: String, default: "", trim: true },
+    zoneName: { type: String, default: "", trim: true },
+  },
+  { _id: false },
+);
+
+const riderServiceAreaSchema = new Schema(
+  {
+    primaryZoneId: { type: String, default: "", trim: true },
+    primaryZoneName: { type: String, default: "", trim: true },
+    assignedZoneIds: { type: [String], default: [] },
+    assignedZoneNames: { type: [String], default: [] },
+    districtIds: { type: [String], default: [] },
+    districtNames: { type: [String], default: [] },
+  },
+  { _id: false },
+);
+
 const riderPushTokenSchema = new Schema(
   {
     expoPushToken: { type: String, required: true, trim: true },
@@ -99,6 +121,7 @@ const riderSchema = new Schema(
       default: () => ({}),
     },
     isPhoneVerified: { type: Boolean, default: true },
+    serviceArea: { type: riderServiceAreaSchema, default: () => ({}) },
     verification: { type: riderVerificationSchema, default: () => ({}) },
     payroll: { type: riderPayrollSchema, default: () => ({}) },
     pushTokens: { type: [riderPushTokenSchema], default: [] },
@@ -115,6 +138,7 @@ const riderSchema = new Schema(
 
 riderSchema.index({ status: 1, "lastKnownLocation.updatedAt": -1, lastLoginAt: -1 });
 riderSchema.index({ status: 1, isAvailableForAssignments: 1, "verification.status": 1 });
+riderSchema.index({ "serviceArea.assignedZoneIds": 1, status: 1, isAvailableForAssignments: 1 });
 
 const ownerSchema = new Schema(
   {
@@ -435,6 +459,7 @@ const restaurantSchema = new Schema(
       ),
       default: null,
     },
+    serviceArea: { type: restaurantServiceAreaSchema, default: () => ({}) },
     runtime: {
       type: Schema.Types.Mixed,
       default: {},
@@ -529,6 +554,7 @@ const restaurantSchema = new Schema(
 restaurantSchema.index({ ownerId: 1, slug: 1 }, { unique: true });
 restaurantSchema.index({ locationPoint: "2dsphere" });
 restaurantSchema.index({ "runtime.isOnline": -1, name: 1 });
+restaurantSchema.index({ "serviceArea.zoneId": 1, "runtime.isVisible": 1, "runtime.isOnline": -1 });
 
 const payoutMethodSchema = new Schema(
   {

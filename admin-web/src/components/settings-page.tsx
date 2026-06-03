@@ -33,6 +33,10 @@ import {
   updateAdminPlatformSettings,
   type AdminPlatformSettings,
 } from "@/lib/admin-settings-api"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -77,19 +81,20 @@ const defaultFinanceSettings: PlatformContent["operations"]["finance"] = {
   oneActivePayoutRequest: true,
 }
 
-const defaultAdminNotificationSettings: PlatformContent["operations"]["adminNotifications"] = {
-  orderPlaced: true,
-  customerOrderUpdates: false,
-  orderDelays: true,
-  preparationDelays: true,
-  riderDelays: true,
-  deliveryDelays: true,
-  paymentExceptions: true,
-  payoutRequests: true,
-  support: true,
-  security: true,
-  campaigns: true,
-}
+const defaultAdminNotificationSettings: PlatformContent["operations"]["adminNotifications"] =
+  {
+    orderPlaced: true,
+    customerOrderUpdates: false,
+    orderDelays: true,
+    preparationDelays: true,
+    riderDelays: true,
+    deliveryDelays: true,
+    paymentExceptions: true,
+    payoutRequests: true,
+    support: true,
+    security: true,
+    campaigns: true,
+  }
 
 const defaultOwnerAppSettings: PlatformContent["operations"]["ownerApp"] = {
   webDashboardUrl: "http://localhost:5173",
@@ -184,7 +189,10 @@ function renderOtpTemplatePreview(
     .replaceAll("{{expirySeconds}}", String(expiresInSeconds))
 }
 
-function renderRefundSmsTemplatePreview(template: string, platformName: string) {
+function renderRefundSmsTemplatePreview(
+  template: string,
+  platformName: string
+) {
   return template
     .replaceAll("{{platformName}}", platformName || "Foodbela")
     .replaceAll("{{orderNumber}}", "FB-1042")
@@ -248,25 +256,91 @@ const recommendedOrderAutomation = {
 }
 
 const operationalThresholdFields = [
-  ["ownerAcceptanceTimeoutMinutes", "Owner acceptance timeout", "minutes", 1, 180],
+  [
+    "ownerAcceptanceTimeoutMinutes",
+    "Owner acceptance timeout",
+    "minutes",
+    1,
+    180,
+  ],
   ["autoCancelAfterMinutes", "Auto-cancel unaccepted after", "minutes", 2, 240],
-  ["autoCancelNotifyBeforeMinutes", "Notify admin before auto-cancel", "minutes", 1, 60],
+  [
+    "autoCancelNotifyBeforeMinutes",
+    "Notify admin before auto-cancel",
+    "minutes",
+    1,
+    60,
+  ],
   ["maxActiveOrdersPerRider", "Max active orders per rider", "orders", 1, 50],
-  ["staleLocationCutoffMinutes", "Stale rider location cutoff", "minutes", 1, 180],
+  [
+    "staleLocationCutoffMinutes",
+    "Stale rider location cutoff",
+    "minutes",
+    1,
+    180,
+  ],
   ["assignmentTimeoutMinutes", "Rider assignment timeout", "minutes", 1, 180],
   ["prepStartGraceMinutes", "Prep start grace", "minutes after accept", 1, 180],
   ["preparationMaxExtraMinutes", "Max extra prep time", "minutes", 0, 180],
-  ["prepLateGraceMinutes", "Prep late grace", "minutes after expected prep", 0, 180],
-  ["pickupLateGraceMinutes", "Pickup late window", "minutes after ready", 1, 180],
-  ["deliveryLateGraceMinutes", "Delivery ETA grace", "minutes after ETA", 1, 180],
-  ["deliveryWatchAfterPickupMinutes", "Delivery watch after pickup", "minutes after pickup", 1, 240],
-  ["deliveryLateAfterPickupMinutes", "Delivery late after pickup", "minutes after pickup", 1, 240],
-  ["deliveryCriticalAfterPickupMinutes", "Delivery critical after pickup", "minutes after pickup", 1, 240],
+  [
+    "prepLateGraceMinutes",
+    "Prep late grace",
+    "minutes after expected prep",
+    0,
+    180,
+  ],
+  [
+    "pickupLateGraceMinutes",
+    "Pickup late window",
+    "minutes after ready",
+    1,
+    180,
+  ],
+  [
+    "deliveryLateGraceMinutes",
+    "Delivery ETA grace",
+    "minutes after ETA",
+    1,
+    180,
+  ],
+  [
+    "deliveryWatchAfterPickupMinutes",
+    "Delivery watch after pickup",
+    "minutes after pickup",
+    1,
+    240,
+  ],
+  [
+    "deliveryLateAfterPickupMinutes",
+    "Delivery late after pickup",
+    "minutes after pickup",
+    1,
+    240,
+  ],
+  [
+    "deliveryCriticalAfterPickupMinutes",
+    "Delivery critical after pickup",
+    "minutes after pickup",
+    1,
+    240,
+  ],
   ["riderEtaSpeedKmph", "Rider ETA cycle speed", "km/h", 6, 45],
-  ["riderEtaRouteFactor", "Rider ETA route multiplier", "x direct distance", 1, 2],
+  [
+    "riderEtaRouteFactor",
+    "Rider ETA route multiplier",
+    "x direct distance",
+    1,
+    2,
+  ],
   ["retryCooldownMinutes", "Dispatch retry cooldown", "minutes", 1, 60],
   ["surgeReadyOrderThreshold", "Surge ready-order threshold", "orders", 1, 100],
-  ["surgeUnassignedOrderThreshold", "Surge unassigned threshold", "orders", 1, 100],
+  [
+    "surgeUnassignedOrderThreshold",
+    "Surge unassigned threshold",
+    "orders",
+    1,
+    100,
+  ],
 ] as const
 
 const adminNotificationRules: Array<{
@@ -299,8 +373,7 @@ const adminNotificationRules: Array<{
   {
     key: "preparationDelays",
     title: "Preparation delay alerts",
-    description:
-      "Food prep not started or taking longer than expected.",
+    description: "Food prep not started or taking longer than expected.",
     badge: "Kitchen",
   },
   {
@@ -490,7 +563,8 @@ const rateLimitFields: Array<{
   {
     key: "ownerWritePerWindow",
     title: "Owner write endpoints",
-    description: "Owner app/web POST/PATCH/PUT/DELETE across protected modules.",
+    description:
+      "Owner app/web POST/PATCH/PUT/DELETE across protected modules.",
     windowLabel: "15 minutes",
     min: 60,
     max: 1000,
@@ -631,20 +705,41 @@ function SettingRow({
 
 export function SettingsPage() {
   const queryClient = useQueryClient()
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id || "all"}`
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+        setDraft(null)
+        setIsDirty(false)
+      }),
+    []
+  )
+
   const platformContentQuery = useQuery({
-    queryKey: ["admin-platform-settings"],
+    queryKey: ["admin-platform-settings", adminScopeKey],
     queryFn: getAdminPlatformSettings,
   })
   const [activeTab, setActiveTab] = React.useState<
-    "operations" | "notifications" | "payments" | "referrals" | "general" | "security" | "support"
+    | "operations"
+    | "notifications"
+    | "payments"
+    | "referrals"
+    | "general"
+    | "security"
+    | "support"
   >("operations")
   const dispatchQuery = useQuery({
-    queryKey: ["admin-dispatch-settings"],
+    queryKey: ["admin-dispatch-settings", adminScopeKey],
     queryFn: getAdminDispatchSettings,
     enabled: activeTab === "operations",
   })
   const ridersQuery = useQuery({
-    queryKey: ["admin-riders-assignment-options", "settings-primary"],
+    queryKey: ["admin-riders-assignment-options", "settings-primary", adminScopeKey],
     queryFn: listAdminRidersAssignmentOptions,
     enabled: activeTab === "operations",
   })
@@ -659,17 +754,22 @@ export function SettingsPage() {
     staleTime: 30_000,
     enabled: activeTab === "security",
   })
-  const settingsLoadError = platformContentQuery.error instanceof Error
-    ? platformContentQuery.error
-    : null
+  const settingsLoadError =
+    platformContentQuery.error instanceof Error
+      ? platformContentQuery.error
+      : null
 
   const [draft, setDraft] = React.useState<PlatformContent | null>(null)
   const [isDirty, setIsDirty] = React.useState(false)
-  const [otpBlockTargetType, setOtpBlockTargetType] = React.useState<"phone" | "ip" | "device">("phone")
+  const [otpBlockTargetType, setOtpBlockTargetType] = React.useState<
+    "phone" | "ip" | "device"
+  >("phone")
   const [otpBlockTargetValue, setOtpBlockTargetValue] = React.useState("")
   const [otpBlockDuration, setOtpBlockDuration] = React.useState("60")
   const [otpBlockPermanent, setOtpBlockPermanent] = React.useState(false)
-  const [otpBlockReason, setOtpBlockReason] = React.useState("Suspicious OTP activity")
+  const [otpBlockReason, setOtpBlockReason] = React.useState(
+    "Suspicious OTP activity"
+  )
   const [showThresholdHelp, setShowThresholdHelp] = React.useState(false)
 
   React.useEffect(() => {
@@ -698,13 +798,21 @@ export function SettingsPage() {
       ensureRateLimitSettings(cloned)
       setDraft(cloned)
       setIsDirty(false)
-      void queryClient.invalidateQueries({ queryKey: ["admin-platform-settings"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-platform-settings"],
+      })
       void queryClient.invalidateQueries({ queryKey: ["admin-notifications"] })
-      void queryClient.invalidateQueries({ queryKey: ["admin-dispatch-settings"] })
-      void queryClient.invalidateQueries({ queryKey: ["admin-dashboard-orders"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-dispatch-settings"],
+      })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-dashboard-orders"],
+      })
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Failed to save settings")
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save settings"
+      )
     },
   })
 
@@ -725,7 +833,9 @@ export function SettingsPage() {
       void queryClient.invalidateQueries({ queryKey: ["admin-otp-security"] })
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Failed to update OTP block")
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update OTP block"
+      )
     },
   })
 
@@ -736,7 +846,9 @@ export function SettingsPage() {
       void queryClient.invalidateQueries({ queryKey: ["admin-otp-security"] })
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Failed to remove OTP block")
+      toast.error(
+        error instanceof Error ? error.message : "Failed to remove OTP block"
+      )
     },
   })
 
@@ -802,7 +914,11 @@ export function SettingsPage() {
           <p className="text-sm text-muted-foreground">
             {settingsLoadError?.message ?? "Please retry the request."}
           </p>
-          <Button type="button" variant="outline" onClick={() => void platformContentQuery.refetch()}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void platformContentQuery.refetch()}
+          >
             Retry
           </Button>
         </div>
@@ -823,7 +939,6 @@ export function SettingsPage() {
 
   const dispatch = draft.operations.dispatch
   const serviceArea = draft.operations.serviceArea
-  const deliveryPricing = draft.operations.deliveryPricing
   const liveTracking = draft.operations.liveTracking
   const payments = draft.operations.payments
   const finance = draft.operations.finance ?? defaultFinanceSettings
@@ -862,6 +977,28 @@ export function SettingsPage() {
     payments.bkashRefundSmsTemplate.trim().length >= 20 &&
     payments.bkashRefundSmsTemplate.includes("{{orderNumber}}")
   const otpSecurity = otpSecurityQuery.data
+  const settingsScope = platformContentQuery.data?.scope
+  const isScopedSettings = settingsScope?.settingsMode !== "global"
+  const scopeBadgeLabel =
+    settingsScope?.settingsMode === "single_zone"
+      ? "Zone settings"
+      : settingsScope?.settingsMode === "district_zones"
+        ? "District zones"
+        : "Global settings"
+  const scopeDescription =
+    settingsScope?.settingsMode === "single_zone"
+      ? "Operational dispatch and delivery defaults save to this selected zone."
+      : settingsScope?.settingsMode === "district_zones"
+        ? "Operational dispatch and delivery defaults save to every active zone in this district."
+        : "Global fallback used only when no selected service zone override exists."
+  const serviceAreaHelper =
+    settingsScope?.settingsMode === "global"
+      ? `${settingsScope?.zoneCount ?? 0} active zone${(settingsScope?.zoneCount ?? 0) === 1 ? "" : "s"}, largest radius ${serviceArea.radiusKm} km`
+      : `${serviceArea.radiusKm} km delivery radius${
+          settingsScope?.zoneCount
+            ? `, ${settingsScope.zoneCount} zone${settingsScope.zoneCount > 1 ? "s" : ""}`
+            : ""
+        }`
   const fillOtpBlockTarget = (
     targetType: "phone" | "ip" | "device",
     targetValue: string
@@ -895,9 +1032,22 @@ export function SettingsPage() {
             Configure synced platform policies for branding, service area,
             dispatch, authentication, and support.
           </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Badge className="rounded-md bg-pink-500 text-white">
+              {scopeBadgeLabel}
+            </Badge>
+            <Badge variant="outline" className="rounded-md">
+              {settingsScope?.label ?? adminZoneScope.label}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              {scopeDescription}
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {hasChanges ? <Badge variant="secondary">Unsaved changes</Badge> : null}
+          {hasChanges ? (
+            <Badge variant="secondary">Unsaved changes</Badge>
+          ) : null}
           <Button type="button" variant="outline" onClick={resetDraft}>
             <RefreshCcw className="size-4" />
             Reset
@@ -925,10 +1075,12 @@ export function SettingsPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <Card>
           <CardContent className="pt-2">
-            <p className="text-sm text-muted-foreground">Service area</p>
+            <p className="text-sm text-muted-foreground">
+              {isScopedSettings ? "Selected area" : "Service area"}
+            </p>
             <p className="mt-2 text-2xl font-semibold">{serviceArea.name}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {serviceArea.radiusKm} km delivery radius
+              {serviceAreaHelper}
             </p>
           </CardContent>
         </Card>
@@ -936,10 +1088,13 @@ export function SettingsPage() {
           <CardContent className="pt-2">
             <p className="text-sm text-muted-foreground">Dispatch mode</p>
             <p className="mt-2 text-2xl font-semibold">
+              {settingsScope?.settingsMode === "global" ? "Fallback " : ""}
               {dispatch.dispatchMode === "primary_rider" ? "Primary rider" : "Fleet"}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {dispatch.autoAssignmentEnabled ? "Auto assignment on" : "Manual assignment"}
+              {dispatch.autoAssignmentEnabled
+                ? "Auto assignment on"
+                : "Manual assignment"}
             </p>
           </CardContent>
         </Card>
@@ -947,10 +1102,11 @@ export function SettingsPage() {
           <CardContent className="pt-2">
             <p className="text-sm text-muted-foreground">Live rider capacity</p>
             <p className="mt-2 text-2xl font-semibold">
-              {dispatchMetrics?.eligibleRiders ?? 0}/{dispatchMetrics?.totalRiders ?? 0}
+              {dispatchMetrics?.eligibleRiders ?? 0}/
+              {dispatchMetrics?.totalRiders ?? 0}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Eligible riders from dispatch engine
+              Eligible riders for {settingsScope?.label ?? "all areas"}
             </p>
           </CardContent>
         </Card>
@@ -961,7 +1117,8 @@ export function SettingsPage() {
               {formatDateTime(platformContentQuery.data?.meta.updatedAt)}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {platformContentQuery.data?.meta.updatedByAdminName || "System defaults"}
+              {platformContentQuery.data?.meta.updatedByAdminName ||
+                "System defaults"}
             </p>
           </CardContent>
         </Card>
@@ -972,7 +1129,8 @@ export function SettingsPage() {
               {referrals.enabled ? "On" : "Off"}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Tk {referrals.rewardAmountTaka} reward, {referrals.monthlyRewardCapPerCustomer}/month cap
+              Tk {referrals.rewardAmountTaka} reward,{" "}
+              {referrals.monthlyRewardCapPerCustomer}/month cap
             </p>
           </CardContent>
         </Card>
@@ -1000,81 +1158,32 @@ export function SettingsPage() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <MapPin className="size-4" />
-                    Service area
+                    Service areas moved to zone settings
                   </CardTitle>
                   <CardDescription>
-                    Customer and delivery availability should use this operating
-                    zone as the platform default.
+                    {isScopedSettings
+                      ? "You are editing operational defaults for the selected area scope."
+                      : "Delivery radius, base fee, extra distance fee, rain reserve, and dispatch overrides are managed per zone."}
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <SettingRow
-                    title="Area name"
-                    description="Shown internally to identify the active operating zone."
-                  >
-                    <Input
-                      value={serviceArea.name}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          content.operations.serviceArea.name = event.target.value
-                        })
-                      }
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    title="Center latitude"
-                    description="Map center for delivery operations."
-                  >
-                    <Input
-                      type="number"
-                      value={serviceArea.centerLatitude}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          content.operations.serviceArea.centerLatitude = numberFromInput(
-                            event.target.value,
-                            serviceArea.centerLatitude
-                          )
-                        })
-                      }
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    title="Center longitude"
-                    description="Map center for delivery operations."
-                  >
-                    <Input
-                      type="number"
-                      value={serviceArea.centerLongitude}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          content.operations.serviceArea.centerLongitude = numberFromInput(
-                            event.target.value,
-                            serviceArea.centerLongitude
-                          )
-                        })
-                      }
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    title="Delivery radius"
-                    description="Maximum supported radius in kilometers."
-                  >
-                    <Input
-                      type="number"
-                      min={0.1}
-                      max={50}
-                      step={0.1}
-                      value={serviceArea.radiusKm}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          content.operations.serviceArea.radiusKm = numberFromInput(
-                            event.target.value,
-                            serviceArea.radiusKm
-                          )
-                        })
-                      }
-                    />
-                  </SettingRow>
+                <CardContent>
+                  <div className="rounded-lg border border-dashed bg-muted/30 p-4">
+                    <p className="text-sm text-muted-foreground">
+                      {isScopedSettings
+                        ? `${settingsScope?.label ?? "Selected area"} is active. Dispatch policy, auto-cancel timing, rider capacity, and delivery pricing fallback will save to this area scope. Security, payment gateway, SMS, support, and legal settings remain global.`
+                        : "All areas is active. This page edits global fallback behavior. Choose a zone from the top navbar to edit zone-specific dispatch and delivery defaults."}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-3"
+                      onClick={() => {
+                        window.location.href = "/service-areas"
+                      }}
+                    >
+                      Open Service Areas
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -1085,7 +1194,8 @@ export function SettingsPage() {
                     Rider live tracking
                   </CardTitle>
                   <CardDescription>
-                    Control how often rider apps send live delivery location updates.
+                    Control how often rider apps send live delivery location
+                    updates.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -1097,7 +1207,8 @@ export function SettingsPage() {
                       value={liveTracking.mode}
                       onValueChange={(value) =>
                         updateDraft((content) => {
-                          const mode = value as PlatformContent["operations"]["liveTracking"]["mode"]
+                          const mode =
+                            value as PlatformContent["operations"]["liveTracking"]["mode"]
                           content.operations.liveTracking.mode = mode
                           if (mode === "high_accuracy") {
                             content.operations.liveTracking.updateIntervalSeconds = 10
@@ -1119,137 +1230,42 @@ export function SettingsPage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="balanced">Balanced: 15s / 60m</SelectItem>
-                        <SelectItem value="battery_saver">Battery saver: 30s / 100m</SelectItem>
-                        <SelectItem value="high_accuracy">High accuracy: 10s / 30m</SelectItem>
+                        <SelectItem value="balanced">
+                          Balanced: 15s / 60m
+                        </SelectItem>
+                        <SelectItem value="battery_saver">
+                          Battery saver: 30s / 100m
+                        </SelectItem>
+                        <SelectItem value="high_accuracy">
+                          High accuracy: 10s / 30m
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </SettingRow>
                   <div className="grid gap-3 md:grid-cols-3">
                     <div className="rounded-lg border bg-background p-3">
-                      <p className="text-xs text-muted-foreground">Active delivery interval</p>
-                      <p className="mt-1 text-xl font-semibold">{liveTracking.updateIntervalSeconds}s</p>
+                      <p className="text-xs text-muted-foreground">
+                        Active delivery interval
+                      </p>
+                      <p className="mt-1 text-xl font-semibold">
+                        {liveTracking.updateIntervalSeconds}s
+                      </p>
                     </div>
                     <div className="rounded-lg border bg-background p-3">
-                      <p className="text-xs text-muted-foreground">Move threshold</p>
-                      <p className="mt-1 text-xl font-semibold">{liveTracking.distanceIntervalMeters}m</p>
+                      <p className="text-xs text-muted-foreground">
+                        Move threshold
+                      </p>
+                      <p className="mt-1 text-xl font-semibold">
+                        {liveTracking.distanceIntervalMeters}m
+                      </p>
                     </div>
                     <div className="rounded-lg border bg-background p-3">
-                      <p className="text-xs text-muted-foreground">Online heartbeat</p>
-                      <p className="mt-1 text-xl font-semibold">{liveTracking.passiveHeartbeatSeconds}s</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Truck className="size-4" />
-                    Delivery pricing
-                  </CardTitle>
-                  <CardDescription>
-                    Set the global delivery fee and optionally add distance-based
-                    charges after the included range.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <SettingRow
-                    title="Base delivery fee"
-                    description="Applied to every order before any optional distance surcharge."
-                  >
-                    <Input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={deliveryPricing.baseFeeTaka}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          content.operations.deliveryPricing.baseFeeTaka = numberFromInput(
-                            event.target.value,
-                            deliveryPricing.baseFeeTaka
-                          )
-                        })
-                      }
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    title="Enable distance surcharge"
-                    description="Add extra delivery cost only when an order goes beyond the included distance."
-                  >
-                    <Switch
-                      checked={deliveryPricing.distanceSurchargeEnabled}
-                      onCheckedChange={(checked) =>
-                        updateDraft((content) => {
-                          content.operations.deliveryPricing.distanceSurchargeEnabled = checked
-                        })
-                      }
-                    />
-                  </SettingRow>
-                  <SettingRow
-                    title="Included distance"
-                    description="Orders within this distance keep only the base fee."
-                  >
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.1}
-                      value={deliveryPricing.surchargeStartsAfterKm}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          content.operations.deliveryPricing.surchargeStartsAfterKm =
-                            numberFromInput(
-                              event.target.value,
-                              deliveryPricing.surchargeStartsAfterKm
-                            )
-                        })
-                      }
-                    />
-                  </SettingRow>
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    <div className="min-w-0 space-y-2 rounded-lg border bg-background p-3">
-                      <Label>Step distance</Label>
-                      <p className="text-xs leading-5 text-muted-foreground">
-                        Additional charge applies once per distance step.
+                      <p className="text-xs text-muted-foreground">
+                        Online heartbeat
                       </p>
-                      <Input
-                        className="w-full"
-                        type="number"
-                        min={100}
-                        step={100}
-                        value={deliveryPricing.surchargeStepMeters}
-                        onChange={(event) =>
-                          updateDraft((content) => {
-                            content.operations.deliveryPricing.surchargeStepMeters =
-                              numberFromInput(
-                                event.target.value,
-                                deliveryPricing.surchargeStepMeters
-                            )
-                          })
-                        }
-                      />
-                    </div>
-                    <div className="min-w-0 space-y-2 rounded-lg border bg-background p-3">
-                      <Label>Charge per step</Label>
-                      <p className="text-xs leading-5 text-muted-foreground">
-                        Extra taka added for each step beyond the included distance.
+                      <p className="mt-1 text-xl font-semibold">
+                        {liveTracking.passiveHeartbeatSeconds}s
                       </p>
-                      <Input
-                        className="w-full"
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={deliveryPricing.surchargeAmountTaka}
-                        onChange={(event) =>
-                          updateDraft((content) => {
-                            content.operations.deliveryPricing.surchargeAmountTaka =
-                              numberFromInput(
-                                event.target.value,
-                                deliveryPricing.surchargeAmountTaka
-                            )
-                          })
-                        }
-                      />
                     </div>
                   </div>
                 </CardContent>
@@ -1263,7 +1279,8 @@ export function SettingsPage() {
                   Dispatch policy
                 </CardTitle>
                 <CardDescription>
-                  These values are read by rider assignment and order monitoring.
+                  These values are read by rider assignment and order
+                  monitoring.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -1275,7 +1292,8 @@ export function SettingsPage() {
                     checked={dispatch.autoAssignmentEnabled}
                     onCheckedChange={(checked) =>
                       updateDraft((content) => {
-                        content.operations.dispatch.autoAssignmentEnabled = checked
+                        content.operations.dispatch.autoAssignmentEnabled =
+                          checked
                       })
                     }
                   />
@@ -1288,7 +1306,8 @@ export function SettingsPage() {
                     checked={dispatch.autoReassignTimedOutOrders}
                     onCheckedChange={(checked) =>
                       updateDraft((content) => {
-                        content.operations.dispatch.autoReassignTimedOutOrders = checked
+                        content.operations.dispatch.autoReassignTimedOutOrders =
+                          checked
                       })
                     }
                   />
@@ -1298,10 +1317,13 @@ export function SettingsPage() {
                   description="If a restaurant does not accept a new order in time, notify admin first, then cancel automatically."
                 >
                   <Switch
-                    checked={Boolean(dispatch.autoCancelUnacceptedOrdersEnabled)}
+                    checked={Boolean(
+                      dispatch.autoCancelUnacceptedOrdersEnabled
+                    )}
                     onCheckedChange={(checked) =>
                       updateDraft((content) => {
-                        content.operations.dispatch.autoCancelUnacceptedOrdersEnabled = checked
+                        content.operations.dispatch.autoCancelUnacceptedOrdersEnabled =
+                          checked
                       })
                     }
                   />
@@ -1324,7 +1346,9 @@ export function SettingsPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="fleet">Fleet</SelectItem>
-                      <SelectItem value="primary_rider">Primary rider first</SelectItem>
+                      <SelectItem value="primary_rider">
+                        Primary rider first
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </SettingRow>
@@ -1362,7 +1386,8 @@ export function SettingsPage() {
                     checked={dispatch.primaryRiderFallbackEnabled}
                     onCheckedChange={(checked) =>
                       updateDraft((content) => {
-                        content.operations.dispatch.primaryRiderFallbackEnabled = checked
+                        content.operations.dispatch.primaryRiderFallbackEnabled =
+                          checked
                       })
                     }
                   />
@@ -1404,20 +1429,23 @@ export function SettingsPage() {
                 Recent admin activity
               </CardTitle>
               <CardDescription>
-                The latest platform setting and order-control actions across admin tools.
+                The latest platform setting and order-control actions across
+                admin tools.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {platformContentQuery.data?.history.slice(0, 4).map((entry) => (
-                <div key={`content-${entry.updatedAt}`} className="rounded-lg border bg-background p-3">
+                <div
+                  key={`content-${entry.updatedAt}`}
+                  className="rounded-lg border bg-background p-3"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="font-medium">
-                      Platform settings updated
-                    </div>
+                    <div className="font-medium">Platform settings updated</div>
                     <Badge variant="outline">Settings</Badge>
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {entry.updatedByAdminName || "Support Team"} changed {entry.changedSections.join(", ")}.
+                    {entry.updatedByAdminName || "Support Team"} changed{" "}
+                    {entry.changedSections.join(", ")}.
                   </p>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {formatDateTime(entry.updatedAt)}
@@ -1425,7 +1453,10 @@ export function SettingsPage() {
                 </div>
               ))}
               {(activityLogsQuery.data?.items ?? []).map((entry) => (
-                <div key={entry.id} className="rounded-lg border bg-background p-3">
+                <div
+                  key={entry.id}
+                  className="rounded-lg border bg-background p-3"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="font-medium">{entry.title}</div>
                     <Badge variant="outline" className="capitalize">
@@ -1440,9 +1471,11 @@ export function SettingsPage() {
                   </p>
                 </div>
               ))}
-              {!platformContentQuery.data?.history.length && !(activityLogsQuery.data?.items.length) ? (
+              {!platformContentQuery.data?.history.length &&
+              !activityLogsQuery.data?.items.length ? (
                 <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                  Admin activity will appear here after the first order control or settings change.
+                  Admin activity will appear here after the first order control
+                  or settings change.
                 </div>
               ) : null}
             </CardContent>
@@ -1490,19 +1523,22 @@ export function SettingsPage() {
                     <Info className="mt-0.5 size-4 shrink-0 text-primary" />
                     <div>
                       <p className="text-sm font-semibold">
-                        Operational thresholds কীভাবে কাজ করে
+                        Operational thresholds কিভাবে অর্ডার করে
                       </p>
                       <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        এগুলো order monitoring, auto-cancel, food preparation timer,
-                        rider assignment, এবং admin alert-এর timing control করে।
-                        খুব কম দিলে unnecessary alert বেশি আসবে, খুব বেশি দিলে real
-                        delay ধরতে দেরি হবে।
+                        এগুলো order monitoring, auto-cancel, food preparation
+                        timer, rider assignment, এবং admin alert-এর timing
+                        control করে। খুব কম দিলে unnecessary alert বেশি আসবে,
+                        খুব বেশি দিলে real delay ধরতে দেরি হবে।
                       </p>
                     </div>
                   </div>
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     {operationalThresholdHelp.map((item) => (
-                      <div key={item.title} className="rounded-lg border bg-background p-3">
+                      <div
+                        key={item.title}
+                        className="rounded-lg border bg-background p-3"
+                      >
                         <p className="text-sm font-medium">{item.title}</p>
                         <p className="mt-1 text-xs leading-5 text-muted-foreground">
                           {item.text}
@@ -1515,7 +1551,7 @@ export function SettingsPage() {
 
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                  <p className="text-xs font-semibold tracking-wide text-amber-700 uppercase">
                     Watch
                   </p>
                   <p className="mt-1 text-2xl font-semibold text-amber-950">
@@ -1526,7 +1562,7 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">
+                  <p className="text-xs font-semibold tracking-wide text-rose-700 uppercase">
                     Late
                   </p>
                   <p className="mt-1 text-2xl font-semibold text-rose-950">
@@ -1537,7 +1573,7 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-red-700">
+                  <p className="text-xs font-semibold tracking-wide text-red-700 uppercase">
                     Critical
                   </p>
                   <p className="mt-1 text-2xl font-semibold text-red-950">
@@ -1550,30 +1586,41 @@ export function SettingsPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {operationalThresholdFields.map(([key, label, suffix, min, max]) => (
-                  <div key={key} className="space-y-2 rounded-xl border bg-background p-4 shadow-sm">
-                    <Label>{label}</Label>
-                    <Input
-                      type="number"
-                      min={min}
-                      max={max}
-                      step={key === "riderEtaRouteFactor" ? 0.05 : 1}
-                      value={(dispatch[key as keyof typeof dispatch] as number) ?? min}
-                      onChange={(event) =>
-                        updateDraft((content) => {
-                          const dispatchKey = key as keyof PlatformContent["operations"]["dispatch"]
-                          ;(content.operations.dispatch[dispatchKey] as number) = numberFromInput(
-                            event.target.value,
-                            dispatch[dispatchKey] as number
-                          )
-                        })
-                      }
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Allowed {min}-{max} {suffix}
-                    </p>
-                  </div>
-                ))}
+                {operationalThresholdFields.map(
+                  ([key, label, suffix, min, max]) => (
+                    <div
+                      key={key}
+                      className="space-y-2 rounded-xl border bg-background p-4 shadow-sm"
+                    >
+                      <Label>{label}</Label>
+                      <Input
+                        type="number"
+                        min={min}
+                        max={max}
+                        step={key === "riderEtaRouteFactor" ? 0.05 : 1}
+                        value={
+                          (dispatch[key as keyof typeof dispatch] as number) ??
+                          min
+                        }
+                        onChange={(event) =>
+                          updateDraft((content) => {
+                            const dispatchKey =
+                              key as keyof PlatformContent["operations"]["dispatch"]
+                            ;(content.operations.dispatch[
+                              dispatchKey
+                            ] as number) = numberFromInput(
+                              event.target.value,
+                              dispatch[dispatchKey] as number
+                            )
+                          })
+                        }
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Allowed {min}-{max} {suffix}
+                      </p>
+                    </div>
+                  )
+                )}
               </div>
             </CardContent>
           </Card>
@@ -1668,7 +1715,8 @@ export function SettingsPage() {
                 Customer payment methods
               </CardTitle>
               <CardDescription>
-                COD stays the default. Turn bKash on only when the gateway is ready to accept payments.
+                COD stays the default. Turn bKash on only when the gateway is
+                ready to accept payments.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -1699,7 +1747,8 @@ export function SettingsPage() {
                   value={payments.bkashLabel}
                   onChange={(event) =>
                     updateDraft((content) => {
-                      content.operations.payments.bkashLabel = event.target.value
+                      content.operations.payments.bkashLabel =
+                        event.target.value
                     })
                   }
                 />
@@ -1712,7 +1761,8 @@ export function SettingsPage() {
                   value={payments.bkashSubtitle}
                   onChange={(event) =>
                     updateDraft((content) => {
-                      content.operations.payments.bkashSubtitle = event.target.value
+                      content.operations.payments.bkashSubtitle =
+                        event.target.value
                     })
                   }
                 />
@@ -1729,11 +1779,15 @@ export function SettingsPage() {
                   value={payments.bkashRefundEtaMinutes ?? 60}
                   onChange={(event) =>
                     updateDraft((content) => {
-                      content.operations.payments.bkashRefundEtaMinutes = clampNumber(
-                        numberFromInput(event.target.value, payments.bkashRefundEtaMinutes ?? 60),
-                        1,
-                        1440
-                      )
+                      content.operations.payments.bkashRefundEtaMinutes =
+                        clampNumber(
+                          numberFromInput(
+                            event.target.value,
+                            payments.bkashRefundEtaMinutes ?? 60
+                          ),
+                          1,
+                          1440
+                        )
                     })
                   }
                 />
@@ -1746,7 +1800,8 @@ export function SettingsPage() {
                   checked={payments.bkashRefundSmsEnabled !== false}
                   onCheckedChange={(checked) =>
                     updateDraft((content) => {
-                      ensurePaymentSettings(content).bkashRefundSmsEnabled = checked
+                      ensurePaymentSettings(content).bkashRefundSmsEnabled =
+                        checked
                     })
                   }
                 />
@@ -1755,7 +1810,8 @@ export function SettingsPage() {
                 <div className="space-y-1">
                   <Label>Refund SMS template</Label>
                   <p className="text-xs text-muted-foreground">
-                    Used after admin marks a bKash refund completed. Keep it short for SMS cost and readability.
+                    Used after admin marks a bKash refund completed. Keep it
+                    short for SMS cost and readability.
                   </p>
                 </div>
                 <Textarea
@@ -1763,7 +1819,8 @@ export function SettingsPage() {
                   value={payments.bkashRefundSmsTemplate}
                   onChange={(event) =>
                     updateDraft((content) => {
-                      ensurePaymentSettings(content).bkashRefundSmsTemplate = event.target.value
+                      ensurePaymentSettings(content).bkashRefundSmsTemplate =
+                        event.target.value
                     })
                   }
                 />
@@ -1778,7 +1835,8 @@ export function SettingsPage() {
                 </div>
                 {!refundSmsTemplateValid ? (
                   <p className="text-xs font-medium text-destructive">
-                    Template must be at least 20 characters and include {"{{orderNumber}}"}.
+                    Template must be at least 20 characters and include{" "}
+                    {"{{orderNumber}}"}.
                   </p>
                 ) : null}
                 <div className="rounded-lg border bg-muted/30 p-3 text-sm leading-6">
@@ -1794,7 +1852,8 @@ export function SettingsPage() {
                 Restaurant payout rules
               </CardTitle>
               <CardDescription>
-                Control when restaurant earnings become withdrawable and how payout requests are accepted.
+                Control when restaurant earnings become withdrawable and how
+                payout requests are accepted.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -1812,7 +1871,10 @@ export function SettingsPage() {
                     updateDraft((content) => {
                       const financeDraft = ensureFinanceSettings(content)
                       financeDraft.settlementDelayDays = clampNumber(
-                        numberFromInput(event.target.value, finance.settlementDelayDays),
+                        numberFromInput(
+                          event.target.value,
+                          finance.settlementDelayDays
+                        ),
                         0,
                         30
                       )
@@ -1838,7 +1900,10 @@ export function SettingsPage() {
                           const financeDraft = ensureFinanceSettings(content)
                           financeDraft.minimumPayoutAmountEnabled = checked
                           financeDraft.minimumPayoutAmountTaka = checked
-                            ? Math.max(1, financeDraft.minimumPayoutAmountTaka || 500)
+                            ? Math.max(
+                                1,
+                                financeDraft.minimumPayoutAmountTaka || 500
+                              )
                             : 0
                         })
                       }
@@ -1855,7 +1920,10 @@ export function SettingsPage() {
                         updateDraft((content) => {
                           const financeDraft = ensureFinanceSettings(content)
                           financeDraft.minimumPayoutAmountTaka = clampNumber(
-                            numberFromInput(event.target.value, finance.minimumPayoutAmountTaka),
+                            numberFromInput(
+                              event.target.value,
+                              finance.minimumPayoutAmountTaka
+                            ),
                             1,
                             100000
                           )
@@ -1892,7 +1960,8 @@ export function SettingsPage() {
                   Referral rewards
                 </CardTitle>
                 <CardDescription>
-                  Control whether customer referrals can create reward vouchers and how much each reward costs the platform.
+                  Control whether customer referrals can create reward vouchers
+                  and how much each reward costs the platform.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -1921,11 +1990,15 @@ export function SettingsPage() {
                     value={referrals.rewardAmountTaka}
                     onChange={(event) =>
                       updateDraft((content) => {
-                        content.operations.referrals.rewardAmountTaka = clampNumber(
-                          numberFromInput(event.target.value, referrals.rewardAmountTaka),
-                          1,
-                          10000
-                        )
+                        content.operations.referrals.rewardAmountTaka =
+                          clampNumber(
+                            numberFromInput(
+                              event.target.value,
+                              referrals.rewardAmountTaka
+                            ),
+                            1,
+                            10000
+                          )
                       })
                     }
                   />
@@ -1942,11 +2015,15 @@ export function SettingsPage() {
                     value={referrals.minimumOrderAmountTaka}
                     onChange={(event) =>
                       updateDraft((content) => {
-                        content.operations.referrals.minimumOrderAmountTaka = clampNumber(
-                          numberFromInput(event.target.value, referrals.minimumOrderAmountTaka),
-                          0,
-                          100000
-                        )
+                        content.operations.referrals.minimumOrderAmountTaka =
+                          clampNumber(
+                            numberFromInput(
+                              event.target.value,
+                              referrals.minimumOrderAmountTaka
+                            ),
+                            0,
+                            100000
+                          )
                       })
                     }
                   />
@@ -1963,11 +2040,15 @@ export function SettingsPage() {
                     value={referrals.voucherExpiryDays}
                     onChange={(event) =>
                       updateDraft((content) => {
-                        content.operations.referrals.voucherExpiryDays = clampNumber(
-                          numberFromInput(event.target.value, referrals.voucherExpiryDays),
-                          1,
-                          365
-                        )
+                        content.operations.referrals.voucherExpiryDays =
+                          clampNumber(
+                            numberFromInput(
+                              event.target.value,
+                              referrals.voucherExpiryDays
+                            ),
+                            1,
+                            365
+                          )
                       })
                     }
                   />
@@ -1984,11 +2065,15 @@ export function SettingsPage() {
                     value={referrals.monthlyRewardCapPerCustomer}
                     onChange={(event) =>
                       updateDraft((content) => {
-                        content.operations.referrals.monthlyRewardCapPerCustomer = clampNumber(
-                          numberFromInput(event.target.value, referrals.monthlyRewardCapPerCustomer),
-                          1,
-                          100
-                        )
+                        content.operations.referrals.monthlyRewardCapPerCustomer =
+                          clampNumber(
+                            numberFromInput(
+                              event.target.value,
+                              referrals.monthlyRewardCapPerCustomer
+                            ),
+                            1,
+                            100
+                          )
                       })
                     }
                   />
@@ -2001,7 +2086,8 @@ export function SettingsPage() {
                     value={referrals.shareLinkTemplate}
                     onChange={(event) =>
                       updateDraft((content) => {
-                        content.operations.referrals.shareLinkTemplate = event.target.value
+                        content.operations.referrals.shareLinkTemplate =
+                          event.target.value
                       })
                     }
                     placeholder="foodbela://checkout?ref={{code}}"
@@ -2015,7 +2101,8 @@ export function SettingsPage() {
                     value={referrals.shareMessageTemplate}
                     onChange={(event) =>
                       updateDraft((content) => {
-                        content.operations.referrals.shareMessageTemplate = event.target.value
+                        content.operations.referrals.shareMessageTemplate =
+                          event.target.value
                       })
                     }
                     rows={4}
@@ -2029,19 +2116,21 @@ export function SettingsPage() {
               <CardHeader>
                 <CardTitle>Reward preview</CardTitle>
                 <CardDescription>
-                  This is the rule applied to new referral rewards after you save settings.
+                  This is the rule applied to new referral rewards after you
+                  save settings.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="rounded-lg border bg-background p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                     Customer-facing voucher
                   </p>
                   <p className="mt-2 text-3xl font-semibold">
                     Tk {referrals.rewardAmountTaka}
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Usable on orders over Tk {referrals.minimumOrderAmountTaka}. Expires in {referrals.voucherExpiryDays} days.
+                    Usable on orders over Tk {referrals.minimumOrderAmountTaka}.
+                    Expires in {referrals.voucherExpiryDays} days.
                   </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -2055,20 +2144,24 @@ export function SettingsPage() {
                     </p>
                   </div>
                   <div className="rounded-lg border bg-background p-3">
-                    <p className="text-xs text-muted-foreground">Program status</p>
+                    <p className="text-xs text-muted-foreground">
+                      Program status
+                    </p>
                     <p className="mt-1 text-2xl font-semibold">
                       {referrals.enabled ? "Active" : "Paused"}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {referrals.enabled ? "Rewards can be issued" : "No new reward vouchers"}
+                      {referrals.enabled
+                        ? "Rewards can be issued"
+                        : "No new reward vouchers"}
                     </p>
                   </div>
                 </div>
                 <div className="rounded-lg border bg-background p-3">
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                     Share preview
                   </p>
-                  <p className="mt-2 break-all text-sm font-medium">
+                  <p className="mt-2 text-sm font-medium break-all">
                     {referralShareLinkPreview}
                   </p>
                   <p className="mt-2 text-sm text-muted-foreground">
@@ -2076,7 +2169,9 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                  Cap applies when the referred customer reaches Delivered status. Rewards above the cap are marked capped and no voucher is created.
+                  Cap applies when the referred customer reaches Delivered
+                  status. Rewards above the cap are marked capped and no voucher
+                  is created.
                 </div>
               </CardContent>
             </Card>
@@ -2108,7 +2203,10 @@ export function SettingsPage() {
                   }
                 />
               </SettingRow>
-              <SettingRow title="Tagline" description="Short public-facing line.">
+              <SettingRow
+                title="Tagline"
+                description="Short public-facing line."
+              >
                 <Input
                   value={draft.branding.tagline}
                   onChange={(event) =>
@@ -2127,7 +2225,8 @@ export function SettingsPage() {
                   value={ownerApp.webDashboardUrl}
                   onChange={(event) =>
                     updateDraft((content) => {
-                      ensureOwnerAppSettings(content).webDashboardUrl = event.target.value
+                      ensureOwnerAppSettings(content).webDashboardUrl =
+                        event.target.value
                     })
                   }
                   placeholder="https://owner.foodbela.com"
@@ -2141,7 +2240,8 @@ export function SettingsPage() {
                   checked={ownerApp.showCustomerPhoneNumbers}
                   onCheckedChange={(checked) =>
                     updateDraft((content) => {
-                      ensureOwnerAppSettings(content).showCustomerPhoneNumbers = checked
+                      ensureOwnerAppSettings(content).showCustomerPhoneNumbers =
+                        checked
                     })
                   }
                 />
@@ -2160,7 +2260,9 @@ export function SettingsPage() {
                     Security & Traffic Control
                   </CardTitle>
                   <CardDescription>
-                    Runtime limiter values for customer, owner, rider, and admin traffic. Backend reads these from cached settings, so saved changes normally apply within 30 seconds.
+                    Runtime limiter values for customer, owner, rider, and admin
+                    traffic. Backend reads these from cached settings, so saved
+                    changes normally apply within 30 seconds.
                   </CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2173,7 +2275,10 @@ export function SettingsPage() {
             <CardContent className="space-y-4">
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {rateLimitFields.map((field) => (
-                  <div key={field.key} className="rounded-lg border bg-background p-3">
+                  <div
+                    key={field.key}
+                    className="rounded-lg border bg-background p-3"
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="text-sm font-medium">{field.title}</p>
@@ -2195,7 +2300,10 @@ export function SettingsPage() {
                         onChange={(event) =>
                           updateRateLimit(
                             field.key,
-                            numberFromInput(event.target.value, rateLimits[field.key]),
+                            numberFromInput(
+                              event.target.value,
+                              rateLimits[field.key]
+                            ),
                             field.min,
                             field.max
                           )
@@ -2209,7 +2317,10 @@ export function SettingsPage() {
                 ))}
               </div>
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                Keep global RATE_LIMIT_MAX in .env for broad IP protection. Use these controls for business-specific limits. In production behind Nginx, set TRUST_PROXY_HOPS=1 so real customer IPs are used.
+                Keep global RATE_LIMIT_MAX in .env for broad IP protection. Use
+                these controls for business-specific limits. In production
+                behind Nginx, set TRUST_PROXY_HOPS=1 so real customer IPs are
+                used.
               </div>
             </CardContent>
           </Card>
@@ -2222,7 +2333,8 @@ export function SettingsPage() {
                   OTP verification
                 </CardTitle>
                 <CardDescription>
-                  This policy is used by customer, restaurant owner, and rider OTP flows.
+                  This policy is used by customer, restaurant owner, and rider
+                  OTP flows.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -2239,7 +2351,10 @@ export function SettingsPage() {
                     onChange={(event) =>
                       updateDraft((content) => {
                         content.auth.otp.expiresInSeconds = clampNumber(
-                          numberFromInput(event.target.value, otp.expiresInSeconds),
+                          numberFromInput(
+                            event.target.value,
+                            otp.expiresInSeconds
+                          ),
                           60,
                           900
                         )
@@ -2260,7 +2375,10 @@ export function SettingsPage() {
                     onChange={(event) =>
                       updateDraft((content) => {
                         content.auth.otp.resendCooldownSeconds = clampNumber(
-                          numberFromInput(event.target.value, otp.resendCooldownSeconds),
+                          numberFromInput(
+                            event.target.value,
+                            otp.resendCooldownSeconds
+                          ),
                           15,
                           300
                         )
@@ -2310,20 +2428,25 @@ export function SettingsPage() {
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="rounded-lg border bg-background p-3">
-                    <p className="text-xs text-muted-foreground">Expires after</p>
+                    <p className="text-xs text-muted-foreground">
+                      Expires after
+                    </p>
                     <p className="mt-1 text-2xl font-semibold">
                       {Math.ceil(otp.expiresInSeconds / 60)}m
                     </p>
                   </div>
                   <div className="rounded-lg border bg-background p-3">
-                    <p className="text-xs text-muted-foreground">Resend after</p>
+                    <p className="text-xs text-muted-foreground">
+                      Resend after
+                    </p>
                     <p className="mt-1 text-2xl font-semibold">
                       {otp.resendCooldownSeconds}s
                     </p>
                   </div>
                 </div>
                 <p className="text-xs leading-5 text-muted-foreground">
-                  Bounds are kept conservative: expiry 60-900 seconds, resend 15-300 seconds.
+                  Bounds are kept conservative: expiry 60-900 seconds, resend
+                  15-300 seconds.
                 </p>
               </CardContent>
             </Card>
@@ -2336,7 +2459,8 @@ export function SettingsPage() {
                 OTP abuse monitor
               </CardTitle>
               <CardDescription>
-                Last 24 hours of OTP sends, blocked requests, and incorrect verification attempts.
+                Last 24 hours of OTP sends, blocked requests, and incorrect
+                verification attempts.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -2350,26 +2474,36 @@ export function SettingsPage() {
                   <div className="grid gap-3 md:grid-cols-5">
                     <div className="rounded-lg border bg-background p-3">
                       <p className="text-xs text-muted-foreground">SMS sent</p>
-                      <p className="mt-1 text-2xl font-semibold">{otpSecurity.summary.sent}</p>
+                      <p className="mt-1 text-2xl font-semibold">
+                        {otpSecurity.summary.sent}
+                      </p>
                     </div>
                     <div className="rounded-lg border bg-background p-3">
                       <p className="text-xs text-muted-foreground">Blocked</p>
-                      <p className="mt-1 text-2xl font-semibold">{otpSecurity.summary.blocked}</p>
+                      <p className="mt-1 text-2xl font-semibold">
+                        {otpSecurity.summary.blocked}
+                      </p>
                     </div>
                     <div className="rounded-lg border bg-background p-3">
-                      <p className="text-xs text-muted-foreground">Wrong OTP tries</p>
+                      <p className="text-xs text-muted-foreground">
+                        Wrong OTP tries
+                      </p>
                       <p className="mt-1 text-2xl font-semibold">
                         {otpSecurity.summary.verifyFailed}
                       </p>
                     </div>
                     <div className="rounded-lg border bg-background p-3">
-                      <p className="text-xs text-muted-foreground">Locked sessions</p>
+                      <p className="text-xs text-muted-foreground">
+                        Locked sessions
+                      </p>
                       <p className="mt-1 text-2xl font-semibold">
                         {otpSecurity.summary.lockedSessions}
                       </p>
                     </div>
                     <div className="rounded-lg border bg-background p-3">
-                      <p className="text-xs text-muted-foreground">Active blocks</p>
+                      <p className="text-xs text-muted-foreground">
+                        Active blocks
+                      </p>
                       <p className="mt-1 text-2xl font-semibold">
                         {otpSecurity.summary.activeBlocks}
                       </p>
@@ -2383,7 +2517,9 @@ export function SettingsPage() {
                         <Select
                           value={otpBlockTargetType}
                           onValueChange={(value) =>
-                            setOtpBlockTargetType(value as "phone" | "ip" | "device")
+                            setOtpBlockTargetType(
+                              value as "phone" | "ip" | "device"
+                            )
                           }
                         >
                           <SelectTrigger>
@@ -2404,7 +2540,9 @@ export function SettingsPage() {
                                 ? "IP address"
                                 : "IP|user-agent fingerprint"
                           }
-                          onChange={(event) => setOtpBlockTargetValue(event.target.value)}
+                          onChange={(event) =>
+                            setOtpBlockTargetValue(event.target.value)
+                          }
                         />
                       </div>
                     </div>
@@ -2417,7 +2555,9 @@ export function SettingsPage() {
                           max={60 * 24 * 30}
                           disabled={otpBlockPermanent}
                           value={otpBlockDuration}
-                          onChange={(event) => setOtpBlockDuration(event.target.value)}
+                          onChange={(event) =>
+                            setOtpBlockDuration(event.target.value)
+                          }
                         />
                         <div className="flex items-center gap-3 rounded-md border px-3 py-2">
                           <Switch
@@ -2430,12 +2570,17 @@ export function SettingsPage() {
                       <Input
                         value={otpBlockReason}
                         placeholder="Reason"
-                        onChange={(event) => setOtpBlockReason(event.target.value)}
+                        onChange={(event) =>
+                          setOtpBlockReason(event.target.value)
+                        }
                       />
                     </div>
                     <Button
                       type="button"
-                      disabled={!otpBlockTargetValue.trim() || otpBlockMutation.isPending}
+                      disabled={
+                        !otpBlockTargetValue.trim() ||
+                        otpBlockMutation.isPending
+                      }
                       onClick={() => otpBlockMutation.mutate()}
                     >
                       {otpBlockMutation.isPending ? (
@@ -2460,11 +2605,23 @@ export function SettingsPage() {
                           >
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
-                                <Badge variant={block.isPermanent ? "destructive" : "secondary"}>
-                                  {block.isPermanent ? "Permanent" : "Temporary"}
+                                <Badge
+                                  variant={
+                                    block.isPermanent
+                                      ? "destructive"
+                                      : "secondary"
+                                  }
+                                >
+                                  {block.isPermanent
+                                    ? "Permanent"
+                                    : "Temporary"}
                                 </Badge>
-                                <Badge variant="outline">{block.targetType}</Badge>
-                                <span className="text-sm font-semibold">{block.displayValue}</span>
+                                <Badge variant="outline">
+                                  {block.targetType}
+                                </Badge>
+                                <span className="text-sm font-semibold">
+                                  {block.displayValue}
+                                </span>
                               </div>
                               <p className="mt-1 text-xs text-muted-foreground">
                                 {block.isPermanent
@@ -2496,8 +2653,12 @@ export function SettingsPage() {
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-medium">Recent phone numbers</p>
-                      <Badge variant="outline">{otpSecurity.summary.uniquePhones} unique</Badge>
+                      <p className="text-sm font-medium">
+                        Recent phone numbers
+                      </p>
+                      <Badge variant="outline">
+                        {otpSecurity.summary.uniquePhones} unique
+                      </Badge>
                     </div>
                     <div className="space-y-2">
                       {otpSecurity.phones.length ? (
@@ -2507,18 +2668,32 @@ export function SettingsPage() {
                             className="grid gap-2 rounded-lg border bg-background p-3 md:grid-cols-[160px_1fr_auto] md:items-center"
                           >
                             <div>
-                              <p className="text-sm font-semibold">{phone.phone}</p>
+                              <p className="text-sm font-semibold">
+                                {phone.phone}
+                              </p>
                               <p className="text-xs text-muted-foreground">
                                 {formatDateTime(phone.lastSeenAt)}
                               </p>
                             </div>
                             <div className="flex flex-wrap gap-2">
-                              <Badge variant="secondary">sent {phone.sent}</Badge>
-                              <Badge variant="outline">reused {phone.reused}</Badge>
-                              <Badge variant={phone.blocked ? "destructive" : "outline"}>
+                              <Badge variant="secondary">
+                                sent {phone.sent}
+                              </Badge>
+                              <Badge variant="outline">
+                                reused {phone.reused}
+                              </Badge>
+                              <Badge
+                                variant={
+                                  phone.blocked ? "destructive" : "outline"
+                                }
+                              >
                                 blocked {phone.blocked}
                               </Badge>
-                              <Badge variant={phone.verifyFailed ? "destructive" : "outline"}>
+                              <Badge
+                                variant={
+                                  phone.verifyFailed ? "destructive" : "outline"
+                                }
+                              >
                                 wrong {phone.verifyFailed}
                               </Badge>
                             </div>
@@ -2527,7 +2702,9 @@ export function SettingsPage() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => fillOtpBlockTarget("phone", phone.phone)}
+                                onClick={() =>
+                                  fillOtpBlockTarget("phone", phone.phone)
+                                }
                               >
                                 Lock phone
                               </Button>
@@ -2537,7 +2714,10 @@ export function SettingsPage() {
                                   variant="outline"
                                   size="sm"
                                   onClick={() =>
-                                    fillOtpBlockTarget("ip", phone.ipAddresses[0])
+                                    fillOtpBlockTarget(
+                                      "ip",
+                                      phone.ipAddresses[0]
+                                    )
                                   }
                                 >
                                   Lock IP
@@ -2557,7 +2737,9 @@ export function SettingsPage() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-medium">Recent OTP events</p>
-                      <Badge variant="outline">{otpSecurity.items.length} shown</Badge>
+                      <Badge variant="outline">
+                        {otpSecurity.items.length} shown
+                      </Badge>
                     </div>
                     <div className="space-y-2">
                       {otpSecurity.items.length ? (
@@ -2578,14 +2760,18 @@ export function SettingsPage() {
                                 >
                                   {event.event}
                                 </Badge>
-                                <span className="text-sm font-semibold">{event.phone}</span>
+                                <span className="text-sm font-semibold">
+                                  {event.phone}
+                                </span>
                                 <span className="text-xs text-muted-foreground">
                                   {formatDateTime(event.createdAt)}
                                 </span>
                               </div>
                               <p className="mt-1 text-xs text-muted-foreground">
                                 {event.ipAddress || "No IP"}
-                                {event.blockReason ? ` - ${event.blockReason}` : ""}
+                                {event.blockReason
+                                  ? ` - ${event.blockReason}`
+                                  : ""}
                               </p>
                             </div>
                             <div className="flex flex-wrap gap-2">
@@ -2593,7 +2779,9 @@ export function SettingsPage() {
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                onClick={() => fillOtpBlockTarget("phone", event.phone)}
+                                onClick={() =>
+                                  fillOtpBlockTarget("phone", event.phone)
+                                }
                               >
                                 Phone
                               </Button>
@@ -2602,7 +2790,9 @@ export function SettingsPage() {
                                   type="button"
                                   variant="outline"
                                   size="sm"
-                                  onClick={() => fillOtpBlockTarget("ip", event.ipAddress)}
+                                  onClick={() =>
+                                    fillOtpBlockTarget("ip", event.ipAddress)
+                                  }
                                 >
                                   IP
                                 </Button>
@@ -2634,7 +2824,9 @@ export function SettingsPage() {
                   </div>
                 </>
               ) : (
-                <p className="text-sm text-muted-foreground">OTP activity is unavailable.</p>
+                <p className="text-sm text-muted-foreground">
+                  OTP activity is unavailable.
+                </p>
               )}
             </CardContent>
           </Card>
@@ -2649,7 +2841,10 @@ export function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <SettingRow title="Support email" description="Public support inbox.">
+              <SettingRow
+                title="Support email"
+                description="Public support inbox."
+              >
                 <Input
                   value={support.email}
                   onChange={(event) =>
@@ -2659,7 +2854,10 @@ export function SettingsPage() {
                   }
                 />
               </SettingRow>
-              <SettingRow title="Support phone" description="Public hotline number.">
+              <SettingRow
+                title="Support phone"
+                description="Public hotline number."
+              >
                 <Input
                   value={support.phone}
                   onChange={(event) =>
@@ -2669,7 +2867,10 @@ export function SettingsPage() {
                   }
                 />
               </SettingRow>
-              <SettingRow title="Support hours" description="When admins or support agents are available.">
+              <SettingRow
+                title="Support hours"
+                description="When admins or support agents are available."
+              >
                 <Input
                   value={support.supportHours}
                   onChange={(event) =>
@@ -2679,7 +2880,10 @@ export function SettingsPage() {
                   }
                 />
               </SettingRow>
-              <SettingRow title="Report label" description="Label for issue reporting actions.">
+              <SettingRow
+                title="Report label"
+                description="Label for issue reporting actions."
+              >
                 <Input
                   value={support.reportLabel}
                   onChange={(event) =>
@@ -2689,7 +2893,10 @@ export function SettingsPage() {
                   }
                 />
               </SettingRow>
-              <SettingRow title="Direct help note" description="Short guidance shown near support actions.">
+              <SettingRow
+                title="Direct help note"
+                description="Short guidance shown near support actions."
+              >
                 <Textarea
                   value={support.directHelpNote}
                   onChange={(event) =>

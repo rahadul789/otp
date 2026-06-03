@@ -1,5 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Screen } from "@/src/components/screen";
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
+import { RemoteImage } from "@/src/components/remote-image";
 import {
   useCustomerMediaUploadSignatureMutation,
   useCustomerProfileUpdateMutation,
@@ -42,14 +42,23 @@ export default function ProfileEditScreen() {
   const isOnline = useIsOnline();
   const updateMutation = useCustomerProfileUpdateMutation();
   const uploadSignatureMutation = useCustomerMediaUploadSignatureMutation();
+  const scrollViewRef = useRef<ScrollView | null>(null);
   const fullNameInputRef = useRef<TextInput | null>(null);
   const [fullName, setFullName] = useState(customer?.fullName ?? "");
+  const [email, setEmail] = useState(customer?.email ?? "");
   const [profileImage, setProfileImage] = useState<ProfileImageValue>(
     customer?.profileImage ?? {}
   );
   const [errorText, setErrorText] = useState("");
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [fullNameFocused, setFullNameFocused] = useState(false);
+  const [emailFocused, setEmailFocused] = useState(false);
+
+  function scrollProfileFieldIntoView(targetY: number) {
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: targetY, animated: true });
+    }, 120);
+  }
 
   const initials = useMemo(() => {
     const source = fullName.trim() || customer?.fullName?.trim() || "Customer";
@@ -64,16 +73,20 @@ export default function ProfileEditScreen() {
     return next || "CU";
   }, [customer?.fullName, fullName]);
   const trimmedFullName = fullName.trim();
+  const trimmedEmail = email.trim();
   const normalizedCustomerImage = customer?.profileImage?.url?.trim() ?? "";
   const normalizedProfileImage = profileImage?.url?.trim() ?? "";
   const hasChanges = useMemo(
     () =>
       trimmedFullName !== (customer?.fullName?.trim() ?? "") ||
+      trimmedEmail !== (customer?.email?.trim() ?? "") ||
       normalizedProfileImage !== normalizedCustomerImage,
     [
+      customer?.email,
       customer?.fullName,
       normalizedCustomerImage,
       normalizedProfileImage,
+      trimmedEmail,
       trimmedFullName,
     ]
   );
@@ -196,11 +209,16 @@ export default function ProfileEditScreen() {
       setErrorText("Full name is required.");
       return;
     }
+    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setErrorText("Enter a valid email address or leave it empty.");
+      return;
+    }
 
     try {
       setErrorText("");
       await updateMutation.mutateAsync({
         fullName: trimmedFullName,
+        email: trimmedEmail,
         profileImage,
       });
       router.back();
@@ -219,6 +237,7 @@ export default function ProfileEditScreen() {
         keyboardVerticalOffset={insets.top + 12}
       >
         <ScrollView
+          ref={scrollViewRef}
           contentContainerStyle={[
             styles.content,
             { paddingTop: 8, paddingBottom: Math.max(insets.bottom, 16) + 48 },
@@ -247,10 +266,12 @@ export default function ProfileEditScreen() {
             <View style={styles.heroHeader}>
               <View style={styles.avatarShell}>
                 {profileImage?.url ? (
-                  <Image
-                    source={{ uri: profileImage.url }}
+                  <RemoteImage
+                    uri={profileImage.url}
                     style={styles.avatarImage}
-                    contentFit="cover"
+                    fallbackIcon="person-outline"
+                    fallbackIconSize={26}
+                    accessibilityLabel="Profile photo preview"
                   />
                 ) : (
                   <View style={styles.avatarFallback}>
@@ -268,7 +289,7 @@ export default function ProfileEditScreen() {
               <View style={styles.heroCopy}>
                 <Text style={styles.heroTitle}>Personal info</Text>
                 <Text style={styles.heroName} numberOfLines={1}>
-                  {trimmedFullName || "Foodbela User"}
+                  {trimmedFullName || "Your name"}
                 </Text>
               </View>
             </View>
@@ -341,8 +362,50 @@ export default function ProfileEditScreen() {
                   textContentType="name"
                   autoCapitalize="words"
                   returnKeyType="done"
-                  onFocus={() => setFullNameFocused(true)}
+                  onFocus={() => {
+                    setFullNameFocused(true);
+                    scrollProfileFieldIntoView(120);
+                  }}
                   onBlur={() => setFullNameFocused(false)}
+                  style={styles.input}
+                />
+              </View>
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Email (optional)</Text>
+              <View
+                style={[
+                  styles.inputShell,
+                  emailFocused ? styles.inputShellFocused : null,
+                ]}
+              >
+                <View style={styles.inputIcon}>
+                  <Ionicons
+                    name="mail-outline"
+                    size={18}
+                    color={palette.secondary}
+                  />
+                </View>
+                <TextInput
+                  value={email}
+                  onChangeText={(value) => {
+                    setEmail(value);
+                    setErrorText("");
+                  }}
+                  placeholder="Add email address"
+                  placeholderTextColor={palette.placeholder}
+                  selectionColor={palette.secondary}
+                  textContentType="emailAddress"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  onFocus={() => {
+                    setEmailFocused(true);
+                    scrollProfileFieldIntoView(270);
+                  }}
+                  onBlur={() => setEmailFocused(false)}
                   style={styles.input}
                 />
               </View>

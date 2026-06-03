@@ -23,6 +23,14 @@ import {
   Users,
   UsersRound,
 } from "lucide-react"
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+} from "recharts"
 import { toast } from "sonner"
 
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
@@ -40,11 +48,16 @@ import {
   updateAdminCustomerGroup,
   updateAdminCustomerStatus,
   type AdminCustomerDetails,
+  type AdminCustomerBehaviorSummary,
   type AdminCustomerGroup,
   type AdminCustomerOrderHistoryItem,
   type AdminCustomerSummary,
   type AdminRestaurantOrderDateFilterPreset,
 } from "@/lib/admin-api"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import {
   AlertDialog,
@@ -138,6 +151,7 @@ type CustomerOrderPreset = Extract<
   | "lifetime"
   | "custom"
 >
+type CustomerBehaviorPreset = CustomerOrderPreset
 type UserColumnKey =
   | "user"
   | "status"
@@ -196,6 +210,16 @@ function formatShortDate(value?: string | null) {
 
 function formatCurrency(value: number) {
   return `Tk ${Math.round(Number.isFinite(value) ? value : 0).toLocaleString()}`
+}
+
+function formatPercent(value: number) {
+  return `${Number.isFinite(value) ? value.toFixed(1).replace(/\.0$/, "") : "0"}%`
+}
+
+function formatChartDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
 }
 
 function CustomerMiniStats({ customer }: { customer: AdminCustomerSummary }) {
@@ -267,6 +291,139 @@ function StatCard({
         <p className="text-sm text-muted-foreground">{label}</p>
         <p className="mt-2 text-2xl font-semibold">{value}</p>
         <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function CustomerBehaviorCard({
+  behavior,
+}: {
+  behavior?: AdminCustomerBehaviorSummary
+}) {
+  const trend = behavior?.trend ?? []
+  const bestDay = trend.reduce<
+    AdminCustomerBehaviorSummary["trend"][number] | null
+  >(
+    (current, row) =>
+      !current || row.orderingCustomers > current.orderingCustomers
+        ? row
+        : current,
+    null
+  )
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <UsersRound className="size-4" />
+              Customer behavior
+            </CardTitle>
+            <CardDescription>
+              New vs repeat customers for the selected admin area and date
+              range.
+            </CardDescription>
+          </div>
+          <Badge variant="outline">
+            Repeat rate {formatPercent(behavior?.repeatRate ?? 0)}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="h-72 rounded-md border bg-muted/20 p-3">
+          {trend.length ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={trend} margin={{ left: 4, right: 8, top: 12 }}>
+                <defs>
+                  <linearGradient id="newCustomersFill" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stopColor="#ec4899" stopOpacity={0.28} />
+                    <stop offset="100%" stopColor="#ec4899" stopOpacity={0.02} />
+                  </linearGradient>
+                  <linearGradient id="repeatCustomersFill" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stopColor="#0f172a" stopOpacity={0.24} />
+                    <stop offset="100%" stopColor="#0f172a" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tickFormatter={formatChartDate}
+                  tick={{ fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <Tooltip
+                  labelFormatter={(value) => formatChartDate(String(value))}
+                  formatter={(value, name) => [
+                    Number(value).toLocaleString(),
+                    name === "newCustomers"
+                      ? "New customers"
+                      : name === "repeatCustomers"
+                        ? "Repeat customers"
+                        : "Ordering customers",
+                  ]}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="orderingCustomers"
+                  stroke="#0f766e"
+                  fill="transparent"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="newCustomers"
+                  stroke="#ec4899"
+                  fill="url(#newCustomersFill)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="repeatCustomers"
+                  stroke="#0f172a"
+                  fill="url(#repeatCustomersFill)"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
+              <UsersRound className="mb-3 size-8" />
+              No customer behavior in this range yet.
+            </div>
+          )}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+          <StatCard
+            label="New customers"
+            value={behavior?.newCustomers ?? 0}
+            helper="Accounts created in range"
+          />
+          <StatCard
+            label="Repeat customers"
+            value={behavior?.repeatCustomers ?? 0}
+            helper="2+ delivered orders in range"
+          />
+          <StatCard
+            label="Ordering customers"
+            value={behavior?.orderingCustomers ?? 0}
+            helper="Unique delivered customers"
+          />
+          <StatCard
+            label="Best day"
+            value={bestDay ? formatChartDate(bestDay.date) : "N/A"}
+            helper={
+              bestDay
+                ? `${bestDay.orderingCustomers} ordering customers`
+                : "No trend yet"
+            }
+          />
+        </div>
       </CardContent>
     </Card>
   )
@@ -1277,6 +1434,13 @@ export function UsersPage() {
   const [status, setStatus] = React.useState<CustomerStatusFilter>("all")
   const [customerGroupKey, setCustomerGroupKey] = React.useState("none")
   const [sortBy, setSortBy] = React.useState<CustomerSort>("newest")
+  const [behaviorPreset, setBehaviorPreset] =
+    React.useState<CustomerBehaviorPreset>("last30Days")
+  const [behaviorFrom, setBehaviorFrom] = React.useState("")
+  const [behaviorTo, setBehaviorTo] = React.useState("")
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
   const [page, setPage] = React.useState(1)
   const [selectedCustomerId, setSelectedCustomerId] = React.useState("")
   const [statusTarget, setStatusTarget] =
@@ -1296,17 +1460,29 @@ export function UsersPage() {
   const [groupDescription, setGroupDescription] = React.useState("")
   const debouncedSearch = useDebouncedValue(search, 350)
   const debouncedGroupMemberSearch = useDebouncedValue(groupMemberSearch, 300)
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id}`
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+      }),
+    []
+  )
   const customerGroupsQuery = useQuery({
-    queryKey: ["admin-customer-groups"],
+    queryKey: ["admin-customer-groups", adminScopeKey],
     queryFn: listAdminCustomerGroups,
   })
   const customersQuery = useQuery({
     queryKey: [
       "admin-customers",
+      adminScopeKey,
       debouncedSearch,
       status,
       customerGroupKey,
       sortBy,
+      behaviorPreset,
+      behaviorFrom,
+      behaviorTo,
       page,
     ],
     queryFn: () =>
@@ -1315,12 +1491,15 @@ export function UsersPage() {
         status,
         customerGroupKey: customerGroupKey === "none" ? undefined : customerGroupKey,
         sortBy,
+        preset: behaviorPreset,
+        from: behaviorFrom,
+        to: behaviorTo,
         page,
         pageSize: 12,
       }),
   })
   const groupMembersQuery = useQuery({
-    queryKey: ["admin-customer-group-members", groupMembersTarget?.id],
+    queryKey: ["admin-customer-group-members", adminScopeKey, groupMembersTarget?.id],
     enabled: Boolean(groupMembersTarget),
     queryFn: () =>
       listAdminCustomers({
@@ -1335,6 +1514,7 @@ export function UsersPage() {
   const groupMemberCandidatesQuery = useQuery({
     queryKey: [
       "admin-customer-group-member-candidates",
+      adminScopeKey,
       groupMembersTarget?.id,
       debouncedGroupMemberSearch,
     ],
@@ -1427,6 +1607,7 @@ export function UsersPage() {
 
   const customers = customersQuery.data?.items ?? []
   const summary = customersQuery.data?.summary ?? {}
+  const behavior = summary.behavior as AdminCustomerBehaviorSummary | undefined
   const visibleColumnCount =
     USER_TABLE_COLUMNS.filter((column) => columnVisibility[column.key]).length +
     1
@@ -1441,7 +1622,16 @@ export function UsersPage() {
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, status, customerGroupKey, sortBy])
+  }, [
+    adminScopeKey,
+    debouncedSearch,
+    status,
+    customerGroupKey,
+    sortBy,
+    behaviorPreset,
+    behaviorFrom,
+    behaviorTo,
+  ])
 
   function openCreateGroupDialog() {
     setEditingGroup(null)
@@ -1480,6 +1670,9 @@ export function UsersPage() {
         status,
         customerGroupKey:
           customerGroupKey === "none" ? undefined : customerGroupKey,
+        preset: behaviorPreset,
+        from: behaviorFrom,
+        to: behaviorTo,
         sortBy,
       },
     })
@@ -1524,6 +1717,47 @@ export function UsersPage() {
           value={`${summary.locked ?? 0}`}
           helper="Restricted account"
         />
+      </div>
+
+      <div className="space-y-3 rounded-md border bg-background p-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="flex items-center gap-2 text-base font-semibold">
+                <UsersRound className="size-4" />
+                New vs repeat customers
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Uses the selected top-nav area, current customer filters, and
+                selected timeframe.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+              <AdminDateRangeFilter<CustomerBehaviorPreset>
+                value={behaviorPreset}
+                from={behaviorFrom}
+                to={behaviorTo}
+                label="Customer behavior range"
+                onPresetChange={setBehaviorPreset}
+                onRangeChange={(range) => {
+                  setBehaviorFrom(range.from)
+                  setBehaviorTo(range.to)
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setBehaviorPreset("last30Days")
+                  setBehaviorFrom("")
+                  setBehaviorTo("")
+                }}
+              >
+                <RotateCcw className="size-4" />
+                Reset
+              </Button>
+            </div>
+          </div>
+        <CustomerBehaviorCard behavior={behavior} />
       </div>
 
       <Card>
