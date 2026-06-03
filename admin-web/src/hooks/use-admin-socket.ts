@@ -25,6 +25,11 @@ function invalidateAdminRealtimeQueries(
   if (payload?.entityType === "support_case" || payload?.path?.startsWith("/support")) {
     void queryClient.invalidateQueries({ queryKey: ["admin-support-cases"] })
   }
+  if (payload?.entityType === "website_lead" || payload?.path?.startsWith("/website")) {
+    void queryClient.invalidateQueries({ queryKey: ["admin-website-overview"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-website-leads"] })
+    void queryClient.invalidateQueries({ queryKey: ["admin-website-analytics"] })
+  }
   if (payload?.entityType === "order" || payload?.path?.startsWith("/orders")) {
     void queryClient.invalidateQueries({ queryKey: ["admin-orders"] })
     void queryClient.invalidateQueries({ queryKey: ["admin-orders-monitor"] })
@@ -55,7 +60,8 @@ function resolveAdminNotificationPath(payload: Partial<AdminNotificationCenterIt
     payload.path?.startsWith("/payouts") ||
     payload.path?.startsWith("/ledger") ||
     payload.path?.startsWith("/refunds") ||
-    payload.path?.startsWith("/reports")
+    payload.path?.startsWith("/reports") ||
+    payload.path?.startsWith("/website")
   ) {
     return payload.path
   }

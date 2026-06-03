@@ -38,6 +38,8 @@ import {
 
 const ordersMonitorQuerySchema = z.object({
   scope: z.enum(["all", "live", "stale"]).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 const activityLogsQuerySchema = z.object({
@@ -88,6 +90,8 @@ const ordersQuerySchema = z.object({
     .optional(),
   assignment: z.enum(["all", "assigned", "unassigned", "stale"]).optional(),
   attention: z.enum(["all", "riderDelay"]).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   sortBy: z.enum(["newest", "oldest", "highestValue", "recentlyUpdated"]).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
@@ -112,6 +116,8 @@ const paymentsQuerySchema = z.object({
   settlement: z
     .enum(["all", "delivered", "refund_queue", "online", "cod"])
     .optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   sortBy: z.enum(["newest", "oldest", "highestValue", "recentlyUpdated"]).optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
@@ -142,6 +148,8 @@ const bkashPaymentAttemptsQuerySchema = z.object({
     .enum(["all", "unpaid", "paid", "cancelled", "failed", "expired"])
     .optional(),
   orderState: z.enum(["all", "finalized", "missing", "failed"]).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
 });
@@ -160,6 +168,8 @@ const ridersQuerySchema = z.object({
   sortBy: z
     .enum(["newest", "recentLogin", "mostActive", "mostDelivered"])
     .optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
 });
@@ -173,10 +183,14 @@ const createRiderSchema = z.object({
   nationalIdNumber: z.string().trim().optional(),
   monthlySalary: z.coerce.number().min(0).optional(),
   payoutDay: z.coerce.number().int().min(1).max(28).optional(),
+  primaryZoneId: z.string().trim().optional(),
+  assignedZoneIds: z.array(z.string().trim()).optional(),
 });
 
 const payrollQuerySchema = z.object({
   month: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 const updateRiderPayrollSettingsSchema = z.object({
@@ -281,10 +295,17 @@ const dispatchLogsQuerySchema = z.object({
     .enum(["all", "assigned", "reassigned", "no_match", "skipped"])
     .optional(),
   source: z.enum(["all", "manual_admin", "auto_dispatch"]).optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
+});
+
+const dispatchConfigQuerySchema = z.object({
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
 });
 
 export const getAdminOrdersMonitor = asyncHandler(
@@ -292,6 +313,8 @@ export const getAdminOrdersMonitor = asyncHandler(
     const query = ordersMonitorQuerySchema.parse(req.query);
     const data = await listAdminOrdersMonitor({
       scope: query.scope,
+      zoneId: query.zoneId,
+      districtId: query.districtId,
     });
 
     return sendSuccess(res, { data });
@@ -480,16 +503,28 @@ export const patchAdminRiderPayrollStatus = asyncHandler(
 );
 
 export const getAdminLiveMapSnapshot = asyncHandler(
-  async (_req: Request, res: Response) => {
-    const data = await getAdminLiveMap();
+  async (req: Request, res: Response) => {
+    const query = z
+      .object({
+        zoneId: z.string().optional(),
+        districtId: z.string().optional(),
+      })
+      .parse(req.query);
+    const data = await getAdminLiveMap(query);
 
     return sendSuccess(res, { data });
   },
 );
 
 export const getAdminRiderAssignmentCandidates = asyncHandler(
-  async (_req: Request, res: Response) => {
-    const data = await listAdminRiderAssignmentCandidates();
+  async (req: Request, res: Response) => {
+    const query = z
+      .object({
+        zoneId: z.string().optional(),
+        districtId: z.string().optional(),
+      })
+      .parse(req.query);
+    const data = await listAdminRiderAssignmentCandidates(query);
 
     return sendSuccess(res, { data });
   },
@@ -510,8 +545,14 @@ export const postAdminBulkAssignRiders = asyncHandler(
 );
 
 export const getAdminRidersAssignmentOptions = asyncHandler(
-  async (_req: Request, res: Response) => {
-    const data = await listAdminRidersForAssignment();
+  async (req: Request, res: Response) => {
+    const query = z
+      .object({
+        zoneId: z.string().optional(),
+        districtId: z.string().optional(),
+      })
+      .parse(req.query);
+    const data = await listAdminRidersForAssignment(query);
 
     return sendSuccess(res, { data });
   },
@@ -567,8 +608,9 @@ export const patchAdminRiderVerification = asyncHandler(
 );
 
 export const getAdminDispatchConfig = asyncHandler(
-  async (_req: Request, res: Response) => {
-    const data = await getAdminDispatchSettings();
+  async (req: Request, res: Response) => {
+    const query = dispatchConfigQuerySchema.parse(req.query);
+    const data = await getAdminDispatchSettings(query);
 
     return sendSuccess(res, { data });
   },
@@ -600,9 +642,12 @@ export const getAdminActivityLogs = asyncHandler(
 export const patchAdminDispatchConfig = asyncHandler(
   async (req: Request, res: Response) => {
     const payload = dispatchSettingsSchema.parse(req.body);
+    const query = dispatchConfigQuerySchema.parse(req.query);
     const data = await updateAdminDispatchSettings({
       adminId: req.user?.id ?? "",
       settings: payload,
+      zoneId: query.zoneId,
+      districtId: query.districtId,
     });
 
     return sendSuccess(res, {

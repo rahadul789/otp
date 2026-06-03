@@ -1,5 +1,6 @@
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { RemoteImage } from "@/src/components/remote-image";
 import { palette } from "@/src/theme/palette";
 
 type Props = {
@@ -35,7 +36,12 @@ export function MenuItemCard({
         ) : null}
         <Text style={styles.price}>{priceLabel}</Text>
       </View>
-      {imageUrl ? <Image source={{ uri: imageUrl }} style={styles.image} /> : null}
+      <RemoteImage
+        uri={imageUrl}
+        style={styles.image}
+        fallbackIcon="fast-food-outline"
+        accessibilityLabel={`${name} food photo`}
+      />
     </Pressable>
   );
 }

@@ -41,8 +41,8 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isOrderTrackingRoute(path: string) {
-  return /^\/orders\/[A-Za-z0-9_-]+\/tracking$/.test(path);
+function isOrderRoute(path: string) {
+  return /^\/orders\/[A-Za-z0-9_-]+(?:\/tracking)?$/.test(path);
 }
 
 function getOrderIdFromRoute(path: string) {
@@ -207,7 +207,7 @@ export function CustomerPushBridge({ children }: PropsWithChildren) {
       if (
         currentPath === "/notifications" ||
         (currentPath === "/promo-details" && getRoutePathname(target) === "/promo-details") ||
-        (isOrderTrackingRoute(currentPath) && isOrderTrackingRoute(target))
+        (isOrderRoute(currentPath) && isOrderRoute(target))
       ) {
         router.replace(target as never);
         return;

@@ -9,9 +9,12 @@ import { sendPushToCustomer } from "../customer/push.service"
 import { CategoryModel, MenuItemModel, OrderModel } from "../owner/operational.model"
 import { OwnerModel } from "../auth/auth.model"
 import { RestaurantModel } from "../auth/auth.model"
+import { buildRestaurantServiceAreaScopeFilter } from "../service-area/service-area.service"
 
 type VoucherListParams = {
   restaurantId?: string
+  zoneId?: string
+  districtId?: string
   scopeType?: string
   search?: string
   lifecycle?: string
@@ -371,11 +374,19 @@ function buildLastSevenPointSeed() {
   })
 }
 
-function buildVoucherQuery(params: VoucherListParams) {
+async function buildVoucherQuery(params: VoucherListParams) {
   const query: Record<string, unknown> = {}
   const now = new Date()
 
   if (params.restaurantId) query.restaurantId = toObjectIdOrThrow(params.restaurantId, "Restaurant")
+  if (!params.restaurantId && (params.zoneId?.trim() || params.districtId?.trim())) {
+    const restaurantIds = await RestaurantModel.distinct("_id", buildRestaurantServiceAreaScopeFilter(params))
+    query.$or = [
+      { scopeType: "all_restaurants" },
+      { restaurantId: { $in: restaurantIds } },
+      { selectedRestaurantIds: { $in: restaurantIds } },
+    ]
+  }
   if (params.scopeType && params.scopeType !== "all") query.scopeType = params.scopeType
   if (params.mode && params.mode !== "all") query.mode = params.mode
   if (params.type && params.type !== "all") {
@@ -383,9 +394,14 @@ function buildVoucherQuery(params: VoucherListParams) {
   }
   if (params.search?.trim()) {
     const search = params.search.trim()
-    query.$or = [
-      { name: { $regex: search, $options: "i" } },
-      { code: { $regex: search, $options: "i" } }
+    query.$and = [
+      ...((query.$and as Record<string, unknown>[] | undefined) ?? []),
+      {
+        $or: [
+          { name: { $regex: search, $options: "i" } },
+          { code: { $regex: search, $options: "i" } }
+        ]
+      }
     ]
   }
   if (params.lifecycle && params.lifecycle !== "all") {
@@ -824,7 +840,7 @@ export async function listOwnerVouchersWithFilters(params: {
   pageSize?: number
 }) {
   const restaurant = await getOwnerRestaurant(params.ownerId)
-  const query = buildVoucherQuery({
+  const query = await buildVoucherQuery({
     ...params,
     restaurantId: restaurant.id
   })
@@ -1188,7 +1204,7 @@ export async function recordVoucherPushOpenEvent(params: {
 export async function listAdminVouchers(params: VoucherListParams = {}) {
   const page = clampPage(params.page)
   const pageSize = clampPageSize(params.pageSize)
-  const query = buildVoucherQuery(params)
+  const query = await buildVoucherQuery(params)
   const [items, total] = await Promise.all([
     VoucherModel.find(query).sort(buildVoucherSort(params.sortBy)).skip((page - 1) * pageSize).limit(pageSize).lean(),
     VoucherModel.countDocuments(query)

@@ -46,6 +46,7 @@ import {
   createAdminRestaurant,
   deleteAdminRestaurant,
   deleteAdminRestaurantReview,
+  getAdminServiceAreas,
   getAdminRestaurant,
   listAdminRestaurantPromotions,
   listAdminRestaurants,
@@ -67,6 +68,7 @@ import {
   type AdminRestaurantDetails,
   type AdminRestaurantSummary,
   type AdminRestaurantVoucher,
+  type AdminServiceZone,
   type AdminVoucherLifecycle,
   type AdminVoucherMode,
   type AdminRiderAssignmentOption,
@@ -250,6 +252,7 @@ const defaultCreateForm: AdminRestaurantCreateInput = {
   city: "Netrokona",
   latitude: null,
   longitude: null,
+  serviceZoneId: "",
   preparationTimeMinutes: 30,
   commissionRate: 15,
   isVisible: true,
@@ -674,6 +677,31 @@ function AddRestaurantDialog({
     React.useState(true)
   const [useOwnerPhoneForBkash, setUseOwnerPhoneForBkash] =
     React.useState(true)
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "restaurant-create"],
+    queryFn: getAdminServiceAreas,
+    staleTime: 60_000,
+  })
+  const serviceZones = React.useMemo(
+    () =>
+      (serviceAreasQuery.data?.zones ?? []).filter(
+        (zone: AdminServiceZone) => zone.status === "active"
+      ),
+    [serviceAreasQuery.data?.zones]
+  )
+
+  React.useEffect(() => {
+    if (!form.serviceZoneId && serviceZones[0]?.id) {
+      const zone = serviceZones[0]
+      setForm((current) => ({
+        ...current,
+        serviceZoneId: zone.id,
+        city: zone.districtName || current.city,
+        latitude: zone.center?.latitude ?? current.latitude,
+        longitude: zone.center?.longitude ?? current.longitude,
+      }))
+    }
+  }, [form.serviceZoneId, serviceZones])
 
   const createMutation = useMutation({
     mutationFn: createAdminRestaurant,
@@ -699,6 +727,17 @@ function AddRestaurantDialog({
     value: AdminRestaurantCreateInput[K]
   ) {
     setForm((current) => ({ ...current, [key]: value }))
+  }
+
+  function selectServiceZone(zoneId: string) {
+    const zone = serviceZones.find((item) => item.id === zoneId)
+    setForm((current) => ({
+      ...current,
+      serviceZoneId: zoneId,
+      city: zone?.districtName || current.city,
+      latitude: zone?.center?.latitude ?? current.latitude,
+      longitude: zone?.center?.longitude ?? current.longitude,
+    }))
   }
 
   function addCuisine(rawValue: string) {
@@ -797,7 +836,7 @@ function AddRestaurantDialog({
     createMutation.mutate({
       ...form,
       ownerPhone,
-      city: "Netrokona",
+      city: form.city || undefined,
       ownerEmail: form.ownerEmail || undefined,
       email: form.email || undefined,
       phone: restaurantPhone,
@@ -1024,6 +1063,33 @@ function AddRestaurantDialog({
                     onAdd={addTag}
                     onRemove={removeTag}
                   />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="restaurant-zone">Service area</Label>
+                  <Select
+                    value={form.serviceZoneId || serviceZones[0]?.id || ""}
+                    onValueChange={selectServiceZone}
+                  >
+                    <SelectTrigger id="restaurant-zone" className="w-full">
+                      <SelectValue
+                        placeholder={
+                          serviceAreasQuery.isLoading
+                            ? "Loading service areas"
+                            : "Choose service area"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {serviceZones.map((zone) => (
+                        <SelectItem key={zone.id} value={zone.id}>
+                          {zone.districtName} / {zone.name} - {zone.radiusKm} km
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Finance, dispatch, delivery fee, and admin filters will use this zone.
+                  </p>
                 </div>
                 <div className="space-y-2 md:col-span-2">
                   <OptionalLabel htmlFor="restaurant-address">

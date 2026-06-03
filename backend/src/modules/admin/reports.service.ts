@@ -1,12 +1,17 @@
 import mongoose from "mongoose";
 
-import { RestaurantModel } from "../auth/auth.model";
+import { RestaurantModel, RiderModel } from "../auth/auth.model";
 import { CustomerModel, VoucherRedemptionModel } from "../customer/customer.model";
 import { LedgerEntryModel } from "../owner/finance.model";
 import { aggregateFinalizedLedgerEntries } from "../owner/finance.service";
 import { ReviewModel } from "../owner/experience.model";
 import { OrderModel } from "../owner/operational.model";
 import { RiderPayrollCycleModel } from "./rider-payroll.model";
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+  buildRiderServiceAreaScopeFilter,
+} from "../service-area/service-area.service";
 
 type ReportPreset =
   | "today"
@@ -23,6 +28,8 @@ type ReportParams = {
   preset?: ReportPreset;
   from?: string;
   to?: string;
+  zoneId?: string;
+  districtId?: string;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -199,6 +206,43 @@ export async function getAdminReports(params: ReportParams) {
   const range = buildRange(params);
   const deliveredDate = deliveredDateExpression();
   const terminalDate = terminalDateExpression();
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+  const riderScopeFilter = buildRiderServiceAreaScopeFilter(params);
+  const [scopedRestaurantIds, scopedRiderIds, scopedCustomerIds] = await Promise.all([
+    Object.keys(restaurantScopeFilter).length
+      ? RestaurantModel.find(restaurantScopeFilter).select({ _id: 1 }).lean()
+      : Promise.resolve(null),
+    Object.keys(riderScopeFilter).length
+      ? RiderModel.find(riderScopeFilter).select({ _id: 1 }).lean()
+      : Promise.resolve(null),
+    Object.keys(orderScopeFilter).length
+      ? OrderModel.distinct("customerId", {
+          ...orderScopeFilter,
+          customerId: { $type: "string", $ne: "" },
+        })
+      : Promise.resolve(null),
+  ]);
+  const scopedRestaurantObjectIds = scopedRestaurantIds
+    ? scopedRestaurantIds.map((restaurant) => restaurant._id)
+    : null;
+  const scopedRiderObjectIds = scopedRiderIds
+    ? scopedRiderIds.map((rider) => rider._id)
+    : null;
+  const scopedCustomerObjectIds = scopedCustomerIds
+    ? scopedCustomerIds
+        .filter((customerId) => mongoose.Types.ObjectId.isValid(String(customerId)))
+        .map((customerId) => new mongoose.Types.ObjectId(String(customerId)))
+    : null;
+  const customerScopeFilter = scopedCustomerObjectIds
+    ? { _id: { $in: scopedCustomerObjectIds } }
+    : {};
+  const voucherRedemptionOrderScopeFilter = Object.fromEntries(
+    Object.entries(orderScopeFilter).map(([key, value]) => [`order.${key}`, value]),
+  );
+  const scopedReviewFilter = scopedRestaurantObjectIds
+    ? { restaurantId: { $in: scopedRestaurantObjectIds } }
+    : {};
   const days = daysBetween(range.start, range.end);
   const trendStart =
     range.preset === "lifetime"
@@ -231,7 +275,7 @@ export async function getAdminReports(params: ReportParams) {
     payrollCycles,
   ] = await Promise.all([
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -251,7 +295,7 @@ export async function getAdminReports(params: ReportParams) {
       },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       {
         $match: rangeMatchOn(
@@ -269,7 +313,7 @@ export async function getAdminReports(params: ReportParams) {
       },
     ]),
     OrderModel.aggregate<{ _id: string; orders: number; revenue: number }>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", trendStart, range.end) },
       {
@@ -282,7 +326,7 @@ export async function getAdminReports(params: ReportParams) {
       { $sort: { _id: 1 } },
     ]),
     OrderModel.aggregate<{ _id: number; orders: number; revenue: number }>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -295,7 +339,7 @@ export async function getAdminReports(params: ReportParams) {
       { $sort: { _id: 1 } },
     ]),
     OrderModel.aggregate<{ _id: number; orders: number; revenue: number }>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -310,6 +354,7 @@ export async function getAdminReports(params: ReportParams) {
     OrderModel.aggregate<{ _id: string; count: number; revenue: number }>([
       {
         $match: {
+          ...orderScopeFilter,
           $or: [
             { createdAt: { $gte: range.start, $lte: range.end } },
             { "timestamps.Delivered": { $gte: range.start, $lte: range.end } },
@@ -327,7 +372,7 @@ export async function getAdminReports(params: ReportParams) {
       { $sort: { count: -1 } },
     ]),
     OrderModel.aggregate<{ _id: string; count: number }>([
-      { $match: { status: { $in: ["Cancelled", "Rejected"] } } },
+      { $match: { status: { $in: ["Cancelled", "Rejected"] }, ...orderScopeFilter } },
       { $addFields: { reportTerminalAt: terminalDate } },
       { $match: rangeMatchOn("reportTerminalAt", range.start, range.end) },
       {
@@ -340,7 +385,7 @@ export async function getAdminReports(params: ReportParams) {
       { $limit: 10 },
     ]),
     OrderModel.aggregate<{ _id: string; count: number }>([
-      { $match: { status: { $in: ["Cancelled", "Rejected"] } } },
+      { $match: { status: { $in: ["Cancelled", "Rejected"] }, ...orderScopeFilter } },
       { $addFields: { reportTerminalAt: terminalDate } },
       { $match: rangeMatchOn("reportTerminalAt", range.start, range.end) },
       {
@@ -352,7 +397,7 @@ export async function getAdminReports(params: ReportParams) {
       { $sort: { count: -1 } },
     ]),
     aggregateFinalizedLedgerEntries(
-      { entryType: "earning" },
+      { entryType: "earning", ...orderScopeFilter },
       [
       { $match: rangeMatchOn("effectiveAt", range.start, range.end) },
       {
@@ -373,7 +418,7 @@ export async function getAdminReports(params: ReportParams) {
       ],
     ),
     LedgerEntryModel.aggregate<Record<string, any>>([
-      { $match: { entryType: "refund", createdAt: { $gte: range.start, $lte: range.end } } },
+      { $match: { entryType: "refund", createdAt: { $gte: range.start, $lte: range.end }, ...orderScopeFilter } },
       {
         $group: {
           _id: null,
@@ -387,6 +432,7 @@ export async function getAdminReports(params: ReportParams) {
         $match: {
           paymentStatus: { $in: ["refund_pending", "refunded", "refund_rejected"] },
           updatedAt: { $gte: range.start, $lte: range.end },
+          ...orderScopeFilter,
         },
       },
       {
@@ -409,7 +455,7 @@ export async function getAdminReports(params: ReportParams) {
       },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -423,7 +469,7 @@ export async function getAdminReports(params: ReportParams) {
       { $sort: { amount: -1 } },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -447,7 +493,7 @@ export async function getAdminReports(params: ReportParams) {
       { $addFields: { restaurant: { $arrayElemAt: ["$restaurant", 0] } } },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered", customerId: { $ne: "" } } },
+      { $match: { status: "Delivered", customerId: { $ne: "" }, ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -464,7 +510,7 @@ export async function getAdminReports(params: ReportParams) {
       { $limit: 10 },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered", riderId: { $ne: "" } } },
+      { $match: { status: "Delivered", riderId: { $ne: "" }, ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -480,7 +526,7 @@ export async function getAdminReports(params: ReportParams) {
       { $limit: 10 },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       { $addFields: { reportDeliveredAt: deliveredDate } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       { $unwind: "$itemsSnapshot" },
@@ -521,7 +567,7 @@ export async function getAdminReports(params: ReportParams) {
         },
       },
       { $addFields: { order: { $arrayElemAt: ["$order", 0] } } },
-      { $match: { "order.status": "Delivered" } },
+      { $match: { "order.status": "Delivered", ...voucherRedemptionOrderScopeFilter } },
       { $addFields: { reportDeliveredAt: { $ifNull: ["$order.timestamps.Delivered", { $ifNull: ["$order.timestamps.deliveredAt", "$order.createdAt"] }] } } },
       { $match: rangeMatchOn("reportDeliveredAt", range.start, range.end) },
       {
@@ -561,17 +607,23 @@ export async function getAdminReports(params: ReportParams) {
       { $sort: { uses: -1 } },
       { $limit: 8 },
     ]),
-    CustomerModel.countDocuments({ createdAt: { $gte: range.start, $lte: range.end } }),
-    CustomerModel.countDocuments(),
-    RestaurantModel.countDocuments({ "runtime.isVisible": true }),
+    CustomerModel.countDocuments({
+      ...customerScopeFilter,
+      createdAt: { $gte: range.start, $lte: range.end },
+    }),
+    CustomerModel.countDocuments(customerScopeFilter),
+    RestaurantModel.countDocuments({ "runtime.isVisible": true, ...restaurantScopeFilter }),
     ReviewModel.aggregate<Record<string, any>>([
-      { $match: { isHidden: { $ne: true }, moderationStatus: "visible", createdAt: { $gte: range.start, $lte: range.end } } },
+      { $match: { isHidden: { $ne: true }, moderationStatus: "visible", createdAt: { $gte: range.start, $lte: range.end }, ...scopedReviewFilter } },
       { $group: { _id: null, count: { $sum: 1 }, averageRating: { $avg: "$rating" } } },
     ]),
-    RiderPayrollCycleModel.find({
-      status: "paid",
-      paidAt: { $gte: range.start, $lte: range.end },
-    }).lean(),
+    scopedRiderObjectIds && scopedRiderObjectIds.length === 0
+      ? Promise.resolve([])
+      : RiderPayrollCycleModel.find({
+          status: "paid",
+          paidAt: { $gte: range.start, $lte: range.end },
+          ...(scopedRiderObjectIds ? { riderId: { $in: scopedRiderObjectIds } } : {}),
+        }).lean(),
   ]);
 
   const delivered = deliveredRows[0] ?? {};

@@ -42,6 +42,16 @@ import { RiderPayrollCycleModel } from "./rider-payroll.model";
 import { createAdminOperationalAlert } from "./admin-alert.service";
 import { enqueueAdminOrderTerminalExceptionAlert } from "./order-exception-alerts";
 import { recordBusinessEvent } from "./business-event.service";
+import {
+  assertRiderAllowedForServiceArea,
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+  buildRiderServiceAreaScopeFilter,
+  getServiceAreaDispatchOverrides,
+  invalidateServiceAreaCache,
+  isRiderAllowedForServiceArea
+} from "../service-area/service-area.service";
+import { ServiceZoneModel } from "../service-area/service-area.model";
 
 const MAX_ORDER_HISTORY_ENTRIES = 100;
 const ADMIN_LIVE_MAP_ACTIVE_ORDER_WINDOW_HOURS = 12;
@@ -86,13 +96,14 @@ type DispatchSettings = {
 const ADMIN_DISPATCH_SETTINGS_CACHE_TTL_MS = 10_000;
 let adminDispatchSettingsCache:
   | {
+      key: string;
       expiresAt: number;
       value?: Awaited<ReturnType<typeof buildAdminDispatchSettings>>;
       promise?: Promise<Awaited<ReturnType<typeof buildAdminDispatchSettings>>>;
     }
   | null = null;
 
-function invalidateAdminDispatchSettingsCache() {
+export function invalidateAdminDispatchSettingsCache() {
   adminDispatchSettingsCache = null;
 }
 
@@ -104,7 +115,7 @@ const adminOrdersMonitorCache = createInMemoryAsyncCache<any>({
 const adminLiveMapCache = createInMemoryAsyncCache<any>({
   ttlMs: 5_000,
   staleWhileRevalidateMs: 15_000,
-  maxEntries: 2,
+  maxEntries: 24,
 });
 
 export function invalidateAdminMonitoringCaches() {
@@ -174,6 +185,8 @@ type AdminOrderListParams = {
   paymentStatus?: "all" | "pending" | "paid" | "refund_pending" | "refunded";
   assignment?: "all" | "assigned" | "unassigned" | "stale";
   attention?: "all" | "riderDelay";
+  zoneId?: string;
+  districtId?: string;
   sortBy?: "newest" | "oldest" | "highestValue" | "recentlyUpdated";
   page?: number;
   pageSize?: number;
@@ -185,6 +198,8 @@ type AdminRiderListParams = {
   availability?: "all" | "available" | "unavailable";
   verification?: "all" | "pending" | "approved" | "rejected" | "missing";
   sortBy?: "newest" | "recentLogin" | "mostActive" | "mostDelivered";
+  zoneId?: string;
+  districtId?: string;
   page?: number;
   pageSize?: number;
 };
@@ -193,6 +208,8 @@ type AdminDispatchLogListParams = {
   search?: string;
   outcome?: "all" | "assigned" | "reassigned" | "no_match" | "skipped";
   source?: "all" | "manual_admin" | "auto_dispatch";
+  zoneId?: string;
+  districtId?: string;
   from?: string;
   to?: string;
   page?: number;
@@ -213,6 +230,8 @@ type AdminPaymentListParams = {
     | "refunded"
     | "refund_rejected";
   settlement?: "all" | "delivered" | "refund_queue" | "online" | "cod";
+  zoneId?: string;
+  districtId?: string;
   sortBy?: "newest" | "oldest" | "highestValue" | "recentlyUpdated";
   page?: number;
   pageSize?: number;
@@ -238,6 +257,8 @@ type AdminBkashPaymentAttemptListParams = {
     | "expired";
   paymentStatus?: "all" | "unpaid" | "paid" | "cancelled" | "failed" | "expired";
   orderState?: "all" | "finalized" | "missing" | "failed";
+  zoneId?: string;
+  districtId?: string;
   page?: number;
   pageSize?: number;
 };
@@ -823,6 +844,7 @@ function mapAdminRiderSummary(
     vehicleType: stringValue(rider.vehicleType, "cycle"),
     isAvailableForAssignments: rider.isAvailableForAssignments !== false,
     activeTrackingOrderId: stringValue(rider.activeTrackingOrderId),
+    serviceArea: rider.serviceArea ?? {},
     lastLoginAt: serializeDate(rider.lastLoginAt),
     lastKnownLocation: serializeRiderLocation(rider.lastKnownLocation),
     activeOrders: stats.activeOrders,
@@ -1221,10 +1243,120 @@ function getLocationAgeMinutes(updatedAt?: Date | string | null) {
   return Math.max(0, (Date.now() - timestamp) / (1000 * 60));
 }
 
+async function getDispatchSettingsForServiceArea(
+  baseSettings: DispatchSettings,
+  serviceAreaSnapshot?: Record<string, any> | null,
+): Promise<DispatchSettings> {
+  const overrides = await getServiceAreaDispatchOverrides(serviceAreaSnapshot);
+  if (!overrides) return baseSettings;
+
+  return {
+    ...baseSettings,
+    autoAssignmentEnabled:
+      typeof overrides.autoAssignEnabled === "boolean"
+        ? baseSettings.autoAssignmentEnabled && overrides.autoAssignEnabled
+        : baseSettings.autoAssignmentEnabled,
+    dispatchMode:
+      overrides.dispatchMode === "primary_rider" || overrides.dispatchMode === "fleet"
+        ? overrides.dispatchMode
+        : baseSettings.dispatchMode,
+    primaryRiderId:
+      typeof overrides.primaryRiderId === "string"
+        ? overrides.primaryRiderId
+        : baseSettings.primaryRiderId,
+    primaryRiderFallbackEnabled:
+      typeof overrides.primaryRiderFallbackEnabled === "boolean"
+        ? overrides.primaryRiderFallbackEnabled
+        : baseSettings.primaryRiderFallbackEnabled,
+    algorithm:
+      overrides.algorithm === "least_loaded_first" ||
+      overrides.algorithm === "nearest_eligible_balanced"
+        ? overrides.algorithm
+        : baseSettings.algorithm,
+    autoReassignTimedOutOrders:
+      typeof overrides.autoReassignTimedOutOrders === "boolean"
+        ? overrides.autoReassignTimedOutOrders
+        : baseSettings.autoReassignTimedOutOrders,
+    ownerAcceptanceTimeoutMinutes:
+      typeof overrides.ownerAcceptanceTimeoutMinutes === "number"
+        ? overrides.ownerAcceptanceTimeoutMinutes
+        : baseSettings.ownerAcceptanceTimeoutMinutes,
+    maxActiveOrdersPerRider:
+      typeof overrides.maxActiveOrdersPerRiderOverride === "number"
+        ? overrides.maxActiveOrdersPerRiderOverride
+        : baseSettings.maxActiveOrdersPerRider,
+    staleLocationCutoffMinutes:
+      typeof overrides.staleLocationCutoffMinutes === "number"
+        ? overrides.staleLocationCutoffMinutes
+        : baseSettings.staleLocationCutoffMinutes,
+    assignmentTimeoutMinutes:
+      typeof overrides.assignmentTimeoutMinutes === "number"
+        ? overrides.assignmentTimeoutMinutes
+        : baseSettings.assignmentTimeoutMinutes,
+    prepStartGraceMinutes:
+      typeof overrides.prepStartGraceMinutes === "number"
+        ? overrides.prepStartGraceMinutes
+        : baseSettings.prepStartGraceMinutes,
+    preparationMaxExtraMinutes:
+      typeof overrides.preparationMaxExtraMinutes === "number"
+        ? overrides.preparationMaxExtraMinutes
+        : baseSettings.preparationMaxExtraMinutes,
+    prepLateGraceMinutes:
+      typeof overrides.prepLateGraceMinutes === "number"
+        ? overrides.prepLateGraceMinutes
+        : baseSettings.prepLateGraceMinutes,
+    pickupLateGraceMinutes:
+      typeof overrides.pickupLateGraceMinutes === "number"
+        ? overrides.pickupLateGraceMinutes
+        : baseSettings.pickupLateGraceMinutes,
+    deliveryLateGraceMinutes:
+      typeof overrides.deliveryLateGraceMinutes === "number"
+        ? overrides.deliveryLateGraceMinutes
+        : baseSettings.deliveryLateGraceMinutes,
+    deliveryWatchAfterPickupMinutes:
+      typeof overrides.deliveryWatchAfterPickupMinutes === "number"
+        ? overrides.deliveryWatchAfterPickupMinutes
+        : baseSettings.deliveryWatchAfterPickupMinutes,
+    deliveryLateAfterPickupMinutes:
+      typeof overrides.deliveryLateAfterPickupMinutes === "number"
+        ? overrides.deliveryLateAfterPickupMinutes
+        : baseSettings.deliveryLateAfterPickupMinutes,
+    deliveryCriticalAfterPickupMinutes:
+      typeof overrides.deliveryCriticalAfterPickupMinutes === "number"
+        ? overrides.deliveryCriticalAfterPickupMinutes
+        : baseSettings.deliveryCriticalAfterPickupMinutes,
+    retryCooldownMinutes:
+      typeof overrides.retryCooldownMinutes === "number"
+        ? overrides.retryCooldownMinutes
+        : baseSettings.retryCooldownMinutes,
+    surgeReadyOrderThreshold:
+      typeof overrides.surgeReadyOrderThreshold === "number"
+        ? overrides.surgeReadyOrderThreshold
+        : baseSettings.surgeReadyOrderThreshold,
+    surgeUnassignedOrderThreshold:
+      typeof overrides.surgeUnassignedOrderThreshold === "number"
+        ? overrides.surgeUnassignedOrderThreshold
+        : baseSettings.surgeUnassignedOrderThreshold,
+    autoCancelUnacceptedOrdersEnabled:
+      typeof overrides.autoCancelUnacceptedOrdersEnabled === "boolean"
+        ? overrides.autoCancelUnacceptedOrdersEnabled
+        : baseSettings.autoCancelUnacceptedOrdersEnabled,
+    autoCancelAfterMinutes:
+      typeof overrides.autoCancelAfterMinutes === "number"
+        ? overrides.autoCancelAfterMinutes
+        : baseSettings.autoCancelAfterMinutes,
+    autoCancelNotifyBeforeMinutes:
+      typeof overrides.autoCancelNotifyBeforeMinutes === "number"
+        ? overrides.autoCancelNotifyBeforeMinutes
+        : baseSettings.autoCancelNotifyBeforeMinutes,
+  };
+}
+
 async function listDispatchEligibleRiders(params: {
   restaurant: Record<string, any> | null;
   settings: DispatchSettings;
   excludeRiderIds?: string[];
+  serviceAreaSnapshot?: Record<string, any> | null;
 }) {
   const riders = await RiderModel.find({
     status: "active",
@@ -1234,7 +1366,13 @@ async function listDispatchEligibleRiders(params: {
     .sort({ createdAt: -1 })
     .lean();
 
-  const riderIds = riders.map((rider) => rider._id.toString());
+  const zoneAllowedRiders = riders.filter((rider) =>
+    isRiderAllowedForServiceArea({
+      rider,
+      serviceAreaSnapshot: params.serviceAreaSnapshot
+    })
+  );
+  const riderIds = zoneAllowedRiders.map((rider) => rider._id.toString());
   const activeCounts = riderIds.length
     ? await OrderModel.aggregate<{
         _id: string;
@@ -1263,7 +1401,7 @@ async function listDispatchEligibleRiders(params: {
 
   const countMap = new Map(activeCounts.map((entry) => [entry._id, entry]));
 
-  return riders
+  return zoneAllowedRiders
     .map((rider) => {
       const riderId = rider._id.toString();
       const countEntry = countMap.get(riderId);
@@ -1528,8 +1666,20 @@ async function createDispatchDecisionLog(params: {
 
 async function listRecentDispatchDecisionLogs(
   limit = 12,
+  params: AdminDispatchLogListParams = {},
 ): Promise<DispatchDecisionLogEntry[]> {
-  const logs = await DispatchDecisionLogModel.find()
+  const query: Record<string, any> = {};
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+  if (Object.keys(restaurantScopeFilter).length) {
+    const restaurants = await RestaurantModel.find(restaurantScopeFilter)
+      .select({ _id: 1 })
+      .lean();
+    query.restaurantId = {
+      $in: restaurants.map((restaurant) => String(restaurant._id ?? "")),
+    };
+  }
+
+  const logs = await DispatchDecisionLogModel.find(query)
     .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
@@ -1600,6 +1750,16 @@ export async function listAdminDispatchDecisionLogs(
   }
   if (Object.keys(dateMatch).length) {
     query.createdAt = dateMatch;
+  }
+
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+  if (Object.keys(restaurantScopeFilter).length) {
+    const restaurants = await RestaurantModel.find(restaurantScopeFilter)
+      .select({ _id: 1 })
+      .lean();
+    query.restaurantId = {
+      $in: restaurants.map((restaurant) => String(restaurant._id ?? "")),
+    };
   }
 
   const search = params.search?.trim();
@@ -1710,6 +1870,11 @@ async function assignOrderToRider(params: {
       "Only ready-for-pickup orders can be assigned to a rider",
     );
   }
+
+  assertRiderAllowedForServiceArea({
+    rider: rider.toObject(),
+    serviceAreaSnapshot: order.serviceAreaSnapshot,
+  });
 
   const previousRiderId =
     typeof order.riderId === "string" ? order.riderId : "";
@@ -1895,9 +2060,19 @@ async function assignOrderToRider(params: {
   };
 }
 
-async function buildAdminDispatchSettings() {
+async function buildAdminDispatchSettings(params: {
+  zoneId?: string;
+  districtId?: string;
+} = {}) {
   const content = await getPlatformContent();
-  const settings = getDispatchSettingsFromContent(content);
+  const baseSettings = getDispatchSettingsFromContent(content);
+  const settings = params.zoneId
+    ? await getDispatchSettingsForServiceArea(baseSettings, {
+        zoneId: params.zoneId,
+      })
+    : baseSettings;
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
+  const riderScopeFilter = buildRiderServiceAreaScopeFilter(params);
   const [
     readyOrders,
     unassignedReadyOrders,
@@ -1911,32 +2086,37 @@ async function buildAdminDispatchSettings() {
     lockedRiders,
   ] = await Promise.all([
     OrderModel.countDocuments({
+      ...orderScopeFilter,
       status: "ReadyForPickup",
     }),
     OrderModel.countDocuments({
+      ...orderScopeFilter,
       status: "ReadyForPickup",
       $or: [{ riderId: "" }, { riderId: { $exists: false } }],
     }),
-    RiderModel.countDocuments(),
-    RiderModel.countDocuments({ status: "active" }),
+    RiderModel.countDocuments(riderScopeFilter),
+    RiderModel.countDocuments({ ...riderScopeFilter, status: "active" }),
     RiderModel.countDocuments({
+      ...riderScopeFilter,
       status: "active",
       isAvailableForAssignments: true,
       "verification.status": "approved",
     }),
     RiderModel.countDocuments({
+      ...riderScopeFilter,
       status: "active",
       isAvailableForAssignments: { $ne: true },
     }),
     RiderModel.countDocuments({
+      ...riderScopeFilter,
       $or: [
         { "verification.status": "pending" },
         { "verification.status": { $exists: false } },
       ],
     }),
-    RiderModel.countDocuments({ "verification.status": "rejected" }),
-    RiderModel.countDocuments({ status: "suspended" }),
-    RiderModel.countDocuments({ status: "locked" }),
+    RiderModel.countDocuments({ ...riderScopeFilter, "verification.status": "rejected" }),
+    RiderModel.countDocuments({ ...riderScopeFilter, status: "suspended" }),
+    RiderModel.countDocuments({ ...riderScopeFilter, status: "locked" }),
   ]);
   const blockedRiders = Math.max(0, totalRiders - eligibleRiders);
   const primaryRider = settings.primaryRiderId
@@ -1944,6 +2124,7 @@ async function buildAdminDispatchSettings() {
     : null;
   const primaryRiderActiveOrders = settings.primaryRiderId
     ? await OrderModel.countDocuments({
+        ...orderScopeFilter,
         riderId: settings.primaryRiderId,
         status: { $in: ["ReadyForPickup", "PickedUp"] },
       })
@@ -1978,25 +2159,34 @@ async function buildAdminDispatchSettings() {
         ? `Dispatch pressure is high: ${readyOrders} ready orders and ${unassignedReadyOrders} waiting for assignment.`
         : "",
     },
-    recentLogs: await listRecentDispatchDecisionLogs(),
+    recentLogs: await listRecentDispatchDecisionLogs(12, params),
   };
 }
 
-export async function getAdminDispatchSettings() {
+export async function getAdminDispatchSettings(params: {
+  zoneId?: string;
+  districtId?: string;
+} = {}) {
+  const cacheKey = `dispatch:${params.zoneId ?? "all"}:${params.districtId ?? "all"}`;
   const now = Date.now();
   if (
     adminDispatchSettingsCache?.value &&
+    adminDispatchSettingsCache.key === cacheKey &&
     adminDispatchSettingsCache.expiresAt > now
   ) {
     return adminDispatchSettingsCache.value;
   }
 
-  if (adminDispatchSettingsCache?.promise) {
+  if (
+    adminDispatchSettingsCache?.promise &&
+    adminDispatchSettingsCache.key === cacheKey
+  ) {
     return adminDispatchSettingsCache.promise;
   }
 
-  const promise = buildAdminDispatchSettings();
+  const promise = buildAdminDispatchSettings(params);
   adminDispatchSettingsCache = {
+    key: cacheKey,
     expiresAt: now + ADMIN_DISPATCH_SETTINGS_CACHE_TTL_MS,
     promise,
   };
@@ -2004,6 +2194,7 @@ export async function getAdminDispatchSettings() {
   try {
     const value = await promise;
     adminDispatchSettingsCache = {
+      key: cacheKey,
       expiresAt: Date.now() + ADMIN_DISPATCH_SETTINGS_CACHE_TTL_MS,
       value,
     };
@@ -2014,11 +2205,57 @@ export async function getAdminDispatchSettings() {
   }
 }
 
+function buildServiceZoneDispatchUpdate(settings: DispatchSettings) {
+  return {
+    autoAssignEnabled: settings.autoAssignmentEnabled,
+    autoReassignTimedOutOrders: settings.autoReassignTimedOutOrders,
+    dispatchMode: settings.dispatchMode,
+    primaryRiderId: settings.primaryRiderId,
+    primaryRiderFallbackEnabled: settings.primaryRiderFallbackEnabled,
+    algorithm: settings.algorithm,
+    maxActiveOrdersPerRiderOverride: settings.maxActiveOrdersPerRider,
+    staleLocationCutoffMinutes: settings.staleLocationCutoffMinutes,
+    assignmentTimeoutMinutes: settings.assignmentTimeoutMinutes,
+    ownerAcceptanceTimeoutMinutes: settings.ownerAcceptanceTimeoutMinutes,
+    prepStartGraceMinutes: settings.prepStartGraceMinutes,
+    preparationMaxExtraMinutes: settings.preparationMaxExtraMinutes,
+    prepLateGraceMinutes: settings.prepLateGraceMinutes,
+    pickupLateGraceMinutes: settings.pickupLateGraceMinutes,
+    deliveryLateGraceMinutes: settings.deliveryLateGraceMinutes,
+    deliveryWatchAfterPickupMinutes: settings.deliveryWatchAfterPickupMinutes,
+    deliveryLateAfterPickupMinutes: settings.deliveryLateAfterPickupMinutes,
+    deliveryCriticalAfterPickupMinutes: settings.deliveryCriticalAfterPickupMinutes,
+    retryCooldownMinutes: settings.retryCooldownMinutes,
+    surgeReadyOrderThreshold: settings.surgeReadyOrderThreshold,
+    surgeUnassignedOrderThreshold: settings.surgeUnassignedOrderThreshold,
+    autoCancelUnacceptedOrdersEnabled: settings.autoCancelUnacceptedOrdersEnabled,
+    autoCancelAfterMinutes: settings.autoCancelAfterMinutes,
+    autoCancelNotifyBeforeMinutes: settings.autoCancelNotifyBeforeMinutes,
+  };
+}
+
 export async function updateAdminDispatchSettings(params: {
   adminId: string;
   settings: DispatchSettings;
+  zoneId?: string;
+  districtId?: string;
 }) {
   invalidateAdminDispatchSettingsCache();
+  if (params.zoneId || params.districtId) {
+    const zoneQuery = params.zoneId
+      ? { _id: params.zoneId, status: { $ne: "archived" } }
+      : { districtId: params.districtId, status: { $ne: "archived" } };
+    await ServiceZoneModel.updateMany(zoneQuery, {
+      $set: { dispatch: buildServiceZoneDispatchUpdate(params.settings) },
+    });
+    invalidateServiceAreaCache();
+    invalidateAdminMonitoringCaches();
+    return getAdminDispatchSettings({
+      zoneId: params.zoneId,
+      districtId: params.districtId,
+    });
+  }
+
   const content = await getPlatformContent();
   const nextContent = {
     ...content,
@@ -2118,19 +2355,27 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
   let skipped = 0;
 
   for (const readyOrder of readyOrders) {
+    const orderDispatchSettings = await getDispatchSettingsForServiceArea(
+      settings,
+      readyOrder.serviceAreaSnapshot,
+    );
+    if (!orderDispatchSettings.autoAssignmentEnabled) {
+      skipped += 1;
+      continue;
+    }
     const currentRiderId =
       typeof readyOrder.riderId === "string" ? readyOrder.riderId.trim() : "";
     const isAssigned = currentRiderId.length > 0;
     const timedOut =
       isAssigned &&
-      settings.autoReassignTimedOutOrders &&
-      isAssignmentTimedOut(readyOrder, settings);
+      orderDispatchSettings.autoReassignTimedOutOrders &&
+      isAssignmentTimedOut(readyOrder, orderDispatchSettings);
 
     if (isAssigned && !timedOut) {
       continue;
     }
 
-    if (isAssigned && isRetryCoolingDown(readyOrder, settings)) {
+    if (isAssigned && isRetryCoolingDown(readyOrder, orderDispatchSettings)) {
       skipped += 1;
       continue;
     }
@@ -2140,12 +2385,13 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
     ).lean();
     const candidates = await listDispatchEligibleRiders({
       restaurant,
-      settings,
+      settings: orderDispatchSettings,
       excludeRiderIds: timedOut ? [currentRiderId] : [],
+      serviceAreaSnapshot: readyOrder.serviceAreaSnapshot,
     });
     const selectedRider = pickBestRiderForOrder({
       candidates,
-      settings,
+      settings: orderDispatchSettings,
     });
 
     if (!selectedRider) {
@@ -2154,7 +2400,7 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
         orderNumber: readyOrder.orderNumber ?? "",
         restaurantId: String(readyOrder.restaurantId ?? ""),
         restaurantName: restaurant?.name ?? "",
-        algorithm: settings.algorithm,
+        algorithm: orderDispatchSettings.algorithm,
         assignmentSource: "auto_dispatch",
         outcome: "no_match",
         reason: timedOut
@@ -2184,7 +2430,7 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
         orderNumber: readyOrder.orderNumber ?? "",
         restaurantId: String(readyOrder.restaurantId ?? ""),
         restaurantName: restaurant?.name ?? "",
-        algorithm: settings.algorithm,
+        algorithm: orderDispatchSettings.algorithm,
         assignmentSource: "auto_dispatch",
         outcome: "skipped",
         selectedRiderId: selectedRider.id,
@@ -2200,7 +2446,7 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
       order: liveOrder,
       riderId: selectedRider.id,
       assignmentSource: "auto_dispatch",
-      algorithm: settings.algorithm,
+      algorithm: orderDispatchSettings.algorithm,
       candidateSnapshot: candidates,
     });
     assigned += 1;
@@ -2228,7 +2474,9 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
 }
 
 async function buildAdminOrderQuery(params: AdminOrderListParams = {}) {
-  const query: Record<string, any> = {};
+  const query: Record<string, any> = {
+    ...buildOrderServiceAreaScopeFilter(params),
+  };
   const dateMatch = buildDateMatch(params);
 
   if (dateMatch) query.createdAt = dateMatch;
@@ -2318,7 +2566,9 @@ async function buildAdminOrderQuery(params: AdminOrderListParams = {}) {
 }
 
 async function buildAdminPaymentQuery(params: AdminPaymentListParams = {}) {
-  const query: Record<string, any> = {};
+  const query: Record<string, any> = {
+    ...buildOrderServiceAreaScopeFilter(params),
+  };
   const dateMatch = buildDateMatch(params);
 
   if (dateMatch) query.createdAt = dateMatch;
@@ -2379,6 +2629,7 @@ async function buildAdminBkashAttemptQuery(
   params: AdminBkashPaymentAttemptListParams = {},
 ) {
   const query: Record<string, any> = {};
+  const serviceAreaFilter = buildOrderServiceAreaScopeFilter(params);
   const dateMatch = buildDateMatch(params);
 
   if (dateMatch) query.createdAt = dateMatch;
@@ -2400,6 +2651,15 @@ async function buildAdminBkashAttemptQuery(
   if (params.orderState === "missing") {
     query.paymentStatus = "paid";
     query.orderFinalizationStatus = { $ne: "finalized" };
+  }
+
+  if (serviceAreaFilter["serviceAreaSnapshot.zoneId"]) {
+    query["checkoutSnapshot.serviceArea.zoneId"] =
+      serviceAreaFilter["serviceAreaSnapshot.zoneId"];
+  }
+  if (serviceAreaFilter["serviceAreaSnapshot.districtId"]) {
+    query["checkoutSnapshot.serviceArea.districtId"] =
+      serviceAreaFilter["serviceAreaSnapshot.districtId"];
   }
 
   const search = params.search?.trim();
@@ -3086,6 +3346,7 @@ export async function listAdminPayments(params: AdminPaymentListParams = {}) {
   const ledgerDateMatch = buildDateMatch(params);
   const ledgerMatch: Record<string, any> = {
     entryType: { $in: ["earning", "refund", "adjustment"] },
+    ...buildOrderServiceAreaScopeFilter(params),
   };
   const ledgerFilterStages: PipelineStage[] = [];
   if (ledgerDateMatch) {
@@ -3723,12 +3984,17 @@ export async function reconcileAdminBkashPaymentAttempt(params: {
 
 export async function listAdminOrdersMonitor(params?: {
   scope?: "all" | "live" | "stale";
+  zoneId?: string;
+  districtId?: string;
 }) {
   const scope = params?.scope ?? "all";
-  return adminOrdersMonitorCache.getOrSet(`orders-monitor:${scope}`, async () => {
+  const serviceAreaFilter = buildOrderServiceAreaScopeFilter(params);
+  const cacheKey = `orders-monitor:${scope}:${params?.zoneId ?? "all"}:${params?.districtId ?? "all"}`;
+  return adminOrdersMonitorCache.getOrSet(cacheKey, async () => {
     const dispatchState = await getAdminDispatchSettings();
 
     const orders = await OrderModel.find({
+      ...serviceAreaFilter,
       status: {
         $in: ["New", "ReadyForPickup", "PickedUp", "Delivered", "Cancelled"],
       },
@@ -4005,7 +4271,9 @@ export async function getAdminOrderMonitorDetails(orderId: string) {
 export async function listAdminRiders(params: AdminRiderListParams = {}) {
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
-  const query: Record<string, unknown> = {};
+  const query: Record<string, any> = {
+    ...buildRiderServiceAreaScopeFilter(params),
+  };
 
   if (params.status && params.status !== "all") {
     query.status = params.status;
@@ -4296,6 +4564,37 @@ export async function listAdminRiders(params: AdminRiderListParams = {}) {
   };
 }
 
+async function buildRiderServiceAreaFromZoneIds(params: {
+  primaryZoneId?: string;
+  assignedZoneIds?: string[];
+}) {
+  const zoneIds = [
+    params.primaryZoneId?.trim() ?? "",
+    ...(params.assignedZoneIds ?? []).map((zoneId) => zoneId.trim()),
+  ].filter(Boolean);
+  const uniqueZoneIds = [...new Set(zoneIds)];
+  if (!uniqueZoneIds.length) return {};
+
+  const zones = await ServiceZoneModel.find({
+    _id: { $in: uniqueZoneIds },
+    status: { $ne: "archived" },
+  }).lean();
+  const zoneMap = new Map(zones.map((zone) => [String(zone._id ?? ""), zone]));
+  const primaryZone = zoneMap.get(params.primaryZoneId?.trim() ?? "") ?? zones[0];
+  const assignedZones = uniqueZoneIds
+    .map((zoneId) => zoneMap.get(zoneId))
+    .filter(Boolean) as Record<string, any>[];
+
+  return {
+    primaryZoneId: primaryZone ? String(primaryZone._id ?? "") : "",
+    primaryZoneName: primaryZone?.name ?? "",
+    assignedZoneIds: assignedZones.map((zone) => String(zone._id ?? "")),
+    assignedZoneNames: assignedZones.map((zone) => String(zone.name ?? "")),
+    districtIds: [...new Set(assignedZones.map((zone) => String(zone.districtId ?? "")))],
+    districtNames: [...new Set(assignedZones.map((zone) => String(zone.districtName ?? "")))],
+  };
+}
+
 export async function createAdminRider(params: {
   fullName: string;
   phone: string;
@@ -4305,6 +4604,8 @@ export async function createAdminRider(params: {
   nationalIdNumber?: string;
   monthlySalary?: number;
   payoutDay?: number;
+  primaryZoneId?: string;
+  assignedZoneIds?: string[];
 }) {
   const fullName = params.fullName.trim();
   const phone = params.phone.trim();
@@ -4328,11 +4629,16 @@ export async function createAdminRider(params: {
 
   const status = params.status ?? "active";
   const verificationStatus = params.verificationStatus ?? "pending";
+  const serviceArea = await buildRiderServiceAreaFromZoneIds({
+    primaryZoneId: params.primaryZoneId,
+    assignedZoneIds: params.assignedZoneIds,
+  });
   const rider = await RiderModel.create({
     fullName,
     phone,
     vehicleType: "cycle",
     status,
+    serviceArea,
     isPhoneVerified: true,
     isAvailableForAssignments:
       status === "active" && verificationStatus === "approved"
@@ -4361,8 +4667,15 @@ export async function createAdminRider(params: {
   return mapAdminRiderSummary(rider.toObject(), emptyRiderStats());
 }
 
-export async function getAdminLiveMap() {
-  return adminLiveMapCache.getOrSet("admin-live-map", async () => {
+export async function getAdminLiveMap(params?: {
+  zoneId?: string;
+  districtId?: string;
+}) {
+  const serviceAreaFilter = buildOrderServiceAreaScopeFilter(params);
+  const restaurantServiceAreaFilter = buildRestaurantServiceAreaScopeFilter(params);
+  const riderServiceAreaFilter = buildRiderServiceAreaScopeFilter(params);
+  const cacheKey = `admin-live-map:${params?.zoneId ?? "all"}:${params?.districtId ?? "all"}`;
+  return adminLiveMapCache.getOrSet(cacheKey, async () => {
   const liveRestaurantOrderStatuses = ["New", "Accepted", "Preparing", "ReadyForPickup", "PickedUp"];
   const activeOrderUpdatedAfter = new Date(
     Date.now() - ADMIN_LIVE_MAP_ACTIVE_ORDER_WINDOW_HOURS * 60 * 60 * 1000,
@@ -4370,13 +4683,14 @@ export async function getAdminLiveMap() {
   const dispatchSettings = getDispatchSettingsFromContent(await getPlatformContent());
   const [activeRidersCount, availableRidersCount, riders, allRestaurants, restaurantLiveOrders] =
     await Promise.all([
-      RiderModel.countDocuments({ status: "active" }),
+      RiderModel.countDocuments({ status: "active", ...riderServiceAreaFilter }),
       RiderModel.countDocuments({
+        ...riderServiceAreaFilter,
         status: "active",
         isAvailableForAssignments: { $ne: false },
         "verification.status": "approved",
       }),
-      RiderModel.find({ status: "active" })
+      RiderModel.find({ status: "active", ...riderServiceAreaFilter })
         .sort({ "lastKnownLocation.updatedAt": -1, lastLoginAt: -1 })
         .limit(100)
         .select({
@@ -4391,7 +4705,7 @@ export async function getAdminLiveMap() {
           lastKnownLocation: 1,
         })
         .lean(),
-      RestaurantModel.find({})
+      RestaurantModel.find({ ...restaurantServiceAreaFilter })
         .sort({ "runtime.isOnline": -1, name: 1 })
         .limit(250)
         .select({
@@ -4405,6 +4719,7 @@ export async function getAdminLiveMap() {
         })
         .lean(),
       OrderModel.find({
+        ...serviceAreaFilter,
         status: { $in: liveRestaurantOrderStatuses },
         $or: [
           { updatedAt: { $gte: activeOrderUpdatedAfter } },
@@ -4427,6 +4742,7 @@ export async function getAdminLiveMap() {
           dispatchMeta: 1,
           preparationMeta: 1,
           riderTracking: 1,
+          serviceAreaSnapshot: 1,
           createdAt: 1,
           updatedAt: 1,
         })
@@ -4905,13 +5221,22 @@ export async function getAdminRiderDetails(riderId: string) {
   };
 }
 
-export async function listAdminRiderPayroll(params: { month?: string } = {}) {
+export async function listAdminRiderPayroll(
+  params: { month?: string; zoneId?: string; districtId?: string } = {},
+) {
   const month = normalizePayrollMonth(params.month);
+  const riderScopeFilter = buildRiderServiceAreaScopeFilter(params);
   const [riders, cycles] = await Promise.all([
-    RiderModel.find().sort({ fullName: 1 }).lean(),
+    RiderModel.find(riderScopeFilter).sort({ fullName: 1 }).lean(),
     RiderPayrollCycleModel.find({ month }).lean(),
   ]);
-  const cycleMap = new Map(cycles.map((cycle) => [String(cycle.riderId ?? ""), cycle]));
+  const riderIds = new Set(riders.map((rider) => String(rider._id ?? "")));
+  const scopedCycles = cycles.filter((cycle) =>
+    riderIds.has(String(cycle.riderId ?? "")),
+  );
+  const cycleMap = new Map(
+    scopedCycles.map((cycle) => [String(cycle.riderId ?? ""), cycle]),
+  );
   const items = riders.map((rider) => {
     const payroll = summarizePayrollCycle(
       rider,
@@ -5104,8 +5429,11 @@ export async function updateAdminRiderPayrollStatus(params: {
   return summarizePayrollCycle(rider, cycle, month);
 }
 
-export async function listAdminRiderAssignmentCandidates() {
+export async function listAdminRiderAssignmentCandidates(
+  params: { zoneId?: string; districtId?: string } = {},
+) {
   const orders = await OrderModel.find({
+    ...buildOrderServiceAreaScopeFilter(params),
     status: "ReadyForPickup",
     $or: [{ riderId: "" }, { riderId: { $exists: false } }],
   })
@@ -5453,6 +5781,7 @@ export async function bulkAssignAdminRidersToOrders(params: {
     const candidates = await listDispatchEligibleRiders({
       restaurant,
       settings,
+      serviceAreaSnapshot: readyOrder.serviceAreaSnapshot,
     });
     const selectedRider = pickBestRiderForOrder({ candidates, settings });
 
@@ -5517,10 +5846,14 @@ export async function bulkAssignAdminRidersToOrders(params: {
   };
 }
 
-export async function listAdminRidersForAssignment() {
+export async function listAdminRidersForAssignment(params?: {
+  zoneId?: string;
+  districtId?: string;
+}) {
   const riders = await RiderModel.find({
     status: "active",
     "verification.status": "approved",
+    ...buildRiderServiceAreaScopeFilter(params),
   })
     .sort({ createdAt: -1 })
     .lean();

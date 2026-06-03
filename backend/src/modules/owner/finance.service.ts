@@ -378,7 +378,8 @@ async function ensureRestaurantEarningLedgerEntries(
       timestamps: 1,
       updatedAt: 1,
       paymentMethod: 1,
-      paymentStatus: 1
+      paymentStatus: 1,
+      serviceAreaSnapshot: 1
     })
     .lean()
   const deliveredOrderIds = deliveredOrders.map((order) => order._id)
@@ -429,6 +430,7 @@ async function ensureRestaurantEarningLedgerEntries(
         platformDiscountCost,
         deliveryCost,
         netAmount,
+        serviceAreaSnapshot: order.serviceAreaSnapshot ?? {},
         settlementStatus,
         availableAt
       })
@@ -447,6 +449,8 @@ async function ensureRestaurantEarningLedgerEntries(
       numberValue(existingLedger.platformDiscountCost) !== platformDiscountCost ||
       numberValue(existingLedger.deliveryCost) !== deliveryCost ||
       numberValue(existingLedger.netAmount) !== netAmount ||
+      JSON.stringify(existingLedger.serviceAreaSnapshot ?? {}) !==
+        JSON.stringify(order.serviceAreaSnapshot ?? {}) ||
       existingLedger.settlementStatus !== settlementStatus ||
       dateTimeValue(existingLedger.availableAt) !== dateTimeValue(availableAt)
 
@@ -458,6 +462,7 @@ async function ensureRestaurantEarningLedgerEntries(
       existingLedger.platformDiscountCost = platformDiscountCost
       existingLedger.deliveryCost = deliveryCost
       existingLedger.netAmount = netAmount
+      existingLedger.serviceAreaSnapshot = order.serviceAreaSnapshot ?? {}
       existingLedger.settlementStatus = settlementStatus
       existingLedger.availableAt = availableAt
       await existingLedger.save()

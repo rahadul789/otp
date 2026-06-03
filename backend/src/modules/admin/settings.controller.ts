@@ -22,9 +22,15 @@ const settingsSchema = z.object({
   }),
 })
 
+const settingsScopeQuerySchema = z.object({
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
+})
+
 export const getAdminSettingsController = asyncHandler(
-  async (_req: Request, res: Response) => {
-    const data = await getAdminPlatformSettings()
+  async (req: Request, res: Response) => {
+    const query = settingsScopeQuerySchema.parse(req.query)
+    const data = await getAdminPlatformSettings(query)
     return sendSuccess(res, { data })
   },
 )
@@ -39,9 +45,12 @@ export const getAdminSmsBalanceController = asyncHandler(
 export const putAdminSettingsController = asyncHandler(
   async (req: AuthenticatedRequest, res: Response) => {
     const payload = settingsSchema.parse(req.body)
+    const query = settingsScopeQuerySchema.parse(req.query)
     const data = await updateAdminPlatformSettings({
       adminId: req.user?.id ?? "",
       settings: payload.settings as AdminPlatformSettings,
+      zoneId: query.zoneId,
+      districtId: query.districtId,
     })
 
     return sendSuccess(res, {

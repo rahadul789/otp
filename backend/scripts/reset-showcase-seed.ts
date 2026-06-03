@@ -18,6 +18,10 @@ import {
   VoucherModel,
 } from "../src/modules/customer/customer.model"
 import { CategoryModel, MenuItemModel } from "../src/modules/owner/operational.model"
+import {
+  ServiceDistrictModel,
+  ServiceZoneModel,
+} from "../src/modules/service-area/service-area.model"
 
 const CENTER = {
   latitude: 24.8765267,
@@ -27,6 +31,128 @@ const CENTER = {
 const DEMO_PASSWORD = "Foodbela@12345"
 const ADMIN_EMAIL = env.ADMIN_BOOTSTRAP_EMAIL
 const ADMIN_PASSWORD = env.ADMIN_BOOTSTRAP_PASSWORD
+const NETROKONA_SADAR_ZONE_SLUG = "netrokona-sadar"
+const KENDUA_ZONE_SLUG = "netrokona-kendua"
+const MOHANGANJ_ZONE_SLUG = "netrokona-mohanganj"
+const DURGAPUR_ZONE_SLUG = "netrokona-durgapur"
+const KISHOREGANJ_SADAR_ZONE_SLUG = "kishoreganj-sadar"
+const DINAJPUR_SADAR_ZONE_SLUG = "dinajpur-sadar"
+
+type Coordinate = {
+  latitude: number
+  longitude: number
+}
+
+const SERVICE_DISTRICT_SEEDS = [
+  {
+    name: "Netrokona",
+    slug: "netrokona",
+    status: "active",
+    country: "Bangladesh",
+    displayOrder: 1,
+    notes: "Primary launch district for Foodbela.",
+  },
+  {
+    name: "Kishoreganj",
+    slug: "kishoreganj",
+    status: "active",
+    country: "Bangladesh",
+    displayOrder: 2,
+    notes: "Expansion district with its own restaurants, riders, and coverage.",
+  },
+  {
+    name: "Dinajpur",
+    slug: "dinajpur",
+    status: "active",
+    country: "Bangladesh",
+    displayOrder: 3,
+    notes: "Expansion district for zone filtering and finance testing.",
+  },
+] as const
+
+const SERVICE_ZONE_SEEDS = [
+  {
+    districtSlug: "netrokona",
+    name: "Netrokona Sadar",
+    slug: NETROKONA_SADAR_ZONE_SLUG,
+    status: "active",
+    center: CENTER,
+    radiusKm: 5.5,
+    priority: 100,
+    displayOrder: 1,
+    baseFeeTaka: 45,
+    rainSurchargeTaka: 20,
+    notes: "Active launch zone. Seed restaurants include inside 3km, 4-5km, and outside coverage examples.",
+  },
+  {
+    districtSlug: "netrokona",
+    name: "Kendua",
+    slug: KENDUA_ZONE_SLUG,
+    status: "active",
+    center: { latitude: 24.7602, longitude: 90.8111 },
+    radiusKm: 4.8,
+    priority: 80,
+    displayOrder: 2,
+    baseFeeTaka: 50,
+    rainSurchargeTaka: 20,
+    notes: "Netrokona expansion zone for Kendua area.",
+  },
+  {
+    districtSlug: "netrokona",
+    name: "Mohanganj",
+    slug: MOHANGANJ_ZONE_SLUG,
+    status: "active",
+    center: { latitude: 24.8756, longitude: 90.9766 },
+    radiusKm: 5,
+    priority: 75,
+    displayOrder: 3,
+    baseFeeTaka: 55,
+    rainSurchargeTaka: 25,
+    notes: "Haor side coverage zone for restaurant/rider assignment testing.",
+  },
+  {
+    districtSlug: "netrokona",
+    name: "Durgapur",
+    slug: DURGAPUR_ZONE_SLUG,
+    status: "active",
+    center: { latitude: 25.1246, longitude: 90.6887 },
+    radiusKm: 5,
+    priority: 70,
+    displayOrder: 4,
+    baseFeeTaka: 60,
+    rainSurchargeTaka: 25,
+    notes: "North Netrokona coverage zone.",
+  },
+  {
+    districtSlug: "kishoreganj",
+    name: "Kishoreganj Sadar",
+    slug: KISHOREGANJ_SADAR_ZONE_SLUG,
+    status: "active",
+    center: { latitude: 24.4336, longitude: 90.7866 },
+    radiusKm: 5,
+    priority: 65,
+    displayOrder: 1,
+    baseFeeTaka: 55,
+    rainSurchargeTaka: 25,
+    notes: "Kishoreganj Sadar active test zone.",
+  },
+  {
+    districtSlug: "dinajpur",
+    name: "Dinajpur Sadar",
+    slug: DINAJPUR_SADAR_ZONE_SLUG,
+    status: "active",
+    center: { latitude: 25.6279, longitude: 88.6332 },
+    radiusKm: 5,
+    priority: 60,
+    displayOrder: 1,
+    baseFeeTaka: 60,
+    rainSurchargeTaka: 30,
+    notes: "Dinajpur Sadar active test zone.",
+  },
+] as const
+
+const SERVICE_DISTRICT_SLUGS = SERVICE_DISTRICT_SEEDS.map((district) => district.slug)
+const SERVICE_ZONE_SLUGS = SERVICE_ZONE_SEEDS.map((zone) => zone.slug)
 
 const image = (photoId: string, width = 1200) =>
   `https://images.unsplash.com/${photoId}?auto=format&fit=crop&w=${width}&q=80`
@@ -49,6 +175,8 @@ type SeedCategory = {
 type SeedRestaurant = {
   name: string
   description: string
+  zoneSlug?: string
+  city?: string
   distanceKm: number
   bearingDeg: number
   cuisines: string[]
@@ -62,6 +190,13 @@ type SeedRestaurant = {
   ownerPhone: string
   ownerEmail: string
   categories: SeedCategory[]
+}
+
+type SeedServiceAreas = {
+  netrokonaDistrict: mongoose.Document
+  netrokonaSadarZone: mongoose.Document
+  districtsBySlug: Map<string, mongoose.Document>
+  zonesBySlug: Map<string, mongoose.Document>
 }
 
 function assertResetAllowed() {
@@ -91,11 +226,11 @@ function assertResetAllowed() {
   }
 }
 
-function pointFromCenter(distanceKm: number, bearingDeg: number) {
+function pointFromCoordinate(center: Coordinate, distanceKm: number, bearingDeg: number) {
   const earthRadiusKm = 6371
   const bearing = (bearingDeg * Math.PI) / 180
-  const lat1 = (CENTER.latitude * Math.PI) / 180
-  const lon1 = (CENTER.longitude * Math.PI) / 180
+  const lat1 = (center.latitude * Math.PI) / 180
+  const lon1 = (center.longitude * Math.PI) / 180
   const angularDistance = distanceKm / earthRadiusKm
 
   const lat2 = Math.asin(
@@ -113,6 +248,10 @@ function pointFromCenter(distanceKm: number, bearingDeg: number) {
     latitude: Number(((lat2 * 180) / Math.PI).toFixed(7)),
     longitude: Number(((lon2 * 180) / Math.PI).toFixed(7)),
   }
+}
+
+function pointFromCenter(distanceKm: number, bearingDeg: number) {
+  return pointFromCoordinate(CENTER, distanceKm, bearingDeg)
 }
 
 function createDefaultWeeklySchedule() {
@@ -862,12 +1001,252 @@ const restaurantSeeds: SeedRestaurant[] = [
   },
 ]
 
+function expansionCategories(primaryName: string, heroItem: string, sideItem: string, imageId: string): SeedCategory[] {
+  return [
+    {
+      name: primaryName,
+      description: "Best sellers for this service area.",
+      items: [
+        {
+          name: heroItem,
+          description: "Freshly prepared local favourite for daily orders.",
+          price: 260,
+          image: image(imageId),
+          popular: true,
+          variant: true,
+        },
+        {
+          name: sideItem,
+          description: "A simple add-on that works well with the main meal.",
+          price: 160,
+          image: image("photo-1540189549336-e6e99c3679fe"),
+        },
+      ],
+    },
+    {
+      name: "Drinks & Extras",
+      description: "Small extras for checkout testing.",
+      items: [
+        {
+          name: "Fresh Lemon Drink",
+          description: "Cold lemon drink with light sweetness.",
+          price: 80,
+          image: image("photo-1621263764928-df1444c5e859"),
+        },
+        {
+          name: "House Dessert Cup",
+          description: "Small sweet cup after the meal.",
+          price: 120,
+          image: image("photo-1551024506-0bccd828d307"),
+        },
+      ],
+    },
+  ]
+}
+
+const expansionRestaurantSeeds: SeedRestaurant[] = [
+  {
+    name: "Kendua Fresh Kitchen",
+    description: "Rice meals, chicken curry and local lunch plates in Kendua.",
+    zoneSlug: KENDUA_ZONE_SLUG,
+    city: "Kendua",
+    distanceKm: 0.7,
+    bearingDeg: 80,
+    cuisines: ["Bangla", "Lunch", "Chicken"],
+    tags: ["kendua", "lunch", "local"],
+    coverImage: image("photo-1562967916-eb82221dfb36"),
+    logoImage: image("photo-1604908176997-125f25cc6f3d", 600),
+    preparationTimeMinutes: 24,
+    featuredPosition: 11,
+    phone: "01793000101",
+    ownerName: "Morshed Alam",
+    ownerPhone: "01792000101",
+    ownerEmail: "owner.kendua.kitchen@foodbela.test",
+    categories: expansionCategories("Rice Plates", "Kendua Chicken Rice", "Dal Bhorta Bowl", "photo-1562967916-eb82221dfb36"),
+  },
+  {
+    name: "Kendua Sweets & Snacks",
+    description: "Mishti, rolls, tea and evening snacks for Kendua customers.",
+    zoneSlug: KENDUA_ZONE_SLUG,
+    city: "Kendua",
+    distanceKm: 2.2,
+    bearingDeg: 210,
+    cuisines: ["Sweets", "Snacks", "Tea"],
+    tags: ["kendua", "snacks", "evening"],
+    coverImage: image("photo-1551024506-0bccd828d307"),
+    logoImage: image("photo-1578985545062-69928b1d9587", 600),
+    preparationTimeMinutes: 16,
+    featuredPosition: 12,
+    phone: "01793000102",
+    ownerName: "Rumana Akter",
+    ownerPhone: "01792000102",
+    ownerEmail: "owner.kendua.sweets@foodbela.test",
+    categories: expansionCategories("Sweets & Rolls", "Roshmalai Snack Box", "Chicken Mini Roll", "photo-1551024506-0bccd828d307"),
+  },
+  {
+    name: "Mohanganj Haor Fish House",
+    description: "Fresh fish meals and haor-style curry near Mohanganj.",
+    zoneSlug: MOHANGANJ_ZONE_SLUG,
+    city: "Mohanganj",
+    distanceKm: 1.1,
+    bearingDeg: 35,
+    cuisines: ["Fish", "Bangla", "Rice"],
+    tags: ["mohanganj", "fish", "haor"],
+    coverImage: image("photo-1615141982883-c7ad0e69fd62"),
+    logoImage: image("photo-1604908176997-125f25cc6f3d", 600),
+    preparationTimeMinutes: 28,
+    featuredPosition: 13,
+    phone: "01793000103",
+    ownerName: "Abdul Hakim",
+    ownerPhone: "01792000103",
+    ownerEmail: "owner.mohanganj.fish@foodbela.test",
+    categories: expansionCategories("Fish Meals", "Haor Fish Rice Plate", "Prawn Bhuna Cup", "photo-1615141982883-c7ad0e69fd62"),
+  },
+  {
+    name: "Mohanganj Tea & Grill",
+    description: "Quick grilled snacks, tea and wraps for rider dispatch testing.",
+    zoneSlug: MOHANGANJ_ZONE_SLUG,
+    city: "Mohanganj",
+    distanceKm: 3.7,
+    bearingDeg: 160,
+    cuisines: ["Grill", "Tea", "Wraps"],
+    tags: ["mohanganj", "grill", "tea"],
+    coverImage: image("photo-1529193591184-b1d58069ecdd"),
+    logoImage: image("photo-1571934811356-5cc061b6821f", 600),
+    preparationTimeMinutes: 20,
+    featuredPosition: 14,
+    phone: "01793000104",
+    ownerName: "Nahid Islam",
+    ownerPhone: "01792000104",
+    ownerEmail: "owner.mohanganj.grill@foodbela.test",
+    categories: expansionCategories("Grill Snacks", "Tea Grill Wrap", "Masala Fries", "photo-1529193591184-b1d58069ecdd"),
+  },
+  {
+    name: "Durgapur Hill View Cafe",
+    description: "Coffee, sandwiches and bakery items for the Durgapur zone.",
+    zoneSlug: DURGAPUR_ZONE_SLUG,
+    city: "Durgapur",
+    distanceKm: 1.6,
+    bearingDeg: 250,
+    cuisines: ["Cafe", "Bakery", "Coffee"],
+    tags: ["durgapur", "cafe", "bakery"],
+    coverImage: image("photo-1554118811-1e0d58224f24"),
+    logoImage: image("photo-1509042239860-f550ce710b93", 600),
+    preparationTimeMinutes: 18,
+    featuredPosition: 15,
+    phone: "01793000105",
+    ownerName: "Faria Sultana",
+    ownerPhone: "01792000105",
+    ownerEmail: "owner.durgapur.cafe@foodbela.test",
+    categories: expansionCategories("Cafe Plates", "Chicken Sandwich Combo", "Chocolate Cake Cup", "photo-1554118811-1e0d58224f24"),
+  },
+  {
+    name: "Durgapur Local Bites",
+    description: "Local snacks, rolls and small meals around Durgapur market.",
+    zoneSlug: DURGAPUR_ZONE_SLUG,
+    city: "Durgapur",
+    distanceKm: 4.4,
+    bearingDeg: 20,
+    cuisines: ["Snacks", "Rolls", "Bangla"],
+    tags: ["durgapur", "market", "snacks"],
+    coverImage: image("photo-1601050690597-df0568f70950"),
+    logoImage: image("photo-1626700051175-6818013e1d4f", 600),
+    preparationTimeMinutes: 15,
+    featuredPosition: 16,
+    phone: "01793000106",
+    ownerName: "Rubel Miah",
+    ownerPhone: "01792000106",
+    ownerEmail: "owner.durgapur.bites@foodbela.test",
+    categories: expansionCategories("Street Bites", "Durgapur Fuchka Box", "Egg Cheese Roll", "photo-1601050690597-df0568f70950"),
+  },
+  {
+    name: "Kishoreganj Royal Biryani",
+    description: "Biryani, roast and kebab meals in Kishoreganj Sadar.",
+    zoneSlug: KISHOREGANJ_SADAR_ZONE_SLUG,
+    city: "Kishoreganj",
+    distanceKm: 0.8,
+    bearingDeg: 105,
+    cuisines: ["Biryani", "Kebab", "Roast"],
+    tags: ["kishoreganj", "biryani", "premium"],
+    coverImage: image("photo-1563379091339-03246963d4f6"),
+    logoImage: image("photo-1604908176997-125f25cc6f3d", 600),
+    preparationTimeMinutes: 30,
+    featuredPosition: 17,
+    phone: "01793000107",
+    ownerName: "Sakib Mahmud",
+    ownerPhone: "01792000107",
+    ownerEmail: "owner.kishoreganj.biryani@foodbela.test",
+    categories: expansionCategories("Biryani & Roast", "Royal Kacchi Box", "Chicken Roast Piece", "photo-1563379091339-03246963d4f6"),
+  },
+  {
+    name: "Kishoreganj Cafe Corner",
+    description: "Cafe food, pasta, drinks and desserts for Kishoreganj.",
+    zoneSlug: KISHOREGANJ_SADAR_ZONE_SLUG,
+    city: "Kishoreganj",
+    distanceKm: 3.2,
+    bearingDeg: 270,
+    cuisines: ["Cafe", "Pasta", "Dessert"],
+    tags: ["kishoreganj", "cafe", "dessert"],
+    coverImage: image("photo-1554118811-1e0d58224f24"),
+    logoImage: image("photo-1509042239860-f550ce710b93", 600),
+    preparationTimeMinutes: 22,
+    featuredPosition: 18,
+    phone: "01793000108",
+    ownerName: "Nusrat Jahan",
+    ownerPhone: "01792000108",
+    ownerEmail: "owner.kishoreganj.cafe@foodbela.test",
+    categories: expansionCategories("Cafe Mains", "Creamy Pasta Bowl", "Cold Coffee Cup", "photo-1554118811-1e0d58224f24"),
+  },
+  {
+    name: "Dinajpur Rice & Roast",
+    description: "Rice plates, roast and family meal boxes in Dinajpur Sadar.",
+    zoneSlug: DINAJPUR_SADAR_ZONE_SLUG,
+    city: "Dinajpur",
+    distanceKm: 1.4,
+    bearingDeg: 45,
+    cuisines: ["Bangla", "Roast", "Rice"],
+    tags: ["dinajpur", "rice", "roast"],
+    coverImage: image("photo-1562967916-eb82221dfb36"),
+    logoImage: image("photo-1555939594-58d7cb561ad1", 600),
+    preparationTimeMinutes: 26,
+    featuredPosition: 19,
+    phone: "01793000109",
+    ownerName: "Arman Hossain",
+    ownerPhone: "01792000109",
+    ownerEmail: "owner.dinajpur.rice@foodbela.test",
+    categories: expansionCategories("Rice & Roast", "Dinajpur Roast Rice", "Family Dal Pack", "photo-1562967916-eb82221dfb36"),
+  },
+  {
+    name: "Dinajpur Pizza Point",
+    description: "Pizza, pasta and quick western snacks for Dinajpur customers.",
+    zoneSlug: DINAJPUR_SADAR_ZONE_SLUG,
+    city: "Dinajpur",
+    distanceKm: 3.9,
+    bearingDeg: 190,
+    cuisines: ["Pizza", "Pasta", "Fast Food"],
+    tags: ["dinajpur", "pizza", "fast-food"],
+    coverImage: image("photo-1565299624946-b28f40a0ae38"),
+    logoImage: image("photo-1513104890138-7c749659a591", 600),
+    preparationTimeMinutes: 25,
+    featuredPosition: 20,
+    phone: "01793000110",
+    ownerName: "Mehedi Hasan",
+    ownerPhone: "01792000110",
+    ownerEmail: "owner.dinajpur.pizza@foodbela.test",
+    categories: expansionCategories("Pizza & Pasta", "Chicken Cheese Pizza", "Garlic Bread Bites", "photo-1565299624946-b28f40a0ae38"),
+  },
+]
+
+const allRestaurantSeeds = [...restaurantSeeds, ...expansionRestaurantSeeds]
+
 async function syncCoreIndexes() {
   await Promise.all([
     AdminModel.syncIndexes(),
     OwnerModel.syncIndexes(),
     RiderModel.syncIndexes(),
     RestaurantModel.syncIndexes(),
+    ServiceDistrictModel.syncIndexes(),
+    ServiceZoneModel.syncIndexes(),
     OpeningHoursModel.syncIndexes(),
     PayoutMethodModel.syncIndexes(),
     CategoryModel.syncIndexes(),
@@ -892,7 +1271,96 @@ async function seedAdmin() {
   )
 }
 
-async function seedRestaurant(seed: SeedRestaurant, passwordHash: string, index: number) {
+function buildServiceAreaSnapshot(zone: mongoose.Document) {
+  const zoneObject = zone.toObject() as Record<string, any>
+  return {
+    districtId: String(zoneObject.districtId ?? ""),
+    districtName: String(zoneObject.districtName ?? ""),
+    zoneId: String(zoneObject._id ?? ""),
+    zoneName: String(zoneObject.name ?? ""),
+    zoneSlug: String(zoneObject.slug ?? ""),
+    center: zoneObject.center ?? null,
+    radiusKm: Number(zoneObject.radiusKm ?? 0),
+    delivery: zoneObject.delivery ?? {},
+    dispatch: zoneObject.dispatch ?? {},
+  }
+}
+
+async function seedServiceAreas(): Promise<SeedServiceAreas> {
+  const districtDocs = await ServiceDistrictModel.create(SERVICE_DISTRICT_SEEDS)
+  const districtsBySlug = new Map(
+    districtDocs.map((district) => [
+      String((district.toObject() as Record<string, any>).slug),
+      district,
+    ]),
+  )
+  const zoneDocs = await ServiceZoneModel.create(
+    SERVICE_ZONE_SEEDS.map((zone) => {
+      const district = districtsBySlug.get(zone.districtSlug)
+      if (!district) {
+        throw new Error(`Missing district for zone ${zone.slug}`)
+      }
+      const districtObject = district.toObject() as Record<string, any>
+      return {
+        districtId: district._id,
+        districtName: String(districtObject.name ?? ""),
+        name: zone.name,
+        slug: zone.slug,
+        status: zone.status,
+        center: zone.center,
+        radiusKm: zone.radiusKm,
+        priority: zone.priority,
+        displayOrder: zone.displayOrder,
+        delivery: {
+          baseFeeTaka: zone.baseFeeTaka,
+          distanceSurchargeEnabled: true,
+          surchargeStartsAfterKm: 2,
+          surchargeStepMeters: 1000,
+          surchargeAmountTaka: 10,
+          maxRestaurantDistanceKm: Math.max(zone.radiusKm + 1.5, 6),
+          rainSurchargeEnabled: false,
+          rainSurchargeTaka: zone.rainSurchargeTaka,
+        },
+        dispatch: {
+          autoAssignEnabled: true,
+          dispatchMode: "fleet",
+          primaryRiderId: "",
+          primaryRiderFallbackEnabled: true,
+          algorithm: "nearest_eligible_balanced",
+          maxActiveOrdersPerRiderOverride: null,
+          staleLocationCutoffMinutes: 20,
+          retryCooldownMinutes: 3,
+        },
+        notes: zone.notes,
+      }
+    }),
+  )
+  const zonesBySlug = new Map(
+    zoneDocs.map((zone) => [
+      String((zone.toObject() as Record<string, any>).slug),
+      zone,
+    ]),
+  )
+  const netrokonaDistrict = districtsBySlug.get("netrokona")
+  const netrokonaSadarZone = zonesBySlug.get(NETROKONA_SADAR_ZONE_SLUG)
+  if (!netrokonaDistrict || !netrokonaSadarZone) {
+    throw new Error("Showcase service area seed failed to create Netrokona Sadar.")
+  }
+
+  return {
+    netrokonaDistrict,
+    netrokonaSadarZone,
+    districtsBySlug,
+    zonesBySlug,
+  }
+}
+
+async function seedRestaurant(
+  seed: SeedRestaurant,
+  passwordHash: string,
+  index: number,
+  serviceAreas: SeedServiceAreas,
+) {
   const owner = await OwnerModel.create({
     fullName: seed.ownerName,
     phone: seed.ownerPhone,
@@ -904,7 +1372,18 @@ async function seedRestaurant(seed: SeedRestaurant, passwordHash: string, index:
   })
 
   const slug = slugify(seed.name)
-  const location = pointFromCenter(seed.distanceKm, seed.bearingDeg)
+  const zone =
+    serviceAreas.zonesBySlug.get(seed.zoneSlug ?? NETROKONA_SADAR_ZONE_SLUG) ??
+    serviceAreas.netrokonaSadarZone
+  const zoneObject = zone.toObject() as Record<string, any>
+  const zoneCenter = (zoneObject.center ?? CENTER) as Coordinate
+  const zoneRadiusKm = Number(zoneObject.radiusKm ?? 0)
+  const location = pointFromCoordinate(zoneCenter, seed.distanceKm, seed.bearingDeg)
+  const serviceArea =
+    seed.distanceKm <= zoneRadiusKm
+      ? buildServiceAreaSnapshot(zone)
+      : {}
+  const city = seed.city ?? String(zoneObject.districtName ?? "Netrokona")
   const restaurant = await RestaurantModel.create({
     ownerId: owner._id,
     name: seed.name,
@@ -920,14 +1399,15 @@ async function seedRestaurant(seed: SeedRestaurant, passwordHash: string, index:
       email: seed.ownerEmail,
     },
     address: {
-      address: `${seed.name} Road ${index + 1}, Netrokona Sadar`,
-      city: "Netrokona",
+      address: `${seed.name} Road ${index + 1}, ${city}`,
+      city,
     },
     location,
     locationPoint: {
       type: "Point",
       coordinates: [location.longitude, location.latitude],
     },
+    serviceArea,
     runtime: {
       isVisible: true,
       isOnline: true,
@@ -1186,17 +1666,67 @@ async function seedOffers(adminId: string, restaurants: Array<{ restaurant: mong
   ])
 }
 
-async function seedRiders(passwordHash: string) {
-  const riderSeeds = [
-    { fullName: "Rider Arif", phone: "01794000001", distanceKm: 0.4, bearingDeg: 20 },
-    { fullName: "Rider Hasan", phone: "01794000002", distanceKm: 1.2, bearingDeg: 145 },
-    { fullName: "Rider Bijoy", phone: "01794000003", distanceKm: 2.6, bearingDeg: 285 },
-    { fullName: "Rider Nayeem", phone: "01794000004", distanceKm: 4.2, bearingDeg: 35 },
+function demoRiderPhone(index: number) {
+  return `01794${String(index + 1).padStart(6, "0")}`
+}
+
+function demoCustomerPhone(index: number) {
+  return `01795${String(index + 1).padStart(6, "0")}`
+}
+
+async function seedRiders(passwordHash: string, serviceAreas: SeedServiceAreas) {
+  const riderNames = [
+    "Arif",
+    "Hasan",
+    "Bijoy",
+    "Nayeem",
+    "Sajib",
+    "Ratul",
+    "Farhan",
+    "Milon",
+    "Sohan",
+    "Rony",
+    "Parvez",
+    "Mamun",
   ]
+  const riderSeeds = SERVICE_ZONE_SEEDS.flatMap((zoneSeed, zoneIndex) => {
+    const zone = serviceAreas.zonesBySlug.get(zoneSeed.slug)
+    const district = serviceAreas.districtsBySlug.get(zoneSeed.districtSlug)
+    if (!zone || !district) {
+      throw new Error(`Missing rider service area for ${zoneSeed.slug}`)
+    }
+    const zoneObject = zone.toObject() as Record<string, any>
+    const districtObject = district.toObject() as Record<string, any>
+    const center = (zoneObject.center ?? CENTER) as Coordinate
+    const serviceArea = {
+      primaryZoneId: String(zone._id),
+      primaryZoneName: String(zoneObject.name ?? zoneSeed.name),
+      assignedZoneIds: [String(zone._id)],
+      assignedZoneNames: [String(zoneObject.name ?? zoneSeed.name)],
+      districtIds: [String(district._id)],
+      districtNames: [String(districtObject.name ?? "")],
+    }
+
+    return [0, 1].map((slot) => {
+      const index = zoneIndex * 2 + slot
+      return {
+        fullName: `${zoneSeed.name} Rider ${riderNames[index] ?? index + 1}`,
+        phone: demoRiderPhone(index),
+        zoneCenter: center,
+        serviceArea,
+        distanceKm: slot === 0 ? 0.6 : 2.4,
+        bearingDeg: slot === 0 ? 25 + zoneIndex * 20 : 180 + zoneIndex * 15,
+      }
+    })
+  })
 
   return RiderModel.create(
     riderSeeds.map((rider) => {
-      const location = pointFromCenter(rider.distanceKm, rider.bearingDeg)
+      const location = pointFromCoordinate(
+        rider.zoneCenter,
+        rider.distanceKm,
+        rider.bearingDeg,
+      )
       return {
         fullName: rider.fullName,
         phone: rider.phone,
@@ -1204,6 +1734,7 @@ async function seedRiders(passwordHash: string) {
         vehicleType: "cycle",
         activeTrackingOrderId: "",
         isAvailableForAssignments: true,
+        serviceArea: rider.serviceArea,
         lastKnownLocation: {
           ...location,
           heading: rider.bearingDeg,
@@ -1234,12 +1765,19 @@ async function seedRiders(passwordHash: string) {
   )
 }
 
-async function seedCustomers(passwordHash: string) {
-  return CustomerModel.create([
-    {
-      fullName: "Demo Customer One",
-      phone: "01795000001",
-      email: "customer.one@foodbela.test",
+async function seedCustomers(passwordHash: string, serviceAreas: SeedServiceAreas) {
+  const customerSeeds = SERVICE_ZONE_SEEDS.map((zoneSeed, index) => {
+    const zone = serviceAreas.zonesBySlug.get(zoneSeed.slug)
+    if (!zone) {
+      throw new Error(`Missing customer service area for ${zoneSeed.slug}`)
+    }
+    const zoneObject = zone.toObject() as Record<string, any>
+    const center = (zoneObject.center ?? CENTER) as Coordinate
+    const location = pointFromCoordinate(center, 1 + (index % 3) * 0.8, 90 + index * 35)
+    return {
+      fullName: `${zoneSeed.name} Demo Customer`,
+      phone: demoCustomerPhone(index),
+      email: `customer.${zoneSeed.slug}@foodbela.test`,
       passwordHash,
       authProviders: ["phone"],
       status: "active",
@@ -1247,41 +1785,31 @@ async function seedCustomers(passwordHash: string) {
       savedLocations: [
         {
           label: "Home",
-          address: "Demo Home, Netrokona Sadar",
-          latitude: CENTER.latitude,
-          longitude: CENTER.longitude,
+          address: `Demo Home, ${zoneSeed.name}`,
+          latitude: location.latitude,
+          longitude: location.longitude,
           source: "saved",
           isDefault: true,
           lastUsedAt: new Date(),
         },
       ],
-    },
-    {
-      fullName: "Demo Customer Two",
-      phone: "01795000002",
-      email: "customer.two@foodbela.test",
-      passwordHash,
-      authProviders: ["phone"],
-      status: "active",
-      favoriteRestaurantIds: [],
-      savedLocations: [
-        {
-          label: "Office",
-          address: "Demo Office, Netrokona Sadar",
-          latitude: pointFromCenter(1.1, 95).latitude,
-          longitude: pointFromCenter(1.1, 95).longitude,
-          source: "saved",
-          isDefault: true,
-          lastUsedAt: new Date(),
-        },
-      ],
-    },
-  ])
+    }
+  })
+
+  return CustomerModel.create(customerSeeds)
 }
 
 async function clearShowcaseData() {
-  const ownerPhones = restaurantSeeds.map((seed) => seed.ownerPhone)
-  const restaurantSlugs = restaurantSeeds.map((seed) => slugify(seed.name))
+  const ownerPhones = allRestaurantSeeds.map((seed) => seed.ownerPhone)
+  const restaurantSlugs = allRestaurantSeeds.map((seed) => slugify(seed.name))
+  const riderPhones = Array.from(
+    { length: SERVICE_ZONE_SEEDS.length * 2 },
+    (_, index) => demoRiderPhone(index),
+  )
+  const customerPhones = Array.from(
+    { length: SERVICE_ZONE_SEEDS.length },
+    (_, index) => demoCustomerPhone(index),
+  )
   const collectionKeys = [
     "featured_restaurants",
     "inside_3km_showcase",
@@ -1316,15 +1844,19 @@ async function clearShowcaseData() {
       ? RestaurantModel.deleteMany({ _id: { $in: restaurantIds } })
       : Promise.resolve(),
     OwnerModel.deleteMany({ phone: { $in: ownerPhones } }),
-    RiderModel.deleteMany({
-      phone: { $in: ["01794000001", "01794000002", "01794000003", "01794000004"] },
-    }),
-    CustomerModel.deleteMany({
-      phone: { $in: ["01795000001", "01795000002"] },
-    }),
+    RiderModel.deleteMany({ phone: { $in: riderPhones } }),
+    CustomerModel.deleteMany({ phone: { $in: customerPhones } }),
     RestaurantCollectionModel.deleteMany({ key: { $in: collectionKeys } }),
     VoucherModel.deleteMany({
       name: { $in: ["Launch 15% Off", "Free Delivery Showcase"] },
+    }),
+    ServiceZoneModel.deleteMany({
+      slug: {
+        $in: SERVICE_ZONE_SLUGS,
+      },
+    }),
+    ServiceDistrictModel.deleteMany({
+      slug: { $in: SERVICE_DISTRICT_SLUGS },
     }),
   ])
 }
@@ -1332,17 +1864,20 @@ async function clearShowcaseData() {
 async function seedShowcaseData(mode: "reset" | "seed-only") {
   const passwordHash = await hashPassword(DEMO_PASSWORD)
   const admin = await seedAdmin()
+  const serviceAreas = await seedServiceAreas()
   const restaurants = []
 
-  for (let index = 0; index < restaurantSeeds.length; index += 1) {
-    restaurants.push(await seedRestaurant(restaurantSeeds[index], passwordHash, index))
+  for (let index = 0; index < allRestaurantSeeds.length; index += 1) {
+    restaurants.push(
+      await seedRestaurant(allRestaurantSeeds[index], passwordHash, index, serviceAreas),
+    )
   }
 
   await Promise.all([
     seedCollections(restaurants),
     seedOffers(admin.id, restaurants),
-    seedRiders(passwordHash),
-    seedCustomers(passwordHash),
+    seedRiders(passwordHash, serviceAreas),
+    seedCustomers(passwordHash, serviceAreas),
   ])
 
   await syncCoreIndexes()
@@ -1356,12 +1891,19 @@ async function seedShowcaseData(mode: "reset" | "seed-only") {
   console.log(`Admin: ${ADMIN_EMAIL}`)
   console.log(`Admin password: ${ADMIN_PASSWORD}`)
   console.log(`Owner/rider/customer demo password: ${DEMO_PASSWORD}`)
-  console.log("Owner phones:", restaurantSeeds.map((seed) => seed.ownerPhone).join(", "))
-  console.log("Rider phones: 01794000001, 01794000002, 01794000003, 01794000004")
-  console.log("Customer phones: 01795000001, 01795000002")
+  console.log("Owner phones:", allRestaurantSeeds.map((seed) => seed.ownerPhone).join(", "))
+  console.log(
+    "Rider phones:",
+    Array.from({ length: SERVICE_ZONE_SEEDS.length * 2 }, (_, index) => demoRiderPhone(index)).join(", "),
+  )
+  console.log(
+    "Customer phones:",
+    Array.from({ length: SERVICE_ZONE_SEEDS.length }, (_, index) => demoCustomerPhone(index)).join(", "),
+  )
   console.table(
-    restaurantSeeds.map((seed) => ({
+    allRestaurantSeeds.map((seed) => ({
       restaurant: seed.name,
+      zone: seed.zoneSlug ?? NETROKONA_SADAR_ZONE_SLUG,
       distanceKm: seed.distanceKm,
       ownerPhone: seed.ownerPhone,
       phone: seed.phone,

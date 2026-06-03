@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -67,8 +67,13 @@ function getBannerEmoji(banner: {
   return getFallbackBannerEmoji(text, banner.tone);
 }
 
+function isOrderRoute(path: string) {
+  return /^\/orders\/[A-Za-z0-9_-]+(?:\/tracking)?$/.test(path);
+}
+
 export function AppBannerHost() {
   const router = useRouter();
+  const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const banner = useAppBannerStore((state) => state.banner);
   const dismissBanner = useAppBannerStore((state) => state.dismissBanner);
@@ -119,6 +124,10 @@ export function AppBannerHost() {
     dismissBanner();
 
     if (nextPath) {
+      if (isOrderRoute(pathname) && isOrderRoute(nextPath)) {
+        router.replace(nextPath as never);
+        return;
+      }
       router.push(nextPath as never);
     }
   };

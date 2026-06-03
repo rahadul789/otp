@@ -18,6 +18,7 @@ import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 import { toast } from "sonner"
 
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import { getAdminZoneScope, subscribeAdminZoneScope } from "@/lib/admin-zone-scope"
 import {
   archiveAdminVoucher,
   createAdminVoucher,
@@ -545,6 +546,7 @@ function VoucherFormSheet({
     getInitialForm(restaurants)
   )
   const [errors, setErrors] = React.useState<Record<string, string>>({})
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() => getAdminZoneScope())
   const targetsQuery = useQuery({
     queryKey: ["admin-restaurant-promotion-targets", form.restaurantId],
     queryFn: () => getAdminRestaurantPromotionTargets(form.restaurantId),
@@ -610,6 +612,8 @@ function VoucherFormSheet({
     setForm(voucher ? getFormFromVoucher(voucher) : getInitialForm(restaurants))
     setErrors({})
   }, [open, restaurants, voucher])
+
+  React.useEffect(() => subscribeAdminZoneScope(() => setAdminZoneScope(getAdminZoneScope())), [])
 
   function update<K extends keyof VoucherFormState>(
     key: K,
@@ -739,7 +743,12 @@ function VoucherFormSheet({
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
     if (!validate()) return
-    onSubmit(toPayload(form, !voucher))
+    const payload = toPayload(form, !voucher)
+    if (!voucher && adminZoneScope.type !== "all" && form.scopeType === "all_restaurants") {
+      payload.scopeType = "selected_restaurants"
+      payload.selectedRestaurantIds = restaurants.map((restaurant) => restaurant.id)
+    }
+    onSubmit(payload)
   }
 
   return (
@@ -758,6 +767,12 @@ function VoucherFormSheet({
             <div className="grid gap-5 lg:grid-cols-2">
               <div className="space-y-2 lg:col-span-2">
                 <Label>Campaign scope</Label>
+                <div className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  Area zone: <span className="font-medium text-foreground">{adminZoneScope.label}</span>.
+                  {adminZoneScope.type === "all"
+                    ? " All restaurant targets are available."
+                    : " Restaurant and user targets are limited to this selected area."}
+                </div>
                 <Select
                   value={form.scopeType}
                   disabled={Boolean(voucher)}
@@ -781,7 +796,7 @@ function VoucherFormSheet({
                       Selected restaurants
                     </SelectItem>
                     <SelectItem value="all_restaurants">
-                      All restaurants
+                      {adminZoneScope.type === "all" ? "All restaurants" : "All restaurants in selected area"}
                     </SelectItem>
                   </SelectContent>
                 </Select>

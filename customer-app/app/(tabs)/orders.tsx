@@ -337,6 +337,7 @@ export default function OrdersScreen() {
               <OrderCard
                 key={order._id}
                 order={order}
+                compact
                 reorderPending={reorderMutation.isPending && reorderMutation.variables?.order._id === order._id}
                 onReorderPress={
                   order.status === "Delivered"
@@ -439,11 +440,13 @@ function OrderCard({
   onPress,
   onReorderPress,
   reorderPending,
+  compact = false,
 }: {
   order: CustomerOrderSummary;
   onPress: () => void;
   onReorderPress?: () => void;
   reorderPending?: boolean;
+  compact?: boolean;
 }) {
   const isActive = isActiveStatus(order.status);
   const isCancelled = isCancelledStatus(order.status);
@@ -510,6 +513,75 @@ function OrderCard({
             <Text style={styles.orderAddress} numberOfLines={1}>
               {deliveryAddress}
             </Text>
+          </View>
+        </View>
+      </Pressable>
+    );
+  }
+
+  if (compact) {
+    const itemCount = order.itemsSnapshot?.length ?? 0;
+    const previewItems = (order.itemsSnapshot ?? []).slice(0, 2);
+    const remainingItemCount = Math.max(itemCount - previewItems.length, 0);
+
+    return (
+      <Pressable style={[styles.orderCard, styles.orderCardCompact]} onPress={onPress}>
+        <View style={styles.orderTopRow}>
+          <View style={styles.orderCopy}>
+            <Text style={styles.orderIdCompact} numberOfLines={1}>
+              {formatShortOrderIdLabel(order.orderNumber)}
+            </Text>
+            <Text style={styles.orderMeta}>
+              {formatDateTime(order.createdAt)} - {itemCount} item{itemCount === 1 ? "" : "s"}
+            </Text>
+          </View>
+          <View style={[styles.statusPill, { backgroundColor: statusMeta.background }]}>
+            <Ionicons name={statusMeta.icon} size={13} color={statusMeta.color} />
+            <Text style={[styles.statusPillText, { color: statusMeta.color }]}>
+              {statusMeta.label}
+            </Text>
+          </View>
+        </View>
+
+        {order.status === "Delivered" && previewItems.length > 0 ? (
+          <View style={styles.compactHistoryItems}>
+            {previewItems.map((item, index) => (
+              <Text key={`${item.itemId ?? item.name ?? "item"}-${index}`} style={styles.compactHistoryItemText} numberOfLines={1}>
+                {item.quantity ?? 1}x {item.name ?? "Food item"}
+              </Text>
+            ))}
+            {remainingItemCount > 0 ? (
+              <Text style={styles.compactHistoryMoreText}>+{remainingItemCount} more</Text>
+            ) : null}
+          </View>
+        ) : null}
+
+        <View style={styles.compactHistoryBottomRow}>
+          <Text style={styles.orderTotal}>
+            {formatCurrency(order.pricing?.total ?? 0)}
+          </Text>
+          <View style={styles.compactHistoryActions}>
+            {order.status === "Delivered" && onReorderPress ? (
+              <Pressable
+                style={[
+                  styles.reorderButton,
+                  styles.reorderButtonCompact,
+                  reorderPending ? styles.reorderButtonDisabled : null,
+                ]}
+                onPress={onReorderPress}
+                disabled={reorderPending}
+              >
+                {reorderPending ? (
+                  <ActivityIndicator size="small" color={palette.secondary} />
+                ) : (
+                  <>
+                    <Ionicons name="refresh-outline" size={15} color={palette.secondary} />
+                    <Text style={styles.reorderButtonText}>Reorder</Text>
+                  </>
+                )}
+              </Pressable>
+            ) : null}
+            <Ionicons name="chevron-forward" size={16} color={palette.mutedForeground} />
           </View>
         </View>
       </Pressable>

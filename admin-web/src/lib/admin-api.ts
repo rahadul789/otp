@@ -1,6 +1,7 @@
 import { adminRequest, getApiBaseUrl } from "./api"
 import { getAdminAccessToken } from "./admin-session"
 import { clearAdminSession, setAdminSession } from "./admin-session"
+import { getAdminZoneScopeQueryParams } from "./admin-zone-scope"
 
 export type ReviewIssue = {
   section: string
@@ -315,6 +316,83 @@ export type AdminReportsResponse = {
     platformFundedDiscount: number
     deliveredRevenue: number
   }>
+}
+
+export type AdminServiceZone = {
+  id: string
+  districtId: string
+  districtName: string
+  name: string
+  slug: string
+  status: "active" | "paused" | "archived"
+  center: { latitude: number; longitude: number } | null
+  radiusKm: number
+  priority: number
+  displayOrder: number
+  delivery: {
+    baseFeeTaka?: number | null
+    distanceSurchargeEnabled?: boolean | null
+    surchargeStartsAfterKm?: number | null
+    surchargeStepMeters?: number | null
+    surchargeAmountTaka?: number | null
+    maxRestaurantDistanceKm?: number | null
+    rainSurchargeEnabled?: boolean
+    rainSurchargeTaka?: number
+  }
+  dispatch: {
+    autoAssignEnabled?: boolean
+    dispatchMode?: "fleet" | "primary_rider" | null
+    primaryRiderId?: string
+    primaryRiderFallbackEnabled?: boolean | null
+    algorithm?: "nearest_eligible_balanced" | "least_loaded_first" | null
+    maxActiveOrdersPerRiderOverride?: number | null
+    staleLocationCutoffMinutes?: number | null
+    retryCooldownMinutes?: number | null
+  }
+  notes: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type AdminServiceDistrict = {
+  id: string
+  name: string
+  slug: string
+  status: "active" | "paused" | "archived"
+  country: string
+  displayOrder: number
+  notes: string
+  zones: AdminServiceZone[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type AdminServiceAreasResponse = {
+  districts: AdminServiceDistrict[]
+  zones: AdminServiceZone[]
+}
+
+export type AdminServiceDistrictPayload = {
+  name: string
+  slug?: string
+  status?: "active" | "paused" | "archived"
+  country?: string
+  displayOrder?: number
+  notes?: string
+}
+
+export type AdminServiceZonePayload = {
+  districtId: string
+  name: string
+  slug?: string
+  status?: "active" | "paused" | "archived"
+  center: { latitude: number; longitude: number }
+  radiusKm: number
+  priority?: number
+  displayOrder?: number
+  delivery?: AdminServiceZone["delivery"]
+  dispatch?: AdminServiceZone["dispatch"]
+  notes?: string
 }
 
 export type AdminFoodCategoryStatus = "active" | "archived"
@@ -1275,7 +1353,7 @@ export type AdminListResponse<T> = {
   page: number
   pageSize: number
   pageCount: number
-  summary?: Record<string, number>
+  summary?: Record<string, any>
 }
 
 export type AdminReferralStatus =
@@ -1633,6 +1711,12 @@ export type AdminFinancePayoutRow = {
     address: string
     isOnline: boolean
     isVisible: boolean
+    serviceArea?: {
+      districtId?: string
+      districtName?: string
+      zoneId?: string
+      zoneName?: string
+    }
     logoUrl: string
   }
   owner: {
@@ -1757,6 +1841,12 @@ export type AdminFinanceLedgerEntry = {
   sourceEntityId: string
   sourceLabel: string
   isCarryForward: boolean
+  serviceArea?: {
+    districtId?: string
+    districtName?: string
+    zoneId?: string
+    zoneName?: string
+  }
   entryType: string
   grossAmount: number
   commissionBase: number
@@ -1863,6 +1953,12 @@ export type AdminFinanceRefundRow = {
   restaurantId: string
   restaurantName: string
   restaurantCity: string
+  serviceArea?: {
+    districtId?: string
+    districtName?: string
+    zoneId?: string
+    zoneName?: string
+  }
   customerId: string
   customerName: string
   customerPhone: string
@@ -2193,6 +2289,7 @@ export type AdminRestaurantCreateInput = {
   city?: string
   latitude?: number | null
   longitude?: number | null
+  serviceZoneId?: string
   preparationTimeMinutes?: number | null
   commissionRate?: number
   isVisible?: boolean
@@ -2262,6 +2359,33 @@ export type AdminCustomerSummary = {
   deliveredOrders: number
   deliveredSpend: number
   lastOrderAt: string | null
+}
+
+export type AdminCustomerBehaviorSummary = {
+  preset: string
+  from: string | null
+  to: string | null
+  newCustomers: number
+  orderingCustomers: number
+  repeatCustomers: number
+  firstTimeOrderingCustomers: number
+  repeatRate: number
+  trend: Array<{
+    date: string
+    orders: number
+    orderingCustomers: number
+    repeatCustomers: number
+    newCustomers: number
+  }>
+}
+
+export type AdminCustomerDirectorySummary = Record<string, any> & {
+  total?: number
+  active?: number
+  suspended?: number
+  locked?: number
+  pendingRequests?: number
+  behavior?: AdminCustomerBehaviorSummary
 }
 
 export type AdminCustomerGroup = {
@@ -2937,6 +3061,7 @@ export type PlatformContent = {
       offerStrip: {
         isActive: boolean
         showVoucherStrip: boolean
+        showRestaurantOfferSection?: boolean
         mode: "voucher_strip" | "promo_block" | "hidden"
         title: string
         subtitle: string
@@ -2951,6 +3076,20 @@ export type PlatformContent = {
         backgroundColor: string
         textColor: string
         accentColor: string
+      }
+      homeCategories?: {
+        isActive: boolean
+        title: string
+        subtitle: string
+        items: Array<{
+          id?: string
+          label: string
+          searchQuery: string
+          icon?: string
+          color?: string
+          position?: number
+          isActive?: boolean
+        }>
       }
       modal: {
         isActive: boolean
@@ -3412,6 +3551,8 @@ export type AdminNotificationsResponse = AdminListResponse<AdminNotificationCent
 }
 
 export type AdminNotificationSendPayload = {
+  zoneId?: string
+  districtId?: string
   recipientType: "customers" | "owners" | "riders"
   audience: "all" | "selected"
   recipientIds?: string[]
@@ -3934,11 +4075,15 @@ export async function getAdminReports(params?: {
   preset?: AdminReportsPreset
   from?: string
   to?: string
+  zoneId?: string
+  districtId?: string
 }) {
   const searchParams = new URLSearchParams()
   if (params?.preset) searchParams.set("preset", params.preset)
   if (params?.from) searchParams.set("from", params.from)
   if (params?.to) searchParams.set("to", params.to)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminReportsResponse>(`/admin/reports${query}`)
   return response.data
@@ -3952,6 +4097,8 @@ export async function listAdminRiders(params?: {
   sortBy?: "newest" | "recentLogin" | "mostActive" | "mostDelivered"
   page?: number
   pageSize?: number
+  zoneId?: string
+  districtId?: string
 }) {
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
@@ -3966,6 +4113,8 @@ export async function listAdminRiders(params?: {
   if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
   if (params?.page) searchParams.set("page", `${params.page}`)
   if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminListResponse<AdminRiderSummary>>(
     `/admin/riders${query}`
@@ -3982,6 +4131,8 @@ export async function createAdminRider(params: {
   nationalIdNumber?: string
   monthlySalary?: number
   payoutDay?: number
+  primaryZoneId?: string
+  assignedZoneIds?: string[]
 }) {
   const response = await adminRequest<AdminRiderSummary>("/admin/riders", {
     method: "POST",
@@ -4005,9 +4156,15 @@ export async function getAdminRider(riderId: string) {
   return response.data
 }
 
-export async function listAdminRiderPayroll(params?: { month?: string }) {
+export async function listAdminRiderPayroll(params?: {
+  month?: string
+  zoneId?: string
+  districtId?: string
+}) {
   const searchParams = new URLSearchParams()
   if (params?.month) searchParams.set("month", params.month)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminRiderPayrollSnapshot>(
     `/admin/rider-payroll${query}`
@@ -4143,6 +4300,8 @@ export async function listAdminRestaurants(params?: {
   sortBy?: "newestUpdated" | "mostOrders" | "highestRating" | "completionHigh"
   page?: number
   pageSize?: number
+  zoneId?: string
+  districtId?: string
 }) {
   const searchParams = new URLSearchParams()
   if (params?.search) {
@@ -4163,6 +4322,8 @@ export async function listAdminRestaurants(params?: {
   if (params?.pageSize) {
     searchParams.set("pageSize", `${params.pageSize}`)
   }
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<
     AdminListResponse<AdminRestaurantSummary>
@@ -4244,9 +4405,14 @@ export async function listAdminCustomers(params?: {
     | "completed"
     | "none"
   customerGroupKey?: string
+  preset?: string
+  from?: string
+  to?: string
   sortBy?: "newest" | "recentLogin" | "mostOrders" | "highestSpend"
   page?: number
   pageSize?: number
+  zoneId?: string
+  districtId?: string
 }) {
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
@@ -4258,13 +4424,20 @@ export async function listAdminCustomers(params?: {
   if (params?.customerGroupKey) {
     searchParams.set("customerGroupKey", params.customerGroupKey)
   }
+  if (params?.preset) searchParams.set("preset", params.preset)
+  if (params?.from) searchParams.set("from", params.from)
+  if (params?.to) searchParams.set("to", params.to)
   if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
   if (params?.page) searchParams.set("page", `${params.page}`)
   if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
-  const response = await adminRequest<AdminListResponse<AdminCustomerSummary>>(
-    `/admin/customers${query}`
-  )
+  const response = await adminRequest<
+    AdminListResponse<AdminCustomerSummary> & {
+      summary?: AdminCustomerDirectorySummary
+    }
+  >(`/admin/customers${query}`)
   return response.data
 }
 
@@ -4290,14 +4463,27 @@ export async function createAdminCustomerGroup(payload: {
       | "completed"
       | "none"
     customerGroupKey?: string
+    preset?: string
+    from?: string
+    to?: string
     sortBy?: "newest" | "recentLogin" | "mostOrders" | "highestSpend"
+    zoneId?: string
+    districtId?: string
   }
   customerIds?: string[]
 }) {
+  const scopeParams = getAdminZoneScopeQueryParams()
+  const scopedPayload = {
+    ...payload,
+    sourceFilter: {
+      ...(payload.sourceFilter ?? {}),
+      ...scopeParams,
+    },
+  }
   const response = await adminRequest<AdminCustomerGroup>("/admin/customer-groups", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(scopedPayload),
   })
   return response.data
 }
@@ -4365,6 +4551,8 @@ export async function listAdminReferrals(params?: {
   sortBy?: "newest" | "oldest" | "rewardedAt" | "risk"
   page?: number
   pageSize?: number
+  zoneId?: string
+  districtId?: string
 }) {
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
@@ -4376,6 +4564,8 @@ export async function listAdminReferrals(params?: {
   if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
   if (params?.page) searchParams.set("page", `${params.page}`)
   if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminReferralListResponse>(
     `/admin/referrals${query}`
@@ -4841,8 +5031,13 @@ export async function listAdminDispatchLogs(params?: {
 export async function updateAdminDispatchSettings(
   settings: Omit<AdminDispatchSettings, "metrics" | "recentLogs">
 ) {
+  const scope = getAdminZoneScopeQueryParams()
+  const searchParams = new URLSearchParams()
+  if ("zoneId" in scope && scope.zoneId) searchParams.set("zoneId", scope.zoneId)
+  if ("districtId" in scope && scope.districtId) searchParams.set("districtId", scope.districtId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminDispatchSettings>(
-    "/admin/dispatch-settings",
+    `/admin/dispatch-settings${query}`,
     {
       method: "PATCH",
       headers: {
@@ -5194,6 +5389,7 @@ export async function closeAdminDailyFinance(params?: {
 
 export async function listAdminFinancePayouts(params?: {
   search?: string
+  zoneId?: string
   eligibility?: "all" | AdminFinancePayoutEligibility
   sortBy?: "available_desc" | "pending_desc" | "recent_request" | "name_asc"
   page?: number
@@ -5201,6 +5397,7 @@ export async function listAdminFinancePayouts(params?: {
 }) {
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
   if (params?.eligibility && params.eligibility !== "all") {
     searchParams.set("eligibility", params.eligibility)
   }
@@ -5285,6 +5482,7 @@ export async function createAdminFinancePayout(params: {
 export async function listAdminFinanceLedger(params?: {
   search?: string
   restaurantId?: string
+  zoneId?: string
   entryType?: "all" | "earning" | "refund" | "payout" | "adjustment"
   settlementStatus?: "all" | "pending" | "available" | "paid_out"
   sortBy?: "newest" | "oldest" | "highest_net" | "lowest_net"
@@ -5294,6 +5492,7 @@ export async function listAdminFinanceLedger(params?: {
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
   if (params?.restaurantId) searchParams.set("restaurantId", params.restaurantId)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
   if (params?.entryType && params.entryType !== "all") {
     searchParams.set("entryType", params.entryType)
   }
@@ -5313,6 +5512,7 @@ export async function listAdminFinanceLedger(params?: {
 export async function listAdminFinanceRefunds(params?: {
   search?: string
   restaurantId?: string
+  zoneId?: string
   status?: "all" | "refund_pending" | "refunded" | "refund_rejected" | "needs_review"
   sortBy?: "newest" | "oldest" | "highest_value" | "recently_updated"
   page?: number
@@ -5321,6 +5521,7 @@ export async function listAdminFinanceRefunds(params?: {
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
   if (params?.restaurantId) searchParams.set("restaurantId", params.restaurantId)
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
   if (params?.status && params.status !== "all") searchParams.set("status", params.status)
   if (params?.sortBy) searchParams.set("sortBy", params.sortBy)
   if (params?.page) searchParams.set("page", `${params.page}`)
@@ -5542,9 +5743,16 @@ export async function snoozeAdminOperationalAlert(params: {
   return response.data
 }
 
-export async function listAdminRiderAssignmentCandidates() {
+export async function listAdminRiderAssignmentCandidates(params?: {
+  zoneId?: string
+  districtId?: string
+}) {
+  const searchParams = new URLSearchParams()
+  if (params?.zoneId) searchParams.set("zoneId", params.zoneId)
+  if (params?.districtId) searchParams.set("districtId", params.districtId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminRiderAssignmentCandidate[]>(
-    "/admin/orders/assignment-candidates"
+    `/admin/orders/assignment-candidates${query}`
   )
   return response.data
 }
@@ -5784,12 +5992,16 @@ export async function listAdminNotifications(params?: {
 }
 
 export async function sendAdminNotification(payload: AdminNotificationSendPayload) {
+  const scopedPayload = {
+    ...payload,
+    ...getAdminZoneScopeQueryParams(),
+  }
   const response = await adminRequest<AdminNotificationSendResult>(
     "/admin/notifications/send",
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(scopedPayload),
     }
   )
   return response.data
@@ -5864,8 +6076,13 @@ export async function retryAdminNotificationSchedule(scheduleId: string) {
 }
 
 export async function updatePlatformContent(content: PlatformContent) {
+  const scope = getAdminZoneScopeQueryParams()
+  const searchParams = new URLSearchParams()
+  if ("zoneId" in scope && scope.zoneId) searchParams.set("zoneId", scope.zoneId)
+  if ("districtId" in scope && scope.districtId) searchParams.set("districtId", scope.districtId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<PlatformContentEditorResponse>(
-    "/admin/platform-content",
+    `/admin/platform-content${query}`,
     {
       method: "PUT",
       headers: {
@@ -6096,6 +6313,59 @@ export async function cancelCustomerHomePushSchedule() {
     scheduleStatus: "cancelled"
   }>("/admin/platform-content/customer-home-push/cancel-schedule", {
     method: "POST",
+  })
+  return response.data
+}
+
+export async function getAdminServiceAreas() {
+  const response = await adminRequest<AdminServiceAreasResponse>("/admin/service-areas")
+  return response.data
+}
+
+export async function createAdminServiceDistrict(payload: AdminServiceDistrictPayload) {
+  const response = await adminRequest<AdminServiceDistrict>("/admin/service-areas/districts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return response.data
+}
+
+export async function updateAdminServiceDistrict(
+  districtId: string,
+  payload: Partial<AdminServiceDistrictPayload>
+) {
+  const response = await adminRequest<AdminServiceDistrict>(
+    `/admin/service-areas/districts/${districtId}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }
+  )
+  return response.data
+}
+
+export async function createAdminServiceZone(payload: AdminServiceZonePayload) {
+  const response = await adminRequest<AdminServiceZone>("/admin/service-areas/zones", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return response.data
+}
+
+export async function updateAdminServiceZone(
+  zoneId: string,
+  payload: Partial<AdminServiceZonePayload>
+) {
+  const response = await adminRequest<AdminServiceZone>(`/admin/service-areas/zones/${zoneId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+  return response.data
+}
+
+export async function archiveAdminServiceZone(zoneId: string) {
+  const response = await adminRequest<AdminServiceZone>(`/admin/service-areas/zones/${zoneId}`, {
+    method: "DELETE",
   })
   return response.data
 }

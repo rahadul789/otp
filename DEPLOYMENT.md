@@ -1,54 +1,49 @@
-# Foodbela VPS Docker Deployment
+# Foodbela Production Deployment
 
-এই setup-এ app + monitoring stack চলবে:
+এই setup-এ Docker Compose দিয়ে পুরো stack চলবে:
 
-- `backend`: Express/Socket.IO API, Docker network-এর ভিতরে port `5000`।
-- `restaurant-owner-web`: nginx দিয়ে React build serve করে, public port `80` expose করে।
-- `prometheus`: backend/Grafana/Loki/Alloy metrics scrape করে store করবে।
-- `grafana`: dashboard UI।
-- `loki`: application/container logs store করবে।
-- `alloy`: Docker container logs collect করে Loki-তে পাঠাবে, এবং নিজের metrics expose করবে।
+- `caddy`: public reverse proxy, automatic HTTPS.
+- `website`: `https://foodbela.com` এবং `https://www.foodbela.com`.
+- `backend`: internal API, public হবে `https://api.foodbela.com`.
+- `restaurant-owner-web`: `https://owner.foodbela.com`.
+- `admin-web`: `https://admin.foodbela.com`.
+- `prometheus`, `grafana`, `loki`, `alloy`: monitoring stack, localhost-only ports.
 
-MongoDB VPS-এ চলবে না। Backend সরাসরি MongoDB Atlas-এ connect করবে।
+## 1. DNS
 
-Browser থেকে request flow:
+Hostinger DNS panel-এ এই A records দিন:
 
 ```text
-User browser -> VPS port 80 -> restaurant-owner-web nginx
-nginx /api/* -> backend:5000
-nginx /socket.io/* -> backend:5000
-backend -> MongoDB Atlas
-prometheus -> backend:5000/metrics
-alloy -> docker logs -> loki
-grafana -> prometheus + loki
+@       A   YOUR_VPS_IP
+www     A   YOUR_VPS_IP
+api     A   YOUR_VPS_IP
+owner   A   YOUR_VPS_IP
+admin   A   YOUR_VPS_IP
 ```
 
-## 1. VPS-এ Docker install
-
-Ubuntu VPS হলে:
+## 2. VPS setup
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl gnupg
+sudo apt upgrade -y
+sudo apt install -y ca-certificates curl gnupg git
+```
+
+Docker install:
+
+```bash
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor | sudo tee /etc/apt/keyrings/docker.gpg > /dev/null
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
-```
-
-বর্তমান user দিয়ে Docker চালাতে চাইলে:
-
-```bash
 sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-## 2. Firewall port খুলে দাও
-
-Ubuntu firewall ব্যবহার করলে:
+Firewall:
 
 ```bash
 sudo ufw allow OpenSSH
@@ -58,216 +53,149 @@ sudo ufw enable
 sudo ufw status
 ```
 
-এই setup-এ backend port `5000` public করা লাগবে না। nginx container public request নেবে, তারপর Docker network-এর ভিতরে backend-এ পাঠাবে।
-
-## 3. Atlas network access ঠিক করো
-
-MongoDB Atlas dashboard-এ গিয়ে:
-
-```text
-Network Access -> Add IP Address -> VPS public IP
-```
-
-শুধু test করার জন্য `0.0.0.0/0` ব্যবহার করা যায়, কিন্তু production-এর জন্য VPS public IP allowlist করা ভালো।
-
-Atlas connection string এমন হবে:
-
-```env
-MONGODB_URI=mongodb+srv://ATLAS_USERNAME:ATLAS_PASSWORD@ATLAS_CLUSTER_HOST/foodbela?retryWrites=true&w=majority
-```
-
-Username/password-এ special character থাকলে URL-encode করতে হবে। যেমন `@` হলে `%40`।
-
-## 4. Project VPS-এ নাও
+## 3. Project upload
 
 Git repo থাকলে:
 
 ```bash
-sudo apt install -y git
-git clone https://github.com/rahadul789/otp.git foodbela
-cd foodbela
-```
-
-Git না থাকলে local machine থেকে upload:
-
-```bash
-scp -r ./upload root@YOUR_VPS_IP:/opt/foodbela
-ssh root@YOUR_VPS_IP
+cd /opt
+sudo git clone YOUR_REPO_URL foodbela
+sudo chown -R $USER:$USER /opt/foodbela
 cd /opt/foodbela
 ```
 
-## 5. Production env তৈরি করো
+Local থেকে upload করলে:
+
+```bash
+scp -r ./upload USER@YOUR_VPS_IP:/opt/foodbela
+ssh USER@YOUR_VPS_IP
+cd /opt/foodbela
+```
+
+## 4. Environment
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-Strong secret বানানোর জন্য:
+এই values production-এর জন্য ঠিক করুন:
+
+```env
+ACME_EMAIL=admin@foodbela.com
+
+WEBSITE_BASE_URL=https://foodbela.com
+BACKEND_API_BASE_URL=http://backend:5000/api/v1
+
+CLIENT_ORIGIN=https://owner.foodbela.com
+ADMIN_PANEL_ORIGIN=https://admin.foodbela.com
+CUSTOMER_APP=https://foodbela.com
+DELIVERY_APP=https://foodbela.com
+BACKEND_PUBLIC_URL=https://api.foodbela.com
+
+OWNER_VITE_API_BASE_URL=/api/v1
+ADMIN_VITE_API_BASE_URL=/api/v1
+
+ADMIN_AUTH_COOKIE_SECURE=true
+OWNER_AUTH_COOKIE_SECURE=true
+```
+
+Strong secret বানাতে:
 
 ```bash
 openssl rand -hex 32
 ```
 
-এই values অবশ্যই বদলাবে:
-
-- `MONGODB_URI`
-- `JWT_ACCESS_SECRET`
-- `JWT_REFRESH_SECRET`
-- `ADMIN_BOOTSTRAP_PASSWORD`
-- `GRAFANA_ADMIN_PASSWORD`
-- `CLIENT_ORIGIN`, `ADMIN_PANEL_ORIGIN`, `CUSTOMER_APP`, `DELIVERY_APP`, `BACKEND_PUBLIC_URL`
-- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`
-
-প্রথম deploy-তে domain না থাকলে origin values এমন হতে পারে:
+এগুলো অবশ্যই real value দিয়ে replace করুন:
 
 ```env
-CLIENT_ORIGIN=http://YOUR_VPS_IP
-ADMIN_PANEL_ORIGIN=http://YOUR_VPS_IP
-CUSTOMER_APP=http://YOUR_VPS_IP
-DELIVERY_APP=http://YOUR_VPS_IP
-BACKEND_PUBLIC_URL=http://YOUR_VPS_IP
+MONGODB_URI=
+JWT_ACCESS_SECRET=
+JWT_REFRESH_SECRET=
+ADMIN_BOOTSTRAP_PASSWORD=
+GRAFANA_ADMIN_PASSWORD=
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
+SMS_API_KEY=
 ```
 
-Domain/SSL করার পর এগুলো `https://your-domain.com` করে দেবে।
+## 5. MongoDB Atlas
 
-## 6. Container build এবং start
+Atlas dashboard:
+
+```text
+Network Access -> Add IP Address -> YOUR_VPS_IP
+```
+
+Connection string `.env`-এ:
+
+```env
+MONGODB_URI=mongodb+srv://USER:PASSWORD@CLUSTER_HOST/foodbela?retryWrites=true&w=majority
+```
+
+Password-এ special character থাকলে URL encode করুন। যেমন `@` হলে `%40`।
+
+## 6. Start
 
 ```bash
+docker compose config
 docker compose up -d --build
-```
-
-Status দেখো:
-
-```bash
 docker compose ps
 ```
 
-Logs দেখো:
+প্রথমবার Caddy SSL certificate নিতে কিছু সময় লাগতে পারে। DNS আগে VPS IP-তে point করতে হবে, নাহলে HTTPS certificate issue হবে না।
+
+## 7. Check
 
 ```bash
+curl -I https://foodbela.com
+curl https://api.foodbela.com/api/v1/health
+curl https://api.foodbela.com/api/v1/health/ready
+```
+
+Browser:
+
+```text
+https://foodbela.com
+https://www.foodbela.com
+https://owner.foodbela.com
+https://admin.foodbela.com
+https://api.foodbela.com/api/v1/health
+```
+
+Logs:
+
+```bash
+docker compose logs -f caddy
+docker compose logs -f website
 docker compose logs -f backend
 docker compose logs -f restaurant-owner-web
-docker compose logs -f prometheus
-docker compose logs -f grafana
-docker compose logs -f loki
-docker compose logs -f alloy
+docker compose logs -f admin-web
 ```
 
-## 7. Health check
-
-VPS-এর ভিতর থেকে:
+## 8. Update deploy
 
 ```bash
-curl http://localhost/api/v1/health
-curl http://localhost/api/v1/health/ready
-docker compose exec backend wget -qO- http://127.0.0.1:5000/metrics | head
-```
-
-Browser থেকে:
-
-```text
-http://YOUR_VPS_IP
-http://YOUR_VPS_IP/api/v1/health
-```
-
-`ready` response-এ database `connected` হলে backend Atlas-এর সাথে ঠিকভাবে connect করেছে।
-
-## 8. Monitoring dashboard দেখো
-
-Defaultভাবে monitoring ports শুধু VPS-এর localhost-এ bind করা আছে:
-
-```env
-MONITORING_BIND_ADDRESS=127.0.0.1
-```
-
-এটা production-এর জন্য ভালো default, কারণ Grafana/Prometheus/Loki public internet-এ খোলা থাকে না।
-
-তোমার local computer থেকে SSH tunnel করো:
-
-```bash
-ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 -L 3100:127.0.0.1:3100 -L 12345:127.0.0.1:12345 root@YOUR_VPS_IP
-```
-
-তারপর browser-এ:
-
-```text
-Grafana:    http://localhost:3000
-Prometheus: http://localhost:9090
-Loki:       http://localhost:3100/ready
-Alloy:      http://localhost:12345
-```
-
-Grafana login:
-
-```text
-username: .env-এর GRAFANA_ADMIN_USER
-password: .env-এর GRAFANA_ADMIN_PASSWORD
-```
-
-Grafana dashboard:
-
-```text
-Dashboards -> Foodbela -> Foodbela Backend Overview
-```
-
-## 9. Production note
-
-Grafana/Prometheus/Loki single-node Docker Compose setup ছোট VPS বা early production monitoring-এর জন্য practical। High traffic production হলে আলাদা monitoring server, persistent backup, alerting, auth/reverse-proxy, retention sizing, এবং Grafana Alloy/OpenTelemetry collector ব্যবহার করা ভালো।
-
-## 10. Update deploy
-
-নতুন code pull/upload করার পর:
-
-```bash
+cd /opt/foodbela
+git pull
 docker compose up -d --build --remove-orphans
 docker image prune -f
 ```
 
-## 11. Backup
+## 9. Monitoring
 
-Atlas database backup Atlas dashboard থেকে নিতে পারো:
+Monitoring ports public internet-এ খোলা নেই। SSH tunnel দিয়ে দেখুন:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 USER@YOUR_VPS_IP
+```
+
+তারপর browser:
 
 ```text
-Atlas -> Backup / Snapshots
+Grafana: http://localhost:3000
+Prometheus: http://localhost:9090
 ```
 
-Free/shared cluster হলে `mongodump` local/VPS থেকেও চালানো যায়, তবে আগে MongoDB Database Tools install করতে হবে।
-
-Monitoring data Docker volumes-এ থাকবে:
-
-```bash
-docker volume ls | grep foodbela
-```
-
-## 12. Useful commands
-
-Restart:
-
-```bash
-docker compose restart
-```
-
-Stop:
-
-```bash
-docker compose down
-```
-
-Backend logs:
-
-```bash
-docker compose logs -f backend
-```
-
-Frontend/nginx logs:
-
-```bash
-docker compose logs -f restaurant-owner-web
-```
-
-Monitoring logs:
-
-```bash
-docker compose logs -f prometheus grafana loki alloy
-```
+Grafana login `.env`-এর `GRAFANA_ADMIN_USER` এবং `GRAFANA_ADMIN_PASSWORD` দিয়ে।

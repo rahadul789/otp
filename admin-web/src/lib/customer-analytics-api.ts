@@ -195,19 +195,7 @@ export type AdminCustomerAnalyticsFunnelsResponse = {
   searchAnalytics: AdminCustomerAnalyticsOverviewResponse["searchAnalytics"]
 }
 
-export type AdminCustomerAnalyticsCustomersResponse = {
-  timeframe: AdminCustomerAnalyticsTimeframe
-  retention: {
-    newCustomers: number
-    orderedWithin1Day: number
-    orderedWithin7Days: number
-    orderedWithin30Days: number
-    repeatCustomers: number
-    day1OrderRate: number
-    day7OrderRate: number
-    day30OrderRate: number
-  }
-  repeatCustomers: Array<{
+export type AdminCustomerAnalyticsCustomerRow = {
     customerId: string
     fullName: string
     phone: string
@@ -234,7 +222,23 @@ export type AdminCustomerAnalyticsCustomersResponse = {
       total: number
       createdAt: string | null
     }>
-  }>
+  }
+
+export type AdminCustomerAnalyticsCustomersResponse = {
+  timeframe: AdminCustomerAnalyticsTimeframe
+  retention: {
+    newCustomers: number
+    orderedWithin1Day: number
+    orderedWithin7Days: number
+    orderedWithin30Days: number
+    repeatCustomers: number
+    day1OrderRate: number
+    day7OrderRate: number
+    day30OrderRate: number
+  }
+  recentUsers: AdminCustomerAnalyticsCustomerRow[]
+  topOrderUsers: AdminCustomerAnalyticsCustomerRow[]
+  repeatCustomers: AdminCustomerAnalyticsCustomerRow[]
   abandonedCheckouts: Array<{
     sessionId: string
     actorType: string

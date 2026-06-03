@@ -87,6 +87,7 @@ export function getCustomerOrderStatusMeta(status: string) {
 export function getCustomerTrackingBanner(order: {
   status: string;
   paymentMethod?: string;
+  paymentStatus?: string;
   terminalReason?: string;
   cancelledBy?: string;
   history?: { note?: string }[];
@@ -136,10 +137,14 @@ export function getCustomerTrackingBanner(order: {
       };
     case "Cancelled":
       if (order.cancelledBy === "customer") {
+        const isBkashPaidOrder =
+          order.paymentMethod === "Bkash" &&
+          ["paid", "refund_pending"].includes(order.paymentStatus ?? "");
         return {
           title: "You cancelled this order",
-          subtitle:
-            "This order was cancelled before the restaurant accepted it. You can place another one any time.",
+          subtitle: isBkashPaidOrder
+            ? "This order was cancelled before the restaurant accepted it. Your bKash refund is now in review."
+            : "This order was cancelled before the restaurant accepted it. Cash on delivery orders do not need a refund.",
           icon: "close-circle-outline" as const,
           tint: "#F5F5F5",
           accent: palette.foreground,

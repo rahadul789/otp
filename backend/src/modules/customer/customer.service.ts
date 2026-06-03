@@ -23,7 +23,10 @@ import {
   recordOtpVerificationSuccess,
   rejectInvalidOtpAttempt,
 } from "../auth/auth.service";
-import { getPlatformContent } from "../public/content.service";
+import {
+  applyServiceAreaHomeCmsOverride,
+  getPlatformContent,
+} from "../public/content.service";
 import {
   compareOtpCode,
   comparePassword,
@@ -46,6 +49,14 @@ import {
   OrderModel,
 } from "../owner/operational.model";
 import {
+  applyServiceAreaDeliveryPricing,
+  assertLocationInsideServiceArea,
+  assertRestaurantMatchesDeliveryServiceArea,
+  isServiceAreaModeEnabled,
+  resolveRestaurantServiceAreaSnapshot,
+  resolveServiceZoneForCoordinates,
+} from "../service-area/service-area.service";
+import {
   BkashPaymentAttemptModel,
   BkashSandboxPaymentSessionModel,
   CustomerModel,
@@ -67,7 +78,7 @@ const MAX_CUSTOMER_PUSH_TOKENS = 5;
 const DISABLED_CUSTOMER_PUSH_TOKEN_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const MAX_SUPPORT_CASE_REPLIES = 300;
 const MAX_ORDER_HISTORY_ENTRIES = 100;
-const DEFAULT_CUSTOMER_FULL_NAME = "Foodbela User";
+const DEFAULT_CUSTOMER_FULL_NAME = "Your name";
 const CUSTOMER_PASSWORD_MIN_LENGTH = 6;
 const CUSTOMER_READ_CACHE_TTL_MS = 15_000;
 const CUSTOMER_DISCOVERY_STALE_REVALIDATE_MS = 5 * 60_000;
@@ -77,6 +88,15 @@ const QUEUED_DELIVERY_ROUTE_FACTOR = 1.35;
 const QUEUED_DELIVERY_SPEED_KMPH = 16;
 type CustomerCacheRecord = Record<string, any>;
 type DiscoverableRestaurantsResult = CustomerCacheRecord[];
+type DiscoverableRestaurantsPageResult = {
+  items: CustomerCacheRecord[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  hasNextPage: boolean;
+  nextPage: number | null;
+};
 type CustomerDiscoveryHomeResult = CustomerCacheRecord;
 type CustomerRestaurantDetailsResult = CustomerCacheRecord;
 type CustomerCartQuoteResult = CustomerCacheRecord;
@@ -1579,7 +1599,7 @@ export async function updateCustomerProfile(params: {
   }
 
   if (params.email !== undefined) {
-    customer.email = params.email.trim();
+    customer.email = normalizeCustomerEmail(params.email);
   }
 
   if (params.profileImage !== undefined) {
@@ -1769,6 +1789,163 @@ function getDiscoverableRestaurantQuery() {
   return {
     "runtime.isVisible": true,
   };
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeDiscoverySearchText(value?: unknown) {
+  return String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0980-\u09FF]+/g, " ")
+    .trim();
+}
+
+function tokenizeDiscoverySearch(value?: string) {
+  return normalizeDiscoverySearchText(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+    .slice(0, 6);
+}
+
+function getLevenshteinDistanceWithin(left: string, right: string, maxDistance: number) {
+  if (Math.abs(left.length - right.length) > maxDistance) return maxDistance + 1;
+
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const current = new Array(right.length + 1).fill(0);
+
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    current[0] = leftIndex;
+    let rowMin = current[0];
+
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      const cost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + cost,
+      );
+      rowMin = Math.min(rowMin, current[rightIndex]);
+    }
+
+    if (rowMin > maxDistance) return maxDistance + 1;
+    for (let index = 0; index < previous.length; index += 1) {
+      previous[index] = current[index];
+    }
+  }
+
+  return previous[right.length];
+}
+
+function isDiscoverySearchMatch(queryTokens: string[], values: unknown[]) {
+  const haystack = tokenizeDiscoverySearch(values.filter(Boolean).join(" "));
+  if (!queryTokens.length || !haystack.length) return false;
+
+  return queryTokens.every((queryToken) =>
+    haystack.some((word) => {
+      if (word.includes(queryToken) || queryToken.includes(word)) return true;
+      if (queryToken.length < 4 || word.length < 4) return false;
+      return getLevenshteinDistanceWithin(queryToken, word, 1) <= 1;
+    }),
+  );
+}
+
+async function findSearchMatchedRestaurantIds(search?: string) {
+  const tokens = tokenizeDiscoverySearch(search);
+  if (!tokens.length) return null;
+
+  const exactRegexes = tokens.map((token) => new RegExp(escapeRegex(token), "i"));
+  const [restaurantRows, categoryRows, menuRows] = await Promise.all([
+    RestaurantModel.find(
+      {
+        ...getDiscoverableRestaurantQuery(),
+        $or: exactRegexes.flatMap((regex) => [
+          { name: regex },
+          { description: regex },
+          { cuisineTypes: regex },
+          { tags: regex },
+        ]),
+      },
+      { _id: 1 },
+    ).lean(),
+    CategoryModel.find(
+      {
+        status: "active",
+        $or: exactRegexes.flatMap((regex) => [{ name: regex }, { description: regex }]),
+      },
+      { restaurantId: 1 },
+    ).lean(),
+    MenuItemModel.find(
+      {
+        status: "active",
+        $or: exactRegexes.flatMap((regex) => [{ name: regex }, { description: regex }]),
+      },
+      { restaurantId: 1 },
+    ).lean(),
+  ]);
+
+  const matchedIds = new Set<string>();
+  restaurantRows.forEach((restaurant) => matchedIds.add(String(restaurant._id)));
+  categoryRows.forEach((category) => matchedIds.add(String(category.restaurantId)));
+  menuRows.forEach((item) => matchedIds.add(String(item.restaurantId)));
+
+  if (tokens.some((token) => token.length >= 4)) {
+    const [fuzzyRestaurants, fuzzyCategories, fuzzyItems] = await Promise.all([
+      RestaurantModel.find(getDiscoverableRestaurantQuery(), {
+        _id: 1,
+        name: 1,
+        description: 1,
+        cuisineTypes: 1,
+        tags: 1,
+      })
+        .limit(300)
+        .lean(),
+      CategoryModel.find(
+        { status: "active" },
+        { restaurantId: 1, name: 1, description: 1 },
+      )
+        .limit(1200)
+        .lean(),
+      MenuItemModel.find(
+        { status: "active" },
+        { restaurantId: 1, name: 1, description: 1, tags: 1 },
+      )
+        .limit(3000)
+        .lean(),
+    ]);
+
+    fuzzyRestaurants.forEach((restaurant) => {
+      if (
+        isDiscoverySearchMatch(tokens, [
+          restaurant.name,
+          restaurant.description,
+          ...(restaurant.cuisineTypes ?? []),
+          ...(restaurant.tags ?? []),
+        ])
+      ) {
+        matchedIds.add(String(restaurant._id));
+      }
+    });
+    fuzzyCategories.forEach((category) => {
+      if (isDiscoverySearchMatch(tokens, [category.name, category.description])) {
+        matchedIds.add(String(category.restaurantId));
+      }
+    });
+    fuzzyItems.forEach((item) => {
+      const itemTags = Array.isArray((item as any).tags)
+        ? ((item as any).tags as string[])
+        : [];
+      if (isDiscoverySearchMatch(tokens, [item.name, item.description, ...itemTags])) {
+        matchedIds.add(String(item.restaurantId));
+      }
+    });
+  }
+
+  return [...matchedIds].filter((id) => mongoose.Types.ObjectId.isValid(id));
 }
 
 async function enrichRestaurantDiscoveryRows<T extends Record<string, any>>(
@@ -2115,6 +2292,10 @@ function assertRestaurantServiceableForDelivery(params: {
   );
 
   if (deliveryDistanceKm > deliveryRadiusKm) {
+    if (isServiceAreaModeEnabled()) {
+      return deliveryDistanceKm;
+    }
+
     throw new AppError(
       StatusCodes.BAD_REQUEST,
       "RESTAURANT_OUT_OF_DELIVERY_AREA",
@@ -2140,10 +2321,6 @@ export async function listDiscoverableRestaurants(params?: {
     async () => {
       const query: Record<string, unknown> = getDiscoverableRestaurantQuery();
 
-      if (params?.search) {
-        query.name = { $regex: params.search, $options: "i" };
-      }
-
       if (params?.collectionKey) {
         const collection = await RestaurantCollectionModel.findOne({
           key: params.collectionKey,
@@ -2167,6 +2344,28 @@ export async function listDiscoverableRestaurants(params?: {
 
       if (params?.featuredOnly) {
         query["discovery.isFeatured"] = true;
+      }
+
+      const searchMatchedRestaurantIds = await findSearchMatchedRestaurantIds(
+        params?.search,
+      );
+      if (searchMatchedRestaurantIds) {
+        const existingIds = Array.isArray((query._id as any)?.$in)
+          ? ((query._id as any).$in as mongoose.Types.ObjectId[]).map((id) =>
+              id.toString(),
+            )
+          : null;
+        const nextIds = existingIds
+          ? searchMatchedRestaurantIds.filter((id) => existingIds.includes(id))
+          : searchMatchedRestaurantIds;
+
+        if (!nextIds.length) {
+          return [];
+        }
+
+        query._id = {
+          $in: nextIds.map((id) => new mongoose.Types.ObjectId(id)),
+        };
       }
 
       if (
@@ -2201,13 +2400,26 @@ export async function listDiscoverableRestaurants(params?: {
       const geoNearQuery = {
         ...query,
         locationPoint: { $ne: null },
-      };
+      } as Record<string, unknown>;
       const platformContent = await getPlatformContent();
+      const selectedServiceArea = await resolveServiceZoneForCoordinates({
+        latitude: params.latitude,
+        longitude: params.longitude,
+      });
+      if (isServiceAreaModeEnabled()) {
+        if (!selectedServiceArea) {
+          return [];
+        }
+        geoNearQuery["serviceArea.zoneId"] = selectedServiceArea.snapshot.zoneId;
+      }
       const maxDistanceKm = Math.max(
         0,
         Math.min(
           params.radiusKm,
-          platformContent.operations.serviceArea.radiusKm,
+          isServiceAreaModeEnabled()
+            ? (selectedServiceArea?.snapshot.radiusKm ??
+                platformContent.operations.serviceArea.radiusKm)
+            : platformContent.operations.serviceArea.radiusKm,
         ),
       );
 
@@ -2256,6 +2468,117 @@ export async function listDiscoverableRestaurants(params?: {
       return enrichRestaurantDiscoveryRows(restaurants);
     },
   );
+}
+
+async function getActiveOfferRestaurantIdSet() {
+  const now = new Date();
+  const offers = await VoucherModel.find({
+    archivedAt: null,
+    status: "Active",
+    startsAt: { $lte: now },
+    endsAt: { $gte: now },
+  })
+    .select("restaurantId selectedRestaurantIds scopeType")
+    .lean();
+  const restaurantIds = new Set<string>();
+
+  offers.forEach((offer) => {
+    const scopedIds =
+      (offer as any).scopeType === "selected_restaurants"
+        ? ((offer as any).selectedRestaurantIds ?? [])
+        : [offer.restaurantId];
+    scopedIds.forEach((restaurantId: unknown) => {
+      const id = restaurantId?.toString?.() ?? "";
+      if (id) restaurantIds.add(id);
+    });
+  });
+
+  return restaurantIds;
+}
+
+export async function listDiscoverableRestaurantsPage(params?: {
+  search?: string;
+  collectionKey?: string;
+  restaurantIds?: string[];
+  featuredOnly?: boolean;
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
+  page?: number;
+  pageSize?: number;
+  filter?: "all" | "open" | "offers" | "featured";
+  sortBy?: "nearest" | "fastest" | "topRated";
+  minimumRating?: number;
+  maximumLowestPrice?: number;
+}): Promise<DiscoverableRestaurantsPageResult> {
+  const page = Math.max(1, Math.floor(params?.page ?? 1));
+  const pageSize = Math.max(1, Math.min(30, Math.floor(params?.pageSize ?? 12)));
+  let restaurants = [...(await listDiscoverableRestaurants(params))];
+
+  if (params?.filter === "open") {
+    restaurants = restaurants.filter((restaurant) => restaurant.isOpen !== false);
+  } else if (params?.filter === "featured") {
+    restaurants = restaurants.filter(
+      (restaurant) =>
+        restaurant.discovery?.isFeatured === true ||
+        typeof restaurant.discovery?.featuredSortOrder === "number",
+    );
+  } else if (params?.filter === "offers") {
+    const offerRestaurantIds = await getActiveOfferRestaurantIdSet();
+    restaurants = restaurants.filter((restaurant) =>
+      offerRestaurantIds.has(String(restaurant._id)),
+    );
+  }
+
+  if (typeof params?.minimumRating === "number" && params.minimumRating > 0) {
+    restaurants = restaurants.filter(
+      (restaurant) => Number(restaurant.avgRating ?? 0) >= params.minimumRating!,
+    );
+  }
+
+  if (
+    typeof params?.maximumLowestPrice === "number" &&
+    params.maximumLowestPrice > 0
+  ) {
+    restaurants = restaurants.filter(
+      (restaurant) =>
+        typeof restaurant.lowestMenuPrice === "number" &&
+        restaurant.lowestMenuPrice <= params.maximumLowestPrice!,
+    );
+  }
+
+  restaurants.sort((left, right) => {
+    if (params?.sortBy === "fastest") {
+      return (
+        Number(left.preparationTimeMinutes ?? Number.MAX_SAFE_INTEGER) -
+        Number(right.preparationTimeMinutes ?? Number.MAX_SAFE_INTEGER)
+      );
+    }
+    if (params?.sortBy === "topRated") {
+      return Number(right.avgRating ?? 0) - Number(left.avgRating ?? 0);
+    }
+    return (
+      Number(left.distanceKm ?? Number.MAX_SAFE_INTEGER) -
+      Number(right.distanceKm ?? Number.MAX_SAFE_INTEGER)
+    );
+  });
+
+  const total = restaurants.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const start = (safePage - 1) * pageSize;
+  const items = restaurants.slice(start, start + pageSize);
+  const hasNextPage = safePage < pageCount;
+
+  return {
+    items,
+    total,
+    page: safePage,
+    pageSize,
+    pageCount,
+    hasNextPage,
+    nextPage: hasNextPage ? safePage + 1 : null,
+  };
 }
 
 export async function getCustomerDiscoveryHome(params?: {
@@ -2346,12 +2669,35 @@ export async function getCustomerDiscoveryHome(params?: {
       const offerRestaurants = restaurantIdsWithOffers
         .map((restaurantId) => restaurantById.get(restaurantId))
         .filter(Boolean);
+      const visibleActiveOffers = activeOffers.filter((offer) => {
+        const scopedOffer = offer as any;
+        if (scopedOffer.scopeType === "all_restaurants") return true;
+        const offerRestaurantIds =
+          scopedOffer.scopeType === "selected_restaurants"
+            ? (scopedOffer.selectedRestaurantIds ?? [])
+                .map((restaurantId: unknown) => restaurantId?.toString?.() ?? "")
+                .filter(Boolean)
+            : [scopedOffer.restaurantId?.toString?.() ?? ""].filter(Boolean);
+        return offerRestaurantIds.some((restaurantId: string) => restaurantById.has(restaurantId));
+      });
 
+      const selectedHomeServiceArea =
+        typeof params?.latitude === "number" && typeof params?.longitude === "number"
+          ? await assertLocationInsideServiceArea({
+              latitude: params.latitude,
+              longitude: params.longitude,
+              required: false,
+            })
+          : null;
+      const homePlatformContent = applyServiceAreaHomeCmsOverride(
+        platformContent,
+        selectedHomeServiceArea?.snapshot,
+      );
       const hasCustomerOrders = params?.customerId
         ? Boolean(await OrderModel.exists({ customerId: params.customerId }))
         : false;
       const homeCms = JSON.parse(
-        JSON.stringify(platformContent.customerApp.homeCms),
+        JSON.stringify(homePlatformContent.customerApp.homeCms),
       );
       if (
         homeCms.howToOrderGuide?.audience === "new_users" &&
@@ -2359,48 +2705,59 @@ export async function getCustomerDiscoveryHome(params?: {
       ) {
         homeCms.howToOrderGuide.isActive = false;
       }
+      const shouldShowHomeVoucherChips = Boolean(
+        homeCms.offerStrip?.isActive && homeCms.offerStrip?.showVoucherStrip,
+      );
+      const shouldShowRestaurantOfferSection =
+        homeCms.offerStrip?.showRestaurantOfferSection !== false;
 
       return {
-        homeBanner: platformContent.customerApp.homeBanner.isActive
-          ? platformContent.customerApp.homeBanner
+        homeBanner: homePlatformContent.customerApp.homeBanner.isActive
+          ? homePlatformContent.customerApp.homeBanner
           : null,
         homeCms,
         featuredRestaurants,
-        restaurantsWithOffers: offerRestaurants,
-        campaignPlacements: activeOffers
-          .filter((offer) => (offer as any).display?.showOnHome)
-          .map((offer) => ({
-            _id: offer._id.toString(),
-            voucherId: offer._id.toString(),
-            name: offer.name,
-            code: offer.code,
-            scopeType: (offer as any).scopeType,
-            audienceType: (offer as any).audienceType,
-            display: (offer as any).display ?? {},
-          }))
-          .sort(
-            (left, right) =>
-              (left.display?.position ?? 0) - (right.display?.position ?? 0),
-          ),
-        activeOffers: activeOffers.map((offer) => ({
-          _id: offer._id.toString(),
-          restaurantId: offer.restaurantId?.toString?.() ?? "",
-          restaurantIds:
-            (offer as any).scopeType === "selected_restaurants"
-              ? ((offer as any).selectedRestaurantIds ?? [])
-                  .map((restaurantId: unknown) => restaurantId?.toString?.() ?? "")
-                  .filter(Boolean)
-              : [offer.restaurantId?.toString?.() ?? ""].filter(Boolean),
-          scopeType: (offer as any).scopeType,
-          audienceType: (offer as any).audienceType,
-          name: offer.name,
-          code: offer.code,
-          type: offer.type,
-          mode: offer.mode,
-          discountValue: offer.discountValue,
-          minimumOrderAmount: offer.minimumOrderAmount,
-          display: (offer as any).display ?? {},
-        })),
+        restaurantsWithOffers: shouldShowRestaurantOfferSection ? offerRestaurants : [],
+        campaignPlacements: shouldShowHomeVoucherChips
+          ? visibleActiveOffers
+              .filter((offer) => (offer as any).display?.showOnHome)
+              .map((offer) => ({
+                _id: offer._id.toString(),
+                voucherId: offer._id.toString(),
+                name: offer.name,
+                code: offer.code,
+                scopeType: (offer as any).scopeType,
+                audienceType: (offer as any).audienceType,
+                display: (offer as any).display ?? {},
+              }))
+              .sort(
+                (left, right) =>
+                  (left.display?.position ?? 0) -
+                  (right.display?.position ?? 0),
+              )
+          : [],
+        activeOffers: visibleActiveOffers.map((offer) => ({
+              _id: offer._id.toString(),
+              restaurantId: offer.restaurantId?.toString?.() ?? "",
+              restaurantIds:
+                (offer as any).scopeType === "selected_restaurants"
+                  ? ((offer as any).selectedRestaurantIds ?? [])
+                      .map(
+                        (restaurantId: unknown) =>
+                          restaurantId?.toString?.() ?? "",
+                      )
+                      .filter(Boolean)
+                  : [offer.restaurantId?.toString?.() ?? ""].filter(Boolean),
+              scopeType: (offer as any).scopeType,
+              audienceType: (offer as any).audienceType,
+              name: offer.name,
+              code: offer.code,
+              type: offer.type,
+              mode: offer.mode,
+              discountValue: offer.discountValue,
+              minimumOrderAmount: offer.minimumOrderAmount,
+              display: (offer as any).display ?? {},
+            })),
       };
     },
   );
@@ -2431,6 +2788,7 @@ export async function getCustomerRestaurantDetails(
           coverImage: 1,
           address: 1,
           location: 1,
+          serviceArea: 1,
           runtime: 1,
           discovery: 1,
           preparationTimeMinutes: 1,
@@ -2448,9 +2806,25 @@ export async function getCustomerRestaurantDetails(
 
       restaurant.isOpen = restaurant.runtime?.isOnline ?? false;
       const platformContent = await getPlatformContent();
+      const selectedServiceArea =
+        typeof params?.latitude === "number" && typeof params?.longitude === "number"
+          ? await assertLocationInsideServiceArea({
+              latitude: params.latitude,
+              longitude: params.longitude,
+              required: false,
+            })
+          : null;
+      const restaurantServiceArea =
+        await resolveRestaurantServiceAreaSnapshot(restaurant);
+      restaurant.selectedServiceArea = selectedServiceArea?.snapshot ?? null;
+      restaurant.serviceArea = restaurantServiceArea ?? restaurant.serviceArea ?? null;
       const deliveryRadiusKm = Math.max(
         0,
-        platformContent.operations.serviceArea.radiusKm,
+        isServiceAreaModeEnabled()
+          ? (selectedServiceArea?.snapshot.radiusKm ??
+              restaurantServiceArea?.radiusKm ??
+              platformContent.operations.serviceArea.radiusKm)
+          : platformContent.operations.serviceArea.radiusKm,
       );
       restaurant.deliveryRadiusKm = deliveryRadiusKm;
 
@@ -2466,8 +2840,14 @@ export async function getCustomerRestaurantDetails(
           restaurant.location.latitude,
           restaurant.location.longitude,
         );
-        restaurant.isServiceableForSelectedLocation =
-          restaurant.distanceKm <= deliveryRadiusKm;
+        restaurant.isServiceableForSelectedLocation = isServiceAreaModeEnabled()
+          ? Boolean(
+              selectedServiceArea?.snapshot &&
+                (!restaurantServiceArea ||
+                  restaurantServiceArea.zoneId ===
+                    selectedServiceArea.snapshot.zoneId),
+            )
+          : restaurant.distanceKm <= deliveryRadiusKm;
       } else {
         restaurant.distanceKm = null;
         restaurant.isServiceableForSelectedLocation = null;
@@ -2686,6 +3066,7 @@ function buildQuoteFromOrder(order: Record<string, any>) {
     appliedVouchers: Array.isArray(order.appliedVouchers)
       ? order.appliedVouchers
       : [],
+    serviceArea: order.serviceAreaSnapshot ?? null,
   };
 }
 
@@ -3573,6 +3954,7 @@ export async function quoteCustomerCart(params: {
             name: 1,
             runtime: 1,
             location: 1,
+            serviceArea: 1,
             commercial: 1,
           })
           .lean<Record<string, any>>(),
@@ -3683,10 +4065,28 @@ export async function quoteCustomerCart(params: {
       });
 
       const subtotal = resolvedItems.reduce((sum, item) => sum + item.lineTotal, 0);
-      const deliveryPricingConfig = resolveDeliveryPricingConfig({
-        platformContent,
-        restaurant,
+      const deliveryServiceArea = await assertLocationInsideServiceArea({
+        latitude: params.latitude,
+        longitude: params.longitude,
+        required:
+          typeof params.latitude === "number" ||
+          typeof params.longitude === "number",
       });
+      const restaurantServiceArea =
+        await resolveRestaurantServiceAreaSnapshot(restaurant);
+      assertRestaurantMatchesDeliveryServiceArea({
+        restaurantServiceArea,
+        deliveryServiceArea: deliveryServiceArea?.snapshot ?? null,
+      });
+      const serviceAreaSnapshot =
+        deliveryServiceArea?.snapshot ?? restaurantServiceArea ?? null;
+      const deliveryPricingConfig = applyServiceAreaDeliveryPricing(
+        resolveDeliveryPricingConfig({
+          platformContent,
+          restaurant,
+        }),
+        serviceAreaSnapshot,
+      );
       const deliveryDistanceKm = assertRestaurantServiceableForDelivery({
         platformContent,
         restaurant,
@@ -3749,6 +4149,7 @@ export async function quoteCustomerCart(params: {
           id: String(restaurant._id),
           name: restaurant.name,
         },
+        serviceArea: serviceAreaSnapshot,
         items: resolvedItems,
         pricing: {
           subtotal,
@@ -3977,6 +4378,7 @@ export async function placeCustomerOrder(params: {
             paymentSnapshot,
             pricing: quote.pricing,
             appliedVouchers: quote.appliedVouchers ?? [],
+            serviceAreaSnapshot: quote.serviceArea ?? {},
             customerSnapshot: {
               id: customer.id,
               fullName: customer.fullName,
@@ -4057,6 +4459,7 @@ export async function placeCustomerOrder(params: {
             platformDiscountCost,
             deliveryCost,
             netAmount,
+            serviceAreaSnapshot: quote.serviceArea ?? {},
             settlementStatus: "pending",
             availableAt: null,
           },
@@ -4226,6 +4629,7 @@ export async function initiateBkashPayment(params: {
     items: params.items,
     voucherCode: params.voucherCode ?? "",
     deliveryAddress: params.deliveryAddress,
+    serviceArea: quote.serviceArea ?? null,
   };
   const session = await BkashSandboxPaymentSessionModel.create({
     customerId,

@@ -6,7 +6,6 @@ import {
   Animated,
   BackHandler,
   FlatList,
-  Image,
   Keyboard,
   Pressable,
   ScrollView,
@@ -26,6 +25,7 @@ import {
   MenuPopularSkeleton,
   RestaurantDetailsSkeleton,
 } from "@/src/components/loading-skeleton";
+import { RemoteImage } from "@/src/components/remote-image";
 import { styles } from "@/src/components/restaurant-details/restaurant-details.styles";
 import {
   CategoryRail,
@@ -853,13 +853,14 @@ export default function RestaurantDetailsScreen() {
                   },
                 ]}
               >
-                {restaurant.coverImage?.url ? (
-                  <Image source={{ uri: restaurant.coverImage.url }} style={styles.heroImage} />
-                ) : (
-                  <View style={styles.heroFallback}>
-                    <Ionicons name="restaurant-outline" size={28} color={palette.primary} />
-                  </View>
-                )}
+                <RemoteImage
+                  uri={restaurant.coverImage?.url}
+                  style={styles.heroImage}
+                  fallbackIcon="restaurant-outline"
+                  fallbackIconSize={28}
+                  fallbackTint={palette.primary}
+                  accessibilityLabel={`${restaurant.name} cover image`}
+                />
               </Animated.View>
               <View style={styles.heroShade} />
               <View style={styles.heroTopRow}>
@@ -942,13 +943,14 @@ export default function RestaurantDetailsScreen() {
               ]}
             >
               <View style={styles.infoTopRow}>
-                {restaurant.logo?.url ? (
-                  <Image source={{ uri: restaurant.logo.url }} style={styles.restaurantLogo} />
-                ) : (
-                  <View style={styles.restaurantLogoFallback}>
-                    <Ionicons name="restaurant-outline" size={18} color={palette.primary} />
-                  </View>
-                )}
+                <RemoteImage
+                  uri={restaurant.logo?.url}
+                  style={styles.restaurantLogo}
+                  fallbackIcon="restaurant-outline"
+                  fallbackIconSize={18}
+                  fallbackTint={palette.primary}
+                  accessibilityLabel={`${restaurant.name} logo`}
+                />
                 <View style={styles.infoCopy}>
                   <Text style={styles.title}>{restaurant.name}</Text>
                   {detailsData?.activeOffers.length ? (
@@ -1284,14 +1286,12 @@ export default function RestaurantDetailsScreen() {
               Add this item to start a new cart for {restaurant.name}.
             </Text>
             <View style={styles.modalPreviewRow}>
-              {cartConflictItem.item.images?.[0]?.url ? (
-                <Image
-                  source={{ uri: cartConflictItem.item.images[0].url }}
-                  style={styles.modalPreviewImage}
-                />
-              ) : (
-                <View style={styles.modalPreviewImageFallback} />
-              )}
+              <RemoteImage
+                uri={cartConflictItem.item.images?.[0]?.url}
+                style={styles.modalPreviewImage}
+                fallbackIcon="fast-food-outline"
+                accessibilityLabel={`${cartConflictItem.item.name} food photo`}
+              />
               <View style={styles.modalPreviewCopy}>
                 <Text style={styles.modalPreviewTitle}>{cartConflictItem.item.name}</Text>
                 <Text style={styles.modalPreviewSubtitle}>
@@ -1502,14 +1502,12 @@ export default function RestaurantDetailsScreen() {
             {selectedItem ? (
               <>
                 <View style={styles.customHeroCard}>
-                  {selectedItem.images?.[0]?.url ? (
-                    <Image
-                      source={{ uri: selectedItem.images[0].url }}
-                      style={styles.customHeroImage}
-                    />
-                  ) : (
-                    <View style={styles.customHeroImageFallback} />
-                  )}
+                  <RemoteImage
+                    uri={selectedItem.images?.[0]?.url}
+                    style={styles.customHeroImage}
+                    fallbackIcon="fast-food-outline"
+                    accessibilityLabel={`${selectedItem.name} food photo`}
+                  />
                   <View style={styles.customHeroCopy}>
                     <Text style={styles.customHeroTitle}>{selectedItem.name}</Text>
                     {selectedItem.description ? (

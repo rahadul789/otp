@@ -17,6 +17,7 @@ export const platformContent = {
       offerStrip: {
         isActive: true,
         showVoucherStrip: true,
+        showRestaurantOfferSection: true,
         mode: "voucher_strip",
         title: "Fresh offers near you",
         subtitle: "Limited-time savings from restaurants around you.",
@@ -31,6 +32,22 @@ export const platformContent = {
         backgroundColor: "#FFF0F6",
         textColor: "#3F2432",
         accentColor: "#FF5C93",
+      },
+      homeCategories: {
+        isActive: true,
+        title: "What are you craving?",
+        subtitle: "Quickly find popular food around you.",
+        items: [
+          { id: "biryani", label: "Biryani", searchQuery: "biryani", icon: "restaurant-outline", color: "#FFF0F6", position: 1, isActive: true },
+          { id: "burger", label: "Burger", searchQuery: "burger", icon: "fast-food-outline", color: "#FFF5D8", position: 2, isActive: true },
+          { id: "chicken", label: "Chicken", searchQuery: "chicken", icon: "flame-outline", color: "#EAF8F2", position: 3, isActive: true },
+          { id: "pizza", label: "Pizza", searchQuery: "pizza", icon: "pizza-outline", color: "#EDF4FF", position: 4, isActive: true },
+          { id: "fast-food", label: "Fast food", searchQuery: "fast food", icon: "fast-food-outline", color: "#FFEAF3", position: 5, isActive: true },
+          { id: "fish", label: "Fish", searchQuery: "fish", icon: "fish-outline", color: "#EAF7FF", position: 6, isActive: true },
+          { id: "dessert", label: "Dessert", searchQuery: "dessert", icon: "ice-cream-outline", color: "#F3EDFF", position: 7, isActive: true },
+          { id: "tea-coffee", label: "Tea & coffee", searchQuery: "tea coffee", icon: "cafe-outline", color: "#FFF1E8", position: 8, isActive: true },
+          { id: "healthy", label: "Healthy", searchQuery: "healthy", icon: "leaf-outline", color: "#EAF8F0", position: 9, isActive: true },
+        ],
       },
       modal: {
         isActive: false,

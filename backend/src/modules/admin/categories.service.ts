@@ -5,6 +5,7 @@ import { AppError } from "../../common/utils/app-error";
 import { AdminAuditLogModel, AdminModel } from "./admin.model";
 import { RestaurantModel } from "../auth/auth.model";
 import { CategoryModel, MenuItemModel, NotificationModel, OrderModel } from "../owner/operational.model";
+import { buildRestaurantServiceAreaScopeFilter } from "../service-area/service-area.service";
 
 type CategoryStatus = "active" | "archived";
 const BLOCKED_CATEGORY_KEYWORDS = ["fake", "test", "demo", "xxx", "adult"];
@@ -12,6 +13,8 @@ const BLOCKED_CATEGORY_KEYWORDS = ["fake", "test", "demo", "xxx", "adult"];
 type ListAdminCategoriesParams = {
   search?: string;
   restaurantId?: string;
+  zoneId?: string;
+  districtId?: string;
   status?: "all" | CategoryStatus;
   health?: "all" | "empty" | "needs_review" | "duplicate" | "healthy";
   sortBy?: "newest" | "oldest" | "mostItems" | "emptyFirst" | "name";
@@ -139,6 +142,13 @@ async function writeCategoryAudit(params: {
 
 function buildBasePipeline(params: ListAdminCategoriesParams) {
   const match: Record<string, unknown> = {};
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params);
+  const restaurantScopeMatch = Object.fromEntries(
+    Object.entries(restaurantScopeFilter).map(([key, value]) => [
+      `restaurant.${key}`,
+      value,
+    ]),
+  );
   if (params.status && params.status !== "all") match.status = params.status;
   if (params.restaurantId && params.restaurantId !== "all" && mongoose.Types.ObjectId.isValid(params.restaurantId)) {
     match.restaurantId = new mongoose.Types.ObjectId(params.restaurantId);
@@ -218,6 +228,9 @@ function buildBasePipeline(params: ListAdminCategoriesParams) {
         duplicateNameCount: { $ifNull: [{ $arrayElemAt: ["$duplicateStats.count", 0] }, 1] },
       },
     },
+    ...(Object.keys(restaurantScopeMatch).length
+      ? [{ $match: restaurantScopeMatch }]
+      : []),
   ];
 }
 
@@ -455,7 +468,13 @@ export async function listAdminCategories(params: ListAdminCategoriesParams) {
         },
       },
     ]),
-    RestaurantModel.find({}, { name: 1, city: 1 }).sort({ name: 1 }).limit(500).lean(),
+    RestaurantModel.find(
+      buildRestaurantServiceAreaScopeFilter(params),
+      { name: 1, address: 1, city: 1 },
+    )
+      .sort({ name: 1 })
+      .limit(500)
+      .lean(),
   ]);
 
   const total = Number(countRows[0]?.total ?? 0);

@@ -10,6 +10,10 @@ import { sendPushToCustomer } from "../customer/push.service";
 import { RestaurantModel } from "../auth/auth.model";
 import { ReviewModel } from "../owner/experience.model";
 import { OrderModel } from "../owner/operational.model";
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+} from "../service-area/service-area.service";
 import { AdminAuditLogModel, AdminModel } from "./admin.model";
 import { AdminCustomerGroupModel } from "./customer-group.model";
 
@@ -26,6 +30,11 @@ type CustomerListParams = {
   status?: "all" | "active" | "suspended" | "locked";
   requestStatus?: "all" | "pending" | "cancelled" | "reviewed" | "completed" | "none";
   customerGroupKey?: string;
+  zoneId?: string;
+  districtId?: string;
+  preset?: string;
+  from?: string;
+  to?: string;
   sortBy?: "newest" | "recentLogin" | "mostOrders" | "highestSpend";
   page?: number;
   pageSize?: number;
@@ -55,6 +64,8 @@ type CustomerOrdersParams = {
   from?: string;
   to?: string;
   restaurantId?: string;
+  zoneId?: string;
+  districtId?: string;
   status?: "all" | "live" | "delivered" | "cancelled";
   search?: string;
   sortBy?: "newest" | "oldest" | "highestValue";
@@ -114,33 +125,34 @@ function toObjectIdOrThrow(value: string, label: string) {
   return new mongoose.Types.ObjectId(value);
 }
 
-function buildDateMatch(params?: { preset?: string; from?: string; to?: string }) {
+function buildDateWindow(params?: { preset?: string; from?: string; to?: string }) {
   const now = new Date();
   let from: Date | null = null;
   let to: Date | null = null;
+  const preset = params?.preset ?? "last7Days";
 
-  if (params?.preset === "lifetime") {
-    return null;
+  if (preset === "lifetime") {
+    return { preset, from: null, to: null, match: null };
   }
 
-  if (params?.preset === "today") {
+  if (preset === "today") {
     from = new Date(now);
     from.setHours(0, 0, 0, 0);
     to = new Date(now);
     to.setHours(23, 59, 59, 999);
-  } else if (params?.preset === "yesterday") {
+  } else if (preset === "yesterday") {
     from = new Date(now);
     from.setDate(from.getDate() - 1);
     from.setHours(0, 0, 0, 0);
     to = new Date(from);
     to.setHours(23, 59, 59, 999);
-  } else if (params?.preset === "last30Days") {
+  } else if (preset === "last30Days") {
     from = new Date(now);
     from.setDate(from.getDate() - 30);
-  } else if (params?.preset === "last90Days") {
+  } else if (preset === "last90Days") {
     from = new Date(now);
     from.setDate(from.getDate() - 90);
-  } else if (params?.preset === "thisWeek") {
+  } else if (preset === "thisWeek") {
     from = new Date(now);
     const day = from.getDay();
     const diff = from.getDate() - day + (day === 0 ? -6 : 1);
@@ -149,15 +161,15 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
     to = new Date(from);
     to.setDate(from.getDate() + 6);
     to.setHours(23, 59, 59, 999);
-  } else if (params?.preset === "thisMonth") {
+  } else if (preset === "thisMonth") {
     from = new Date(now.getFullYear(), now.getMonth(), 1);
     to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-  } else if (params?.preset === "lastMonth") {
+  } else if (preset === "lastMonth") {
     from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     to = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-  } else if (params?.preset === "custom") {
-    from = params.from ? new Date(params.from) : null;
-    to = params.to ? new Date(params.to) : null;
+  } else if (preset === "custom") {
+    from = params?.from ? new Date(params.from) : null;
+    to = params?.to ? new Date(params.to) : null;
   } else {
     from = new Date(now);
     from.setDate(from.getDate() - 7);
@@ -167,7 +179,16 @@ function buildDateMatch(params?: { preset?: string; from?: string; to?: string }
   if (from && !Number.isNaN(from.getTime())) match.$gte = from;
   if (to && !Number.isNaN(to.getTime())) match.$lte = to;
 
-  return Object.keys(match).length ? match : null;
+  return {
+    preset,
+    from: from && !Number.isNaN(from.getTime()) ? from : null,
+    to: to && !Number.isNaN(to.getTime()) ? to : null,
+    match: Object.keys(match).length ? match : null,
+  };
+}
+
+function buildDateMatch(params?: { preset?: string; from?: string; to?: string }) {
+  return buildDateWindow(params).match;
 }
 
 function buildCustomerQuery(params: CustomerListParams = {}) {
@@ -235,11 +256,35 @@ function addCustomerIdNinFilter(query: Record<string, unknown>, ids: unknown[]) 
       : { $nin: objectIds };
 }
 
+async function getScopedCustomerObjectIds(params: {
+  zoneId?: string;
+  districtId?: string;
+}) {
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
+  if (!Object.keys(orderScopeFilter).length) return null;
+  const customerIds = await OrderModel.distinct("customerId", {
+    ...orderScopeFilter,
+    customerId: { $type: "string", $ne: "" },
+  });
+  return objectIdValues(customerIds);
+}
+
+async function applyCustomerServiceAreaFilter(
+  query: Record<string, unknown>,
+  params: CustomerListParams,
+) {
+  const customerIds = await getScopedCustomerObjectIds(params);
+  if (customerIds === null) return;
+  addCustomerIdInFilter(query, customerIds);
+}
+
 async function applyCustomerGroupFilter(
   query: Record<string, unknown>,
   customerGroupKey?: string,
+  params: CustomerListParams = {},
 ) {
   if (!customerGroupKey || customerGroupKey === "none") return;
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
 
   if (customerGroupKey.startsWith("manual:")) {
     const groupId = customerGroupKey.replace("manual:", "").trim();
@@ -264,12 +309,12 @@ async function applyCustomerGroupFilter(
   }
 
   if (customerGroupKey === "new_users") {
-    addCustomerIdNinFilter(query, await OrderModel.distinct("customerId", {}));
+    addCustomerIdNinFilter(query, await OrderModel.distinct("customerId", orderScopeFilter));
     return;
   }
 
   if (customerGroupKey === "returning_users") {
-    addCustomerIdInFilter(query, await OrderModel.distinct("customerId", {}));
+    addCustomerIdInFilter(query, await OrderModel.distinct("customerId", orderScopeFilter));
     return;
   }
 
@@ -277,7 +322,10 @@ async function applyCustomerGroupFilter(
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     addCustomerIdInFilter(
       query,
-      await OrderModel.distinct("customerId", { createdAt: { $gte: since } }),
+      await OrderModel.distinct("customerId", {
+        ...orderScopeFilter,
+        createdAt: { $gte: since },
+      }),
     );
     return;
   }
@@ -286,14 +334,17 @@ async function applyCustomerGroupFilter(
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     addCustomerIdNinFilter(
       query,
-      await OrderModel.distinct("customerId", { createdAt: { $gte: since } }),
+      await OrderModel.distinct("customerId", {
+        ...orderScopeFilter,
+        createdAt: { $gte: since },
+      }),
     );
     return;
   }
 
   if (customerGroupKey === "high_value_customers") {
     const rows = await OrderModel.aggregate<{ _id: string; totalSpend: number }>([
-      { $match: { status: "Delivered" } },
+      { $match: { status: "Delivered", ...orderScopeFilter } },
       {
         $group: {
           _id: "$customerId",
@@ -362,6 +413,191 @@ function mapCustomerSummary(customer: Record<string, any>) {
   };
 }
 
+function buildChartDateMatch(dateWindow: ReturnType<typeof buildDateWindow>) {
+  if (dateWindow.match) return dateWindow.match;
+  const from = new Date();
+  from.setDate(from.getDate() - 30);
+  return { $gte: from };
+}
+
+async function buildCustomerBehaviorSummary(
+  params: CustomerListParams,
+  customerQuery: Record<string, unknown>,
+) {
+  const dateWindow = buildDateWindow(params);
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params);
+  const scopedCustomers = await CustomerModel.find(customerQuery, { _id: 1 })
+    .limit(50000)
+    .lean();
+  const customerIdStrings = scopedCustomers.map((customer) =>
+    objectIdString(customer._id),
+  );
+  const customerIdMatch = customerIdStrings.length
+    ? { $in: customerIdStrings }
+    : { $in: ["__no_matching_customers__"] };
+  const orderDateFilter = dateWindow.match ? { createdAt: dateWindow.match } : {};
+  const orderMatch: Record<string, unknown> = {
+    ...orderScopeFilter,
+    ...orderDateFilter,
+    status: "Delivered",
+    customerId: customerIdMatch,
+  };
+  const chartDateMatch = buildChartDateMatch(dateWindow);
+  const chartOrderMatch: Record<string, unknown> = {
+    ...orderScopeFilter,
+    createdAt: chartDateMatch,
+    status: "Delivered",
+    customerId: customerIdMatch,
+  };
+  const newCustomerQuery: Record<string, unknown> = { ...customerQuery };
+  if (dateWindow.match) newCustomerQuery.createdAt = dateWindow.match;
+  const chartNewCustomerQuery: Record<string, unknown> = {
+    ...customerQuery,
+    createdAt: chartDateMatch,
+  };
+
+  const [
+    newCustomers,
+    orderingRows,
+    repeatRows,
+    firstTimeRows,
+    orderTrendRows,
+    newTrendRows,
+  ] = await Promise.all([
+    CustomerModel.countDocuments(newCustomerQuery),
+    OrderModel.aggregate<{ _id: string }>([
+      { $match: orderMatch },
+      { $group: { _id: "$customerId" } },
+    ]),
+    OrderModel.aggregate<{ _id: string; orders: number; spend: number }>([
+      { $match: orderMatch },
+      {
+        $group: {
+          _id: "$customerId",
+          orders: { $sum: 1 },
+          spend: { $sum: { $ifNull: ["$pricing.total", 0] } },
+        },
+      },
+      { $match: { orders: { $gte: 2 } } },
+    ]),
+    OrderModel.aggregate<{ _id: string; firstDeliveredAt: Date }>([
+      {
+        $match: {
+          ...orderScopeFilter,
+          status: "Delivered",
+          customerId: customerIdMatch,
+        },
+      },
+      { $group: { _id: "$customerId", firstDeliveredAt: { $min: "$createdAt" } } },
+      ...(dateWindow.match ? [{ $match: { firstDeliveredAt: dateWindow.match } }] : []),
+    ]),
+    OrderModel.aggregate<{
+      _id: string;
+      orders: number;
+      orderingCustomers: number;
+      repeatCustomers: number;
+    }>([
+      { $match: chartOrderMatch },
+      {
+        $group: {
+          _id: {
+            day: {
+              $dateToString: {
+                date: "$createdAt",
+                format: "%Y-%m-%d",
+                timezone: "Asia/Dhaka",
+              },
+            },
+            customerId: "$customerId",
+          },
+          orders: { $sum: 1 },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.day",
+          orders: { $sum: "$orders" },
+          orderingCustomers: { $sum: 1 },
+          repeatCustomers: {
+            $sum: { $cond: [{ $gte: ["$orders", 2] }, 1, 0] },
+          },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $limit: 120 },
+    ]),
+    CustomerModel.aggregate<{ _id: string; newCustomers: number }>([
+      { $match: chartNewCustomerQuery },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              date: "$createdAt",
+              format: "%Y-%m-%d",
+              timezone: "Asia/Dhaka",
+            },
+          },
+          newCustomers: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $limit: 120 },
+    ]),
+  ]);
+
+  const trendByDate = new Map<
+    string,
+    {
+      date: string;
+      orders: number;
+      orderingCustomers: number;
+      repeatCustomers: number;
+      newCustomers: number;
+    }
+  >();
+  orderTrendRows.forEach((row) => {
+    trendByDate.set(row._id, {
+      date: row._id,
+      orders: numberValue(row.orders),
+      orderingCustomers: numberValue(row.orderingCustomers),
+      repeatCustomers: numberValue(row.repeatCustomers),
+      newCustomers: 0,
+    });
+  });
+  newTrendRows.forEach((row) => {
+    const existing =
+      trendByDate.get(row._id) ?? {
+        date: row._id,
+        orders: 0,
+        orderingCustomers: 0,
+        repeatCustomers: 0,
+        newCustomers: 0,
+      };
+    existing.newCustomers = numberValue(row.newCustomers);
+    trendByDate.set(row._id, existing);
+  });
+
+  const orderingCustomers = orderingRows.length;
+  const repeatCustomers = repeatRows.length;
+
+  return {
+    preset: dateWindow.preset,
+    from: serializeDate(dateWindow.from),
+    to: serializeDate(dateWindow.to),
+    newCustomers,
+    orderingCustomers,
+    repeatCustomers,
+    firstTimeOrderingCustomers: firstTimeRows.length,
+    repeatRate:
+      orderingCustomers > 0
+        ? Math.round((repeatCustomers / orderingCustomers) * 1000) / 10
+        : 0,
+    trend: Array.from(trendByDate.values()).sort((left, right) =>
+      left.date.localeCompare(right.date),
+    ),
+  };
+}
+
 async function createAdminAuditLog(params: {
   adminId?: string;
   customerId: string;
@@ -400,9 +636,10 @@ export async function listAdminCustomers(params: CustomerListParams = {}) {
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
   const query = buildCustomerQuery(params);
-  await applyCustomerGroupFilter(query, params.customerGroupKey);
+  await applyCustomerServiceAreaFilter(query, params);
+  await applyCustomerGroupFilter(query, params.customerGroupKey, params);
   const sort = buildCustomerSort(params.sortBy);
-  const [items, total, summaryRows] = await Promise.all([
+  const [items, total, summaryRows, behavior] = await Promise.all([
     CustomerModel.aggregate<Record<string, any>>([
       { $match: query },
       { $addFields: { customerIdString: { $toString: "$_id" } } },
@@ -481,6 +718,7 @@ export async function listAdminCustomers(params: CustomerListParams = {}) {
         },
       },
     ]),
+    buildCustomerBehaviorSummary(params, query),
   ]);
   const summary = summaryRows[0] ?? {
     total: 0,
@@ -496,12 +734,18 @@ export async function listAdminCustomers(params: CustomerListParams = {}) {
     page,
     pageSize,
     pageCount: Math.max(1, Math.ceil(total / pageSize)),
-    summary,
+    summary: { ...summary, behavior },
   };
 }
 
-export async function listAdminCustomerGroups() {
-  const groups = await AdminCustomerGroupModel.find({ archivedAt: null })
+export async function listAdminCustomerGroups(params: Pick<CustomerListParams, "zoneId" | "districtId"> = {}) {
+  const query: Record<string, unknown> = { archivedAt: null };
+  if (params.zoneId?.trim()) {
+    query["sourceFilter.zoneId"] = params.zoneId.trim();
+  } else if (params.districtId?.trim()) {
+    query["sourceFilter.districtId"] = params.districtId.trim();
+  }
+  const groups = await AdminCustomerGroupModel.find(query)
     .sort({ createdAt: -1 })
     .limit(100)
     .lean();
@@ -514,7 +758,8 @@ export async function listAdminCustomerGroups() {
 
 async function resolveCustomerIdsForGroup(params: CustomerListParams = {}) {
   const query = buildCustomerQuery(params);
-  await applyCustomerGroupFilter(query, params.customerGroupKey);
+  await applyCustomerServiceAreaFilter(query, params);
+  await applyCustomerGroupFilter(query, params.customerGroupKey, params);
   const customers = await CustomerModel.find(query, { _id: 1 })
     .limit(5000)
     .lean();
@@ -624,8 +869,23 @@ export async function addAdminCustomerGroupMembers(
     );
   }
 
+  const groupBeforeUpdate = await AdminCustomerGroupModel.findOne({
+    _id: groupId,
+    archivedAt: null,
+  }).lean();
+  if (!groupBeforeUpdate) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "CUSTOMER_GROUP_NOT_FOUND",
+      "Customer group not found",
+    );
+  }
+  const memberQuery: Record<string, unknown> = { _id: { $in: customerIds } };
+  const groupScope = (groupBeforeUpdate.sourceFilter ?? {}) as CustomerListParams;
+  await applyCustomerServiceAreaFilter(memberQuery, groupScope);
+
   const existingCustomers = await CustomerModel.find(
-    { _id: { $in: customerIds } },
+    memberQuery,
     { _id: 1 },
   ).lean();
   const existingIds = existingCustomers.map((customer) => customer._id);
@@ -681,7 +941,7 @@ export async function removeAdminCustomerGroupMember(params: {
 
 export async function getAdminCustomerDetails(
   customerId: string,
-  params?: { preset?: string; from?: string; to?: string },
+  params?: { preset?: string; from?: string; to?: string; zoneId?: string; districtId?: string },
 ) {
   const safeCustomerId = toObjectIdOrThrow(customerId, "Customer");
   const customer = await CustomerModel.findById(safeCustomerId).lean();
@@ -692,7 +952,20 @@ export async function getAdminCustomerDetails(
 
   const customerIdString = safeCustomerId.toString();
   const dateMatch = buildDateMatch(params);
-  const windowMatch: Record<string, unknown> = { customerId: customerIdString };
+  const serviceAreaFilter = buildOrderServiceAreaScopeFilter(params ?? {});
+  const restaurantServiceAreaFilter = buildRestaurantServiceAreaScopeFilter(params ?? {});
+  const scopedReviewRestaurantIds = Object.keys(restaurantServiceAreaFilter).length
+    ? await RestaurantModel.distinct("_id", restaurantServiceAreaFilter)
+    : null;
+  const orderCustomerMatch: Record<string, unknown> = {
+    ...serviceAreaFilter,
+    customerId: customerIdString,
+  };
+  const reviewCustomerMatch: Record<string, unknown> = { customerId: customerIdString };
+  if (scopedReviewRestaurantIds) {
+    reviewCustomerMatch.restaurantId = { $in: scopedReviewRestaurantIds };
+  }
+  const windowMatch: Record<string, unknown> = { ...orderCustomerMatch };
   if (dateMatch) windowMatch.createdAt = dateMatch;
 
   const [
@@ -706,7 +979,7 @@ export async function getAdminCustomerDetails(
     auditLogs,
   ] = await Promise.all([
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { customerId: customerIdString } },
+      { $match: orderCustomerMatch },
       {
         $group: {
           _id: null,
@@ -750,7 +1023,7 @@ export async function getAdminCustomerDetails(
       },
     ]),
     ReviewModel.aggregate<{ _id: null; reviewsGiven: number; averageReviewRating: number }>([
-      { $match: { customerId: customerIdString } },
+      { $match: orderCustomerMatch },
       {
         $group: {
           _id: null,
@@ -760,7 +1033,7 @@ export async function getAdminCustomerDetails(
       },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { customerId: customerIdString } },
+      { $match: orderCustomerMatch },
       {
         $group: {
           _id: "$restaurantId",
@@ -791,7 +1064,7 @@ export async function getAdminCustomerDetails(
       { $addFields: { restaurant: { $arrayElemAt: ["$restaurantDocs", 0] } } },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { customerId: customerIdString } },
+      { $match: orderCustomerMatch },
       { $group: { _id: "$restaurantId", restaurantName: { $first: "$restaurantSnapshot.name" } } },
       {
         $lookup: {
@@ -805,7 +1078,7 @@ export async function getAdminCustomerDetails(
       { $sort: { "restaurant.name": 1 } },
     ]),
     OrderModel.aggregate<Record<string, any>>([
-      { $match: { customerId: customerIdString } },
+      { $match: reviewCustomerMatch },
       { $sort: { createdAt: -1 } },
       { $limit: 8 },
       {
@@ -819,7 +1092,7 @@ export async function getAdminCustomerDetails(
       { $addFields: { restaurant: { $arrayElemAt: ["$restaurantDocs", 0] } } },
     ]),
     ReviewModel.aggregate<Record<string, any>>([
-      { $match: { customerId: customerIdString } },
+      { $match: reviewCustomerMatch },
       { $sort: { createdAt: -1 } },
       { $limit: 8 },
       {
@@ -1007,7 +1280,10 @@ export async function listAdminCustomerOrders(
   const safeCustomerId = toObjectIdOrThrow(customerId, "Customer");
   const page = clampPage(params.page);
   const pageSize = clampPageSize(params.pageSize);
-  const query: Record<string, unknown> = { customerId: safeCustomerId.toString() };
+  const query: Record<string, unknown> = {
+    ...buildOrderServiceAreaScopeFilter(params),
+    customerId: safeCustomerId.toString(),
+  };
   const dateMatch = buildDateMatch(params);
 
   if (dateMatch) query.createdAt = dateMatch;

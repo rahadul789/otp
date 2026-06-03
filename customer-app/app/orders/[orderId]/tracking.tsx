@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -26,6 +27,7 @@ import { ReorderCartSwitchModal } from "@/src/components/orders/reorder-cart-swi
 import { OfflineNoticeCard } from "@/src/components/offline-notice-card";
 import {
   useCustomerOrderDetailsQuery,
+  useCustomerCancelOrderMutation,
   useCustomerReorderMutation,
   useCustomerRestaurantDetailsQuery,
   useCustomerReviewMutation,
@@ -35,6 +37,7 @@ import {
   getCustomerOrderStatusMeta,
   getLiveOrderJourneyIndex,
   getLiveOrderTrackingState,
+  canCancelCustomerOrder,
   LIVE_ORDER_JOURNEY_STEPS,
 } from "@/src/lib/customer-order-display";
 import {
@@ -123,6 +126,7 @@ export default function OrderTrackingScreen() {
   const orderId =
     typeof params.orderId === "string" ? params.orderId : undefined;
   const orderQuery = useCustomerOrderDetailsQuery(orderId);
+  const cancelOrderMutation = useCustomerCancelOrderMutation(orderId);
   const reviewMutation = useCustomerReviewMutation(orderId);
   const reorderMutation = useCustomerReorderMutation();
   const showBanner = useAppBannerStore((state) => state.showBanner);
@@ -255,6 +259,7 @@ export default function OrderTrackingScreen() {
   const riderPhone = order.riderSnapshot?.phone?.trim() || "";
   const restaurantName = restaurant?.name || "Restaurant";
   const canReviewOrder = order.status === "Delivered" && !order.customerReview;
+  const canCancelOrder = canCancelCustomerOrder(order.status);
   const restaurantAddressText = formatCustomerAddressLine(
     typeof restaurant?.address === "string"
       ? restaurant.address
@@ -337,6 +342,55 @@ export default function OrderTrackingScreen() {
       tone: result.skippedCount > 0 ? "warning" : "success",
     });
     router.push("/(tabs)/cart");
+  };
+  const handleCancelOrder = async () => {
+    if (!canCancelOrder || cancelOrderMutation.isPending) return;
+
+    try {
+      await cancelOrderMutation.mutateAsync({
+        reason: "customer_cancelled_before_acceptance",
+      });
+      closeDetailsSheet();
+      const isBkashPaidOrder =
+        order.paymentMethod === "Bkash" &&
+        ["paid", "refund_pending"].includes(order.paymentStatus ?? "");
+      showBanner({
+        title: "Order cancelled",
+        description: isBkashPaidOrder
+          ? `Your bKash refund is now in review. We will process it within ${formatRefundEta(
+              order.paymentSnapshot?.refundEtaMinutes,
+            )}.`
+          : "The restaurant had not accepted it yet. No refund is needed for cash on delivery.",
+        tone: "success",
+      });
+    } catch (error) {
+      showBanner({
+        title: "Could not cancel order",
+        description:
+          error instanceof Error
+            ? error.message
+            : "This order may already have been accepted by the restaurant.",
+        tone: "warning",
+      });
+    }
+  };
+  const handleRequestCancelOrder = () => {
+    Alert.alert(
+      "Cancel this order?",
+      order.paymentMethod === "Bkash"
+        ? "The restaurant has not accepted it yet. Your bKash refund will move to review after cancellation."
+        : "The restaurant has not accepted it yet. Cash on delivery orders do not need a refund.",
+      [
+        { text: "Keep order", style: "cancel" },
+        {
+          text: "Cancel order",
+          style: "destructive",
+          onPress: () => {
+            void handleCancelOrder();
+          },
+        },
+      ],
+    );
   };
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
@@ -1088,6 +1142,29 @@ export default function OrderTrackingScreen() {
                   </Text>
                 </View>
               </View>
+
+              {canCancelOrder ? (
+                <Pressable
+                  style={[
+                    styles.subtleCancelButton,
+                    cancelOrderMutation.isPending ? styles.subtleCancelButtonDisabled : null,
+                  ]}
+                  disabled={cancelOrderMutation.isPending}
+                  onPress={handleRequestCancelOrder}
+                >
+                  {cancelOrderMutation.isPending ? (
+                    <ActivityIndicator size="small" color={palette.primary} />
+                  ) : (
+                    <Ionicons name="close-circle-outline" size={16} color={palette.primary} />
+                  )}
+                  <View style={styles.subtleCancelCopy}>
+                    <Text style={styles.subtleCancelText}>Cancel this order</Text>
+                    <Text style={styles.subtleCancelHint}>
+                      Available until the restaurant accepts it.
+                    </Text>
+                  </View>
+                </Pressable>
+              ) : null}
 
             </ScrollView>
       </AppBottomSheet>

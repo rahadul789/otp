@@ -29,7 +29,8 @@ const REFERRAL_REVIEW_LOOKBACK_DAYS = 30
 const REFERRAL_SAME_DEVICE_REVIEW_THRESHOLD = 3
 const REFERRAL_SAME_IP_REVIEW_THRESHOLD = 5
 const REFERRAL_SAME_ADDRESS_REVIEW_THRESHOLD = 3
-const REFERRAL_INELIGIBLE_MESSAGE = "Referral is not eligible for reward."
+const REFERRAL_INELIGIBLE_MESSAGE =
+  "Referral reward was blocked by Foodbela rules. This can happen for self-referral, same phone/device, or suspicious activity. If you think this is wrong, please contact support."
 
 type ReferralRewardStatus =
   | "pending"
@@ -592,7 +593,9 @@ export async function getCustomerReferralSummary(customerId: string) {
 
       return {
         referredCustomerName:
-          referral.fullName?.trim() && referral.fullName !== "Foodbela User"
+          referral.fullName?.trim() &&
+          referral.fullName !== "Foodbela User" &&
+          referral.fullName !== "Your name"
             ? referral.fullName
             : "Friend",
         referredAt: referral.createdAt

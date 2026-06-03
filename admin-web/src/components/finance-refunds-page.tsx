@@ -15,6 +15,7 @@ import { toast } from "sonner"
 
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import {
+  getAdminServiceAreas,
   listAdminFinanceRefunds,
   updateAdminOrderRefundStatus,
   type AdminFinanceRefundRow,
@@ -260,6 +261,7 @@ export function FinanceRefundsPage() {
   const queryClient = useQueryClient()
   const [search, setSearch] = React.useState("")
   const [status, setStatus] = React.useState<RefundStatusFilter>("all")
+  const [zoneId, setZoneId] = React.useState("all")
   const [sortBy, setSortBy] = React.useState<RefundSort>("newest")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(20)
@@ -268,18 +270,23 @@ export function FinanceRefundsPage() {
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, status, sortBy, pageSize])
+  }, [debouncedSearch, status, zoneId, sortBy, pageSize])
 
   const refundsQuery = useQuery({
-    queryKey: ["admin-finance-refunds", debouncedSearch, status, sortBy, page, pageSize],
+    queryKey: ["admin-finance-refunds", debouncedSearch, status, zoneId, sortBy, page, pageSize],
     queryFn: () =>
       listAdminFinanceRefunds({
         search: debouncedSearch,
         status,
+        zoneId: zoneId === "all" ? undefined : zoneId,
         sortBy,
         page,
         pageSize,
       }),
+  })
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "finance-refunds-filter"],
+    queryFn: getAdminServiceAreas,
   })
   const refundMutation = useMutation({
     mutationFn: updateAdminOrderRefundStatus,
@@ -369,7 +376,7 @@ export function FinanceRefundsPage() {
       </div>
 
       <Card>
-        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(240px,1fr)_180px_180px_120px]">
+        <CardContent className="grid gap-3 pt-2 md:grid-cols-[minmax(240px,1fr)_180px_180px_180px_120px]">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -389,6 +396,19 @@ export function FinanceRefundsPage() {
               <SelectItem value="refund_pending">Refund pending</SelectItem>
               <SelectItem value="refunded">Refunded</SelectItem>
               <SelectItem value="refund_rejected">Refund rejected</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={zoneId} onValueChange={setZoneId}>
+            <SelectTrigger>
+              <SelectValue placeholder="Zone" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All zones</SelectItem>
+              {(serviceAreasQuery.data?.zones ?? []).map((zone) => (
+                <SelectItem key={zone.id} value={zone.id}>
+                  {zone.name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Select value={sortBy} onValueChange={(value) => setSortBy(value as RefundSort)}>
@@ -456,6 +476,11 @@ export function FinanceRefundsPage() {
                         <TableCell>
                           <div>{row.restaurantName || "Unknown"}</div>
                           <div className="text-xs text-muted-foreground">{row.restaurantCity}</div>
+                          {row.serviceArea?.zoneName ? (
+                            <Badge variant="outline" className="mt-1 border-violet-200 bg-violet-50 text-violet-700">
+                              {row.serviceArea.zoneName}
+                            </Badge>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <div>{row.customerName}</div>

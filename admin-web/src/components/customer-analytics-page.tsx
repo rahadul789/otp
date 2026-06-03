@@ -64,6 +64,10 @@ import {
   type AdminCustomerAnalyticsPreset,
   type AdminCustomerAnalyticsQueryParams,
 } from "@/lib/customer-analytics-api"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import { printTableReport } from "@/lib/export-utils"
 
 type AnalyticsTab = "overview" | "events" | "funnels" | "customers" | "payments" | "trace"
@@ -240,7 +244,19 @@ export function CustomerAnalyticsPage() {
     React.useState<EventActorFilter>("all")
   const [eventsPage, setEventsPage] = React.useState(1)
   const [eventsPageSize, setEventsPageSize] = React.useState(25)
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
   const debouncedEventsSearch = useDebouncedValue(eventsSearch, 350)
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id}`
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+      }),
+    []
+  )
 
   const overviewParams = React.useMemo(
     () => buildRangeParams(preset, from, to, 25),
@@ -290,28 +306,29 @@ export function CustomerAnalyticsPage() {
       (traceMode === "guest" && traceGuestId.trim().length > 0))
 
   const overviewQuery = useQuery({
-    queryKey: ["admin-customer-analytics-overview", preset, from, to],
+    queryKey: ["admin-customer-analytics-overview", adminScopeKey, preset, from, to],
     queryFn: () => getAdminCustomerAnalyticsOverview(overviewParams),
     enabled: activeTab === "overview",
   })
   const funnelsQuery = useQuery({
-    queryKey: ["admin-customer-analytics-funnels", preset, from, to],
+    queryKey: ["admin-customer-analytics-funnels", adminScopeKey, preset, from, to],
     queryFn: () => getAdminCustomerAnalyticsFunnels(funnelParams),
     enabled: activeTab === "funnels",
   })
   const customersQuery = useQuery({
-    queryKey: ["admin-customer-analytics-customers", preset, from, to],
+    queryKey: ["admin-customer-analytics-customers", adminScopeKey, preset, from, to],
     queryFn: () => getAdminCustomerAnalyticsCustomers(customerParams),
     enabled: activeTab === "customers",
   })
   const paymentsQuery = useQuery({
-    queryKey: ["admin-customer-analytics-payments", preset, from, to],
+    queryKey: ["admin-customer-analytics-payments", adminScopeKey, preset, from, to],
     queryFn: () => getAdminCustomerAnalyticsPayments(paymentParams),
     enabled: activeTab === "payments",
   })
   const eventsQuery = useQuery({
     queryKey: [
       "admin-customer-analytics-events",
+      adminScopeKey,
       preset,
       from,
       to,
@@ -328,6 +345,7 @@ export function CustomerAnalyticsPage() {
   const traceQuery = useQuery({
     queryKey: [
       "admin-customer-analytics-actor-detail",
+      adminScopeKey,
       preset,
       from,
       to,
@@ -395,6 +413,7 @@ export function CustomerAnalyticsPage() {
   React.useEffect(() => {
     setEventsPage(1)
   }, [
+    adminScopeKey,
     preset,
     from,
     to,
@@ -1457,6 +1476,111 @@ export function CustomerAnalyticsPage() {
               icon={ReceiptText}
               tone="text-orange-600 bg-orange-50"
             />
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Top 10 recent users</CardTitle>
+                <CardDescription>
+                  Newest customers in the selected area and date range.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {customerData?.recentUsers?.length ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Customer</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Joined</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {customerData.recentUsers.slice(0, 10).map((row) => (
+                        <TableRow key={`recent-${row.customerId}`}>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <div className="font-medium">{row.fullName || "Unknown"}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {row.phone || row.customerId}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="capitalize">
+                              {row.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right text-sm">
+                            {formatDateTime(row.createdAt)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <EmptyState
+                    title="No recent users"
+                    description="Recent customers will appear here for the selected area."
+                  />
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Top 10 ordering users</CardTitle>
+                <CardDescription>
+                  Customers with the most orders in the selected area.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {customerData?.topOrderUsers?.length ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Customer</TableHead>
+                        <TableHead className="text-right">Orders</TableHead>
+                        <TableHead className="text-right">Spend</TableHead>
+                        <TableHead className="text-right">Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {customerData.topOrderUsers.slice(0, 10).map((row) => (
+                        <TableRow key={`top-${row.customerId}`}>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <div className="font-medium">{row.fullName || "Unknown"}</div>
+                              <div className="text-xs text-muted-foreground">
+                                Last order {formatDateTime(row.lastOrderAt)}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {formatNumber(row.lifetimeOrders)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {formatCurrency(row.lifetimeSpend)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <TraceButton
+                              label="Trace"
+                              onClick={() => openCustomerTrace(row.customerId)}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <EmptyState
+                    title="No ordering users"
+                    description="Order leaders will appear after customers place orders in this area."
+                  />
+                )}
+              </CardContent>
+            </Card>
           </div>
 
           <Card>

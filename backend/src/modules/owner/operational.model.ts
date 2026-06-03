@@ -151,6 +151,7 @@ const orderSchema = new Schema(
     paymentSnapshot: { type: Schema.Types.Mixed, default: {} },
     pricing: { type: Schema.Types.Mixed, default: {} },
     customerSnapshot: { type: Schema.Types.Mixed, default: {} },
+    serviceAreaSnapshot: { type: Schema.Types.Mixed, default: {} },
     riderSnapshot: { type: Schema.Types.Mixed, default: {} },
     riderTracking: { type: Schema.Types.Mixed, default: {} },
     dispatchMeta: { type: Schema.Types.Mixed, default: {} },
@@ -179,6 +180,8 @@ orderSchema.index(
 orderSchema.index({ riderId: 1, status: 1, createdAt: -1 })
 orderSchema.index({ riderId: 1, status: 1, updatedAt: -1, createdAt: -1 })
 orderSchema.index({ riderId: 1, status: 1, "timestamps.PickedUp": 1, createdAt: 1 })
+orderSchema.index({ "serviceAreaSnapshot.zoneId": 1, status: 1, createdAt: -1 })
+orderSchema.index({ "serviceAreaSnapshot.districtId": 1, status: 1, createdAt: -1 })
 orderSchema.index({ status: 1, "itemsSnapshot.categoryId": 1, createdAt: -1 })
 orderSchema.index({ status: 1, "itemsSnapshot.itemId": 1, createdAt: -1 })
 orderSchema.index({ status: 1, "timestamps.Delivered": -1 })

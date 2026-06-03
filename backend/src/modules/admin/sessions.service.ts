@@ -1,4 +1,5 @@
 import { StatusCodes } from "http-status-codes"
+import mongoose from "mongoose"
 import type { Model } from "mongoose"
 
 import { AppError } from "../../common/utils/app-error"
@@ -6,6 +7,7 @@ import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache"
 import {
   OwnerModel,
   RefreshTokenSessionModel,
+  RestaurantModel,
   RiderModel,
   RiderRefreshTokenSessionModel,
 } from "../auth/auth.model"
@@ -14,6 +16,12 @@ import {
   CustomerRefreshTokenSessionModel,
 } from "../customer/customer.model"
 import { AdminModel, AdminRefreshTokenSessionModel } from "./admin.model"
+import { OrderModel } from "../owner/operational.model"
+import {
+  buildOrderServiceAreaScopeFilter,
+  buildRestaurantServiceAreaScopeFilter,
+  buildRiderServiceAreaScopeFilter,
+} from "../service-area/service-area.service"
 
 export type AdminSessionRole = "admin" | "owner" | "customer" | "rider"
 export type AdminSessionStatus =
@@ -27,6 +35,8 @@ export type AdminSessionStatus =
 type SessionListParams = {
   role?: AdminSessionRole | "all"
   status?: AdminSessionStatus
+  zoneId?: string
+  districtId?: string
   page?: number
   pageSize?: number
 }
@@ -92,7 +102,7 @@ function getConfig(role: AdminSessionRole) {
   return config
 }
 
-function buildStatusQuery(status: AdminSessionStatus = "active") {
+function buildStatusQuery(status: AdminSessionStatus = "active"): Record<string, any> {
   const now = new Date()
   if (status === "all") return {}
   if (status === "revoked") return { revokedAt: { $ne: null } }
@@ -120,38 +130,67 @@ function buildValidSessionQuery() {
   return buildStatusQuery("active")
 }
 
-async function countValidUniqueActors(config: SessionConfig) {
-  const actorIds = await config.model.distinct(config.actorField, buildValidSessionQuery())
+function applyActorScopeToQuery(
+  query: Record<string, any>,
+  config: SessionConfig,
+  scopedActorIds?: Record<string, any[] | null> | null,
+) {
+  const actorIds = scopedActorIds?.[config.role]
+  if (actorIds) query[config.actorField] = { $in: actorIds }
+  return query
+}
+
+async function countValidUniqueActors(
+  config: SessionConfig,
+  scopedActorIds?: Record<string, any[] | null> | null,
+) {
+  const actorIds = await config.model.distinct(
+    config.actorField,
+    applyActorScopeToQuery(buildValidSessionQuery(), config, scopedActorIds),
+  )
   return actorIds.filter(Boolean).length
 }
 
-async function buildSessionSummary() {
+async function buildSessionSummary(
+  configs = sessionConfigs,
+  scopedActorIds?: Record<string, any[] | null> | null,
+) {
   const [activeRows, revokedRows, expiredRows, uniqueRows, recentRows, staleRows] =
     await Promise.all([
       Promise.all(
-        sessionConfigs.map((config) =>
-          config.model.countDocuments(buildStatusQuery("active"))
+        configs.map((config) =>
+          config.model.countDocuments(
+            applyActorScopeToQuery(buildStatusQuery("active"), config, scopedActorIds),
+          )
         )
       ),
       Promise.all(
-        sessionConfigs.map((config) =>
-          config.model.countDocuments(buildStatusQuery("revoked"))
+        configs.map((config) =>
+          config.model.countDocuments(
+            applyActorScopeToQuery(buildStatusQuery("revoked"), config, scopedActorIds),
+          )
         )
       ),
       Promise.all(
-        sessionConfigs.map((config) =>
-          config.model.countDocuments(buildStatusQuery("expired"))
+        configs.map((config) =>
+          config.model.countDocuments(
+            applyActorScopeToQuery(buildStatusQuery("expired"), config, scopedActorIds),
+          )
         )
       ),
-      Promise.all(sessionConfigs.map(countValidUniqueActors)),
+      Promise.all(configs.map((config) => countValidUniqueActors(config, scopedActorIds))),
       Promise.all(
-        sessionConfigs.map((config) =>
-          config.model.countDocuments(buildStatusQuery("recent"))
+        configs.map((config) =>
+          config.model.countDocuments(
+            applyActorScopeToQuery(buildStatusQuery("recent"), config, scopedActorIds),
+          )
         )
       ),
       Promise.all(
-        sessionConfigs.map((config) =>
-          config.model.countDocuments(buildStatusQuery("stale"))
+        configs.map((config) =>
+          config.model.countDocuments(
+            applyActorScopeToQuery(buildStatusQuery("stale"), config, scopedActorIds),
+          )
         )
       ),
     ])
@@ -203,8 +242,12 @@ async function listSessionsForConfig(params: {
   config: SessionConfig
   status: AdminSessionStatus
   limit: number
+  actorIds?: any[] | null
 }) {
   const query = buildStatusQuery(params.status)
+  if (params.actorIds) {
+    query[params.config.actorField] = { $in: params.actorIds }
+  }
   const sessions = await params.config.model
     .find(query)
     .sort({ createdAt: -1 })
@@ -244,30 +287,87 @@ async function listSessionsForConfig(params: {
   })
 }
 
+async function buildScopedActorIds(params: SessionListParams) {
+  if (!params.zoneId?.trim() && !params.districtId?.trim()) return null
+  const orderScopeFilter = buildOrderServiceAreaScopeFilter(params)
+  const restaurantScopeFilter = buildRestaurantServiceAreaScopeFilter(params)
+  const riderScopeFilter = buildRiderServiceAreaScopeFilter(params)
+  const [customerIds, ownerIds, riderIds] = await Promise.all([
+    Object.keys(orderScopeFilter).length
+      ? OrderModel.distinct("customerId", {
+          ...orderScopeFilter,
+          customerId: { $type: "string", $ne: "" },
+        })
+      : Promise.resolve(null),
+    Object.keys(restaurantScopeFilter).length
+      ? RestaurantModel.distinct("ownerId", restaurantScopeFilter)
+      : Promise.resolve(null),
+    Object.keys(riderScopeFilter).length
+      ? RiderModel.distinct("_id", riderScopeFilter)
+      : Promise.resolve(null),
+  ])
+
+  const toObjectIds = (values: unknown[] | null) =>
+    values
+      ? values
+          .filter((value) => mongoose.Types.ObjectId.isValid(String(value)))
+          .map((value) => new mongoose.Types.ObjectId(String(value)))
+      : null
+
+  return {
+    owner: toObjectIds(ownerIds),
+    customer: toObjectIds(customerIds),
+    rider: toObjectIds(riderIds),
+  }
+}
+
 export async function listAdminSessions(params: SessionListParams) {
   const page = Math.max(1, Math.floor(Number(params.page ?? 1)) || 1)
   const pageSize = Math.min(100, Math.max(10, Math.floor(Number(params.pageSize ?? 50)) || 50))
+  const scopedActorIds = await buildScopedActorIds(params)
+  const isAreaScoped = Boolean(scopedActorIds)
   const roles =
     !params.role || params.role === "all"
       ? sessionConfigs
       : [getConfig(params.role)]
+  const scopedRoles =
+    isAreaScoped && (!params.role || params.role === "all")
+      ? roles.filter((config) => config.role !== "admin")
+      : roles
   const status = params.status ?? "active"
   const fetchLimit = page * pageSize
-  const cacheKey = [roles.map((config) => config.role).join(","), status, page, pageSize].join("|")
+  const cacheKey = [
+    scopedRoles.map((config) => config.role).join(","),
+    status,
+    page,
+    pageSize,
+    params.zoneId ?? "all",
+    params.districtId ?? "all",
+  ].join("|")
 
   return adminSessionsCache.getOrSet(cacheKey, async () => {
     const [itemsByRole, counts] = await Promise.all([
       Promise.all(
-        roles.map((config) =>
+        scopedRoles.map((config) =>
           listSessionsForConfig({
             config,
             status,
             limit: fetchLimit,
+            actorIds: scopedActorIds
+              ? scopedActorIds[config.role as keyof typeof scopedActorIds] ?? null
+              : null,
           })
         )
       ),
       Promise.all(
-        roles.map((config) => config.model.countDocuments(buildStatusQuery(status)))
+        scopedRoles.map((config) => {
+          const query = buildStatusQuery(status)
+          const actorIds = scopedActorIds
+            ? scopedActorIds[config.role as keyof typeof scopedActorIds] ?? null
+            : null
+          if (actorIds) query[config.actorField] = { $in: actorIds }
+          return config.model.countDocuments(query)
+        })
       ),
     ])
 
@@ -286,7 +386,10 @@ export async function listAdminSessions(params: SessionListParams) {
       total,
       page,
       pageSize,
-      summary: await buildSessionSummary(),
+      summary: await buildSessionSummary(
+        scopedRoles,
+        scopedActorIds as Record<string, any[] | null> | null,
+      ),
     }
   })
 }

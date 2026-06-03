@@ -1,11 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { CardListSkeleton } from "@/src/components/loading-skeleton";
+import { RemoteImage } from "@/src/components/remote-image";
 import { Screen } from "@/src/components/screen";
 import {
   useCustomerNotificationsInfiniteQuery,
@@ -291,10 +292,11 @@ export default function NotificationsScreen() {
                     </View>
                     <Text style={styles.cardDescription}>{notification.description}</Text>
                     {notification.imageUrl ? (
-                      <Image
-                        source={{ uri: notification.imageUrl }}
+                      <RemoteImage
+                        uri={notification.imageUrl}
                         style={styles.cardImage}
-                        resizeMode="cover"
+                        fallbackIcon="notifications-outline"
+                        accessibilityLabel={`${notification.title} notification image`}
                       />
                     ) : null}
                     <View style={styles.cardFooter}>

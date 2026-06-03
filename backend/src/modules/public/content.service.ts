@@ -59,7 +59,8 @@ const platformContentSchema = z.object({
     homeCms: z.object({
       offerStrip: z.object({
         isActive: z.boolean(),
-        showVoucherStrip: z.boolean(),
+        showVoucherStrip: z.boolean().optional().default(true),
+        showRestaurantOfferSection: z.boolean().optional().default(true),
         mode: z.enum(["voucher_strip", "promo_block", "hidden"]),
         title: z.string().trim(),
         subtitle: z.string().trim(),
@@ -80,6 +81,30 @@ const platformContentSchema = z.object({
         backgroundColor: z.string().trim(),
         textColor: z.string().trim(),
         accentColor: z.string().trim(),
+      }),
+      homeCategories: z.object({
+        isActive: z.boolean().optional().default(true),
+        title: z.string().trim().optional().default("What are you craving?"),
+        subtitle: z.string().trim().optional().default("Quickly find popular food around you."),
+        items: z
+          .array(
+            z.object({
+              id: z.string().trim().optional(),
+              label: z.string().trim(),
+              searchQuery: z.string().trim(),
+              icon: z.string().trim().optional().default("restaurant-outline"),
+              color: z.string().trim().optional().default("#FFF0F6"),
+              position: z.number().optional().default(1),
+              isActive: z.boolean().optional().default(true),
+            }),
+          )
+          .optional()
+          .default([]),
+      }).optional().default({
+        isActive: true,
+        title: "What are you craving?",
+        subtitle: "Quickly find popular food around you.",
+        items: [],
       }),
       modal: z.object({
         isActive: z.boolean(),
@@ -514,6 +539,7 @@ const platformContentSchema = z.object({
 })
 
 type PlatformContent = z.infer<typeof platformContentSchema>
+type PlatformContentScope = { zoneId?: string; districtId?: string }
 const defaultPlatformContent = platformContentSchema.parse(platformContent)
 export type OperationalFinanceSettings = PlatformContent["operations"]["finance"]
 export type AuthRateLimitSettings = PlatformContent["auth"]["rateLimits"]
@@ -558,6 +584,85 @@ function deepMerge<T>(base: T, override: unknown): T {
   }
 
   return result as T
+}
+
+function withDefaultHomeCategories(content: PlatformContent): PlatformContent {
+  const defaultCategories = defaultPlatformContent.customerApp.homeCms.homeCategories.items
+  const currentCategories = content.customerApp.homeCms.homeCategories
+  const currentItems = Array.isArray(currentCategories.items)
+    ? currentCategories.items
+    : []
+  const currentIds = new Set(currentItems.map((item) => item.id).filter(Boolean))
+  const currentLabels = new Set(currentItems.map((item) => item.label.trim().toLowerCase()).filter(Boolean))
+  const missingDefaults = defaultCategories.filter((item) => {
+    if (item.id && currentIds.has(item.id)) return false
+    return !currentLabels.has(item.label.trim().toLowerCase())
+  })
+
+  if (!missingDefaults.length) return content
+
+  return {
+    ...content,
+    customerApp: {
+      ...content.customerApp,
+      homeCms: {
+        ...content.customerApp.homeCms,
+        homeCategories: {
+          ...currentCategories,
+          items: [...currentItems, ...missingDefaults],
+        },
+      },
+    },
+  }
+}
+
+function contentScopeKey(scope?: PlatformContentScope) {
+  return scope?.zoneId?.trim()
+    ? `zone:${scope.zoneId.trim()}`
+    : scope?.districtId?.trim()
+      ? `district:${scope.districtId.trim()}`
+      : ""
+}
+
+function getHomeCmsAreaOverrides(content: Record<string, any>) {
+  const customerApp = content.customerApp ?? {}
+  return customerApp.homeCmsAreaOverrides && typeof customerApp.homeCmsAreaOverrides === "object"
+    ? customerApp.homeCmsAreaOverrides as Record<string, unknown>
+    : {}
+}
+
+function buildHomeCmsAreaOverride(homeCms: PlatformContent["customerApp"]["homeCms"]) {
+  return {
+    offerStrip: homeCms.offerStrip,
+    homeCategories: homeCms.homeCategories,
+    modal: homeCms.modal,
+    howToOrderGuide: homeCms.howToOrderGuide,
+    pushCampaign: homeCms.pushCampaign,
+  }
+}
+
+function applyHomeCmsAreaOverride<T extends PlatformContent>(
+  content: T,
+  scope?: PlatformContentScope,
+): T {
+  const key = contentScopeKey(scope)
+  if (!key) return content
+  const override = getHomeCmsAreaOverrides(content as unknown as Record<string, any>)[key]
+  if (!override) return content
+  return deepMerge(content, {
+    customerApp: {
+      homeCms: {
+        ...(override as Record<string, unknown>),
+      },
+    },
+  })
+}
+
+export function applyServiceAreaHomeCmsOverride<T extends PlatformContent>(
+  content: T,
+  serviceArea?: { zoneId?: string; districtId?: string } | null,
+) {
+  return applyHomeCmsAreaOverride(content, serviceArea ?? undefined)
 }
 
 const CONTENT_KEY = "platform-content"
@@ -699,15 +804,17 @@ function mapAdminEditablePlatformContent(
   } satisfies AdminEditablePlatformContent
 }
 
-export async function getPlatformContent() {
-  return platformContentCache.getOrSet(CONTENT_KEY, async () => {
+export async function getPlatformContent(scope?: PlatformContentScope) {
+  const baseContent = await platformContentCache.getOrSet(CONTENT_KEY, async () => {
     const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
       .select({ content: 1 })
       .lean()
-    return contentDoc?.content
+    const content = contentDoc?.content
       ? deepMerge(defaultPlatformContent, contentDoc.content)
       : defaultPlatformContent
+    return withDefaultHomeCategories(content)
   })
+  return applyHomeCmsAreaOverride(baseContent, scope)
 }
 
 export async function getAuthRateLimitSettings(): Promise<AuthRateLimitSettings> {
@@ -727,8 +834,9 @@ export async function getOperationalFinanceSettings(): Promise<OperationalFinanc
   }
 }
 
-export async function getAdminEditablePlatformContent() {
-  return adminEditablePlatformContentCache.getOrSet(CONTENT_KEY, async () => {
+export async function getAdminEditablePlatformContent(scope?: PlatformContentScope) {
+  const cacheKey = `${CONTENT_KEY}|${contentScopeKey(scope) || "all"}`
+  return adminEditablePlatformContentCache.getOrSet(cacheKey, async () => {
     const contentDoc = await PublicContentModel.findOne({ key: CONTENT_KEY })
       .select({
         content: 1,
@@ -743,13 +851,17 @@ export async function getAdminEditablePlatformContent() {
       ? deepMerge(defaultPlatformContent, contentDoc.content)
       : defaultPlatformContent
 
-    return mapAdminEditablePlatformContent(content, contentDoc)
+    return mapAdminEditablePlatformContent(
+      applyHomeCmsAreaOverride(withDefaultHomeCategories(content), scope),
+      contentDoc,
+    )
   })
 }
 
 export async function updatePlatformContent(params: {
   content: unknown
   adminId: string
+  scope?: PlatformContentScope
 }) {
   platformContentCache.clear()
   adminEditablePlatformContentCache.clear()
@@ -762,14 +874,33 @@ export async function updatePlatformContent(params: {
   const currentContent = currentDoc?.content
     ? deepMerge(defaultPlatformContent, currentDoc.content)
     : null
+  const scopeKey = contentScopeKey(params.scope)
+  const nextContent: PlatformContent = scopeKey && currentContent
+    ? deepMerge(currentContent, {
+        customerApp: {
+          homeCmsAreaOverrides: {
+            ...getHomeCmsAreaOverrides(currentContent as unknown as Record<string, any>),
+            [scopeKey]: buildHomeCmsAreaOverride(parsed.customerApp.homeCms),
+          },
+        },
+      })
+    : deepMerge(parsed, {
+        customerApp: {
+          homeCmsAreaOverrides: currentContent
+            ? getHomeCmsAreaOverrides(currentContent as unknown as Record<string, any>)
+            : {},
+        },
+      })
   const nextUpdatedAt = new Date()
-  const changedSections = getChangedSections(currentContent, parsed)
+  const changedSections = scopeKey
+    ? [`Customer App (${scopeKey})`]
+    : getChangedSections(currentContent, parsed)
   const nextHistoryEntry = {
     updatedByAdminId: params.adminId,
     updatedByAdminName: adminName,
     updatedAt: nextUpdatedAt,
     changedSections,
-    content: parsed,
+    content: nextContent,
   }
 
   await PublicContentModel.updateOne(
@@ -777,7 +908,7 @@ export async function updatePlatformContent(params: {
     {
       $set: {
         key: CONTENT_KEY,
-        content: parsed,
+        content: nextContent,
         updatedByAdminId: params.adminId,
         updatedByAdminName: adminName,
       },
@@ -794,7 +925,7 @@ export async function updatePlatformContent(params: {
     }
   )
 
-  const mapped = mapAdminEditablePlatformContent(parsed, {
+  const mapped = mapAdminEditablePlatformContent(applyHomeCmsAreaOverride(nextContent, params.scope), {
     updatedAt: nextUpdatedAt,
     updatedByAdminId: params.adminId,
     updatedByAdminName: adminName,

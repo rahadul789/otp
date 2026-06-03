@@ -15,6 +15,7 @@ import { adminOtpSecurityRouter } from "../modules/admin/otp-security.routes";
 import { adminOperationsHealthRouter } from "../modules/admin/operations-health.routes";
 import { adminPlatformContentRouter } from "../modules/admin/platform-content.routes";
 import { adminSettingsRouter } from "../modules/admin/settings.routes";
+import { adminServiceAreasRouter } from "../modules/admin/service-areas.routes";
 import { adminReviewRouter } from "../modules/admin/review.routes";
 import { adminReferralsRouter } from "../modules/admin/referrals.routes";
 import { adminReportsRouter } from "../modules/admin/reports.routes";
@@ -32,6 +33,10 @@ import {
   ownerPromotionsRouter,
 } from "../modules/promotions/promotions.routes";
 import { riderRouter } from "../modules/rider/rider.routes";
+import {
+  adminWebsiteRouter,
+  websitePublicRouter,
+} from "../modules/website/website.routes";
 
 export const apiRouter = Router();
 const adminWriteLimiter = createAdminWriteLimiter();
@@ -42,6 +47,7 @@ apiRouter.use("/auth", authRouter);
 apiRouter.use("/customer", customerRouter);
 apiRouter.use("/rider", riderRouter);
 apiRouter.use("/public", publicRouter);
+apiRouter.use("/website", websitePublicRouter);
 apiRouter.use("/owner", ownerWriteLimiter);
 apiRouter.use("/owner", ownerRouter);
 apiRouter.use("/owner", ownerPromotionsRouter);
@@ -57,6 +63,7 @@ apiRouter.use("/admin", adminOtpSecurityRouter);
 apiRouter.use("/admin", adminOperationsHealthRouter);
 apiRouter.use("/admin", adminPlatformContentRouter);
 apiRouter.use("/admin", adminSettingsRouter);
+apiRouter.use("/admin", adminServiceAreasRouter);
 apiRouter.use("/admin", adminReviewRouter);
 apiRouter.use("/admin", adminReferralsRouter);
 apiRouter.use("/admin", adminReportsRouter);
@@ -64,4 +71,5 @@ apiRouter.use("/admin", adminRestaurantsRouter);
 apiRouter.use("/admin", adminSessionsRouter);
 apiRouter.use("/admin", adminSupportRouter);
 apiRouter.use("/admin", adminPromotionsRouter);
+apiRouter.use("/admin", adminWebsiteRouter);
 apiRouter.use("/media", mediaRouter);

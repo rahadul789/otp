@@ -24,6 +24,10 @@ import {
   type AdminFoodCategorySort,
   type AdminFoodCategoryStatus,
 } from "@/lib/admin-api"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -121,10 +125,26 @@ export function CategoriesPage() {
   const [selectedCategoryIds, setSelectedCategoryIds] = React.useState<string[]>([])
   const [moderationReason, setModerationReason] = React.useState("")
   const [notifyOwner, setNotifyOwner] = React.useState(true)
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id || "all"}`
 
   React.useEffect(() => {
     setPage(1)
   }, [debouncedSearch, restaurantId, status, health, sortBy, pageSize])
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+        setRestaurantId("all")
+        setSelectedCategoryId(null)
+        setSelectedCategoryIds([])
+        setPage(1)
+      }),
+    []
+  )
 
   const categoriesQuery = useQuery({
     queryKey: [
@@ -136,6 +156,7 @@ export function CategoriesPage() {
       sortBy,
       page,
       pageSize,
+      adminScopeKey,
     ],
     queryFn: () =>
       listAdminFoodCategories({

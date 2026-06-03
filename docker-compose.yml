@@ -5,6 +5,50 @@ x-logging: &default-logging
     max-file: "5"
 
 services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:-admin@foodbela.com}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - website
+      - backend
+      - restaurant-owner-web
+      - admin-web
+    networks:
+      - foodbela
+
+  website:
+    build:
+      context: ./website
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      NODE_ENV: production
+      PORT: 4200
+      WEBSITE_BASE_URL: ${WEBSITE_BASE_URL:-https://foodbela.com}
+      BACKEND_API_BASE_URL: ${BACKEND_API_BASE_URL:-http://backend:5000/api/v1}
+    networks:
+      - foodbela
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:4200/').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   backend:
     build:
       context: ./backend
@@ -33,11 +77,29 @@ services:
     build:
       context: ./restaurant-owner-web
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+        VITE_API_BASE_URL: ${OWNER_VITE_API_BASE_URL:-/api/v1}
     restart: unless-stopped
     logging: *default-logging
-    ports:
-      - "${WEB_PORT:-80}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - foodbela
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  admin-web:
+    build:
+      context: ./admin-web
+      args:
+        VITE_API_BASE_URL: ${ADMIN_VITE_API_BASE_URL:-/api/v1}
+        VITE_ENABLE_ADMIN_BOOTSTRAP: ${VITE_ENABLE_ADMIN_BOOTSTRAP:-false}
+    restart: unless-stopped
+    logging: *default-logging
     depends_on:
       backend:
         condition: service_healthy
@@ -126,6 +188,8 @@ networks:
     driver: bridge
 
 volumes:
+  caddy_data:
+  caddy_config:
   prometheus_data:
   loki_data:
   alloy_data:

@@ -6,6 +6,7 @@ import {
   BookOpenText,
   CreditCard,
   Gift,
+  Globe2,
   HeartPulse,
   Headphones,
   Image,
@@ -13,6 +14,7 @@ import {
   Landmark,
   LayoutDashboard,
   Map,
+  MapPin,
   ReceiptText,
   Settings,
   ShoppingBag,
@@ -83,6 +85,11 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
       {
         title: "Live Map",
         to: "/live-map",
+        icon: MapPin,
+      },
+      {
+        title: "Service Areas",
+        to: "/service-areas",
         icon: Map,
       },
       {
@@ -149,6 +156,11 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         title: "Referrals",
         to: "/referrals",
         icon: Gift,
+      },
+      {
+        title: "Foodbela.com",
+        to: "/website",
+        icon: Globe2,
       },
     ],
   },

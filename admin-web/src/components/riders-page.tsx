@@ -44,6 +44,11 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { useAdminRefreshPolicy } from "@/lib/refresh-policy"
 import { cn } from "@/lib/utils"
 import {
+  getAdminZoneScope,
+  getAdminZoneScopeQueryParams,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
+import {
   addAdminRiderPayrollAdjustment,
   assignAdminRider,
   bulkAssignAdminRiders,
@@ -51,6 +56,7 @@ import {
   getAdminDispatchSettings,
   getAdminLiveMap,
   getAdminRider,
+  getAdminServiceAreas,
   listAdminDispatchLogs,
   listAdminRiderPayroll,
   listAdminRiderAssignmentCandidates,
@@ -71,6 +77,7 @@ import {
   type AdminRiderDetails,
   type AdminRiderPayrollSnapshot,
   type AdminRiderSummary,
+  type AdminServiceZone,
 } from "@/lib/admin-api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -394,6 +401,24 @@ function CreateRiderDialog({
     React.useState<RiderVerificationStatus>("pending")
   const [nationalIdNumber, setNationalIdNumber] = React.useState("")
   const [monthlySalary, setMonthlySalary] = React.useState("0")
+  const [primaryZoneId, setPrimaryZoneId] = React.useState("")
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "rider-create"],
+    queryFn: getAdminServiceAreas,
+    staleTime: 60_000,
+  })
+  const serviceZones = React.useMemo(
+    () =>
+      (serviceAreasQuery.data?.zones ?? []).filter(
+        (zone: AdminServiceZone) => zone.status === "active"
+      ),
+    [serviceAreasQuery.data?.zones]
+  )
+  React.useEffect(() => {
+    if (!primaryZoneId && serviceZones[0]?.id) {
+      setPrimaryZoneId(serviceZones[0].id)
+    }
+  }, [primaryZoneId, serviceZones])
   const mutation = useMutation({
     mutationFn: createAdminRider,
     onSuccess: () => {
@@ -404,6 +429,7 @@ function CreateRiderDialog({
       setVerificationStatus("pending")
       setNationalIdNumber("")
       setMonthlySalary("0")
+      setPrimaryZoneId("")
       invalidateRiderQueries(queryClient)
       onOpenChange(false)
     },
@@ -475,6 +501,30 @@ function CreateRiderDialog({
             </Select>
           </div>
           <div className="space-y-2">
+            <Label>Primary service area</Label>
+            <Select value={primaryZoneId} onValueChange={setPrimaryZoneId}>
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={
+                    serviceAreasQuery.isLoading
+                      ? "Loading service areas"
+                      : "Choose rider zone"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {serviceZones.map((zone) => (
+                  <SelectItem key={zone.id} value={zone.id}>
+                    {zone.districtName} / {zone.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Auto dispatch will prefer orders from this zone for this rider.
+            </p>
+          </div>
+          <div className="space-y-2">
             <Label htmlFor="rider-nid">National ID (optional)</Label>
             <Input
               id="rider-nid"
@@ -505,7 +555,12 @@ function CreateRiderDialog({
             Cancel
           </Button>
           <Button
-            disabled={!fullName.trim() || !phone.trim() || mutation.isPending}
+            disabled={
+              !fullName.trim() ||
+              !phone.trim() ||
+              !primaryZoneId ||
+              mutation.isPending
+            }
             onClick={() =>
               mutation.mutate({
                 fullName,
@@ -515,6 +570,8 @@ function CreateRiderDialog({
                 nationalIdNumber,
                 monthlySalary: Number(monthlySalary) || 0,
                 payoutDay: 1,
+                primaryZoneId,
+                assignedZoneIds: primaryZoneId ? [primaryZoneId] : [],
                 isAvailableForAssignments:
                   status === "active" && verificationStatus === "approved",
               })
@@ -1994,10 +2051,29 @@ export function RidersPage() {
     string[]
   >([])
   const debouncedSearch = useDebouncedValue(search, 350)
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id || "all"}`
+  const adminScopeParams = React.useMemo(
+    () => getAdminZoneScopeQueryParams(),
+    [adminScopeKey]
+  )
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+        setSelectedCandidateIds([])
+        setAssignmentDrafts({})
+      }),
+    []
+  )
 
   const ridersQuery = useQuery({
     queryKey: [
       "admin-riders",
+      adminScopeKey,
       debouncedSearch,
       status,
       availability,
@@ -2015,51 +2091,54 @@ export function RidersPage() {
         sortBy,
         page,
         pageSize,
+        ...adminScopeParams,
       }),
   })
   const kycQuery = useQuery({
-    queryKey: ["admin-riders", "kyc-queue"],
+    queryKey: ["admin-riders", "kyc-queue", adminScopeKey],
     queryFn: () =>
       listAdminRiders({
         verification: "pending",
         sortBy: "newest",
         pageSize: 50,
+        ...adminScopeParams,
       }),
     enabled: mainTab === "kyc",
   })
   const earningsQuery = useQuery({
-    queryKey: ["admin-riders", "earnings"],
+    queryKey: ["admin-riders", "earnings", adminScopeKey],
     queryFn: () =>
       listAdminRiders({
         sortBy: "mostDelivered",
         pageSize: 50,
+        ...adminScopeParams,
       }),
     enabled: mainTab === "earnings" || mainTab === "analytics",
   })
   const payrollQuery = useQuery({
-    queryKey: ["admin-rider-payroll"],
-    queryFn: () => listAdminRiderPayroll(),
+    queryKey: ["admin-rider-payroll", adminScopeKey],
+    queryFn: () => listAdminRiderPayroll(adminScopeParams),
     enabled: mainTab === "earnings",
   })
   const liveMapQuery = useQuery({
-    queryKey: ["admin-live-map"],
+    queryKey: ["admin-live-map", adminScopeKey],
     queryFn: getAdminLiveMap,
     enabled: mainTab === "live",
     refetchInterval: mainTab === "live" ? refreshPolicy.liveMapMs || false : false,
     refetchIntervalInBackground: false,
   })
   const assignmentOptionsQuery = useQuery({
-    queryKey: ["admin-rider-assignment-options"],
+    queryKey: ["admin-rider-assignment-options", adminScopeKey],
     queryFn: listAdminRidersAssignmentOptions,
     enabled: mainTab === "assignments",
   })
   const candidatesQuery = useQuery({
-    queryKey: ["admin-rider-candidates"],
-    queryFn: listAdminRiderAssignmentCandidates,
+    queryKey: ["admin-rider-candidates", adminScopeKey],
+    queryFn: () => listAdminRiderAssignmentCandidates(adminScopeParams),
     enabled: mainTab === "assignments",
   })
   const dispatchQuery = useQuery({
-    queryKey: ["admin-dispatch-settings"],
+    queryKey: ["admin-dispatch-settings", adminScopeKey],
     queryFn: getAdminDispatchSettings,
     enabled: mainTab === "dispatch",
   })
@@ -2126,7 +2205,15 @@ export function RidersPage() {
 
   React.useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, status, availability, verification, sortBy, pageSize])
+  }, [
+    adminScopeKey,
+    debouncedSearch,
+    status,
+    availability,
+    verification,
+    sortBy,
+    pageSize,
+  ])
 
   React.useEffect(() => {
     if (page > pageCount) setPage(pageCount)

@@ -1,6 +1,7 @@
 import * as React from "react"
 import L from "leaflet"
 import {
+  Circle,
   MapContainer,
   Marker,
   Polyline,
@@ -46,6 +47,7 @@ import { useNavigate } from "react-router-dom"
 import {
   assignAdminOrderRider,
   bulkAssignAdminRiders,
+  getAdminServiceAreas,
   getAdminLiveMap,
   getAdminDispatchSettings,
   listAdminRidersAssignmentOptions,
@@ -55,8 +57,13 @@ import {
   type AdminLiveMapRestaurant,
   type AdminLiveMapRider,
   type AdminRiderAssignmentOption,
+  type AdminServiceZone,
 } from "@/lib/admin-api"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
+import {
+  getAdminZoneScope,
+  subscribeAdminZoneScope,
+} from "@/lib/admin-zone-scope"
 import {
   connectAdminSocket,
   joinAdminSocketScope,
@@ -839,6 +846,16 @@ function isLiveOrderDrawerDelivery(delivery: AdminLiveMapDelivery) {
   return liveOrderDrawerStatuses.includes(delivery.status)
 }
 
+function isScopedZoneVisible(
+  zone: AdminServiceZone,
+  scope: ReturnType<typeof getAdminZoneScope>
+) {
+  if (zone.status === "archived") return false
+  if (scope.type === "zone") return zone.id === scope.id
+  if (scope.type === "district") return zone.districtId === scope.id
+  return true
+}
+
 function isRouteActionDelivery(delivery: AdminLiveMapDelivery) {
   return delivery.status === "ReadyForPickup" || delivery.status === "PickedUp"
 }
@@ -1068,6 +1085,9 @@ export function LiveMapPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { policy } = useAdminRefreshPolicy()
+  const [adminZoneScope, setAdminZoneScope] = React.useState(() =>
+    getAdminZoneScope()
+  )
   const [search, setSearch] = React.useState("")
   const debouncedSearch = useDebouncedValue(search, 180)
   const [layer, setLayer] = React.useState<LayerFilter>("all")
@@ -1097,6 +1117,19 @@ export function LiveMapPage() {
   const didInitialFitRef = React.useRef(false)
   const hasActiveSearch = debouncedSearch.trim().length > 0
   const isDetailedZoom = camera.zoom >= 13
+  const adminScopeKey = `${adminZoneScope.type}:${adminZoneScope.id || "all"}`
+  const [coveragePreviewRadiusKm, setCoveragePreviewRadiusKm] = React.useState(3)
+
+  React.useEffect(
+    () =>
+      subscribeAdminZoneScope(() => {
+        setAdminZoneScope(getAdminZoneScope())
+        setSelected(null)
+        setFocusedSelectedKey(null)
+        didInitialFitRef.current = false
+      }),
+    []
+  )
 
   const handleCameraChange = React.useCallback((nextCamera: MapCamera) => {
     setCamera((currentCamera) => {
@@ -1143,20 +1176,25 @@ export function LiveMapPage() {
   }, [queryClient])
 
   const liveMapQuery = useQuery({
-    queryKey: ["admin-live-map"],
+    queryKey: ["admin-live-map", adminScopeKey],
     queryFn: getAdminLiveMap,
     refetchInterval: policy.liveMapMs || false,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     staleTime: 3_000,
   })
+  const serviceAreasQuery = useQuery({
+    queryKey: ["admin-service-areas", "live-map", adminScopeKey],
+    queryFn: getAdminServiceAreas,
+    staleTime: 60_000,
+  })
   const riderAssignmentOptionsQuery = useQuery({
-    queryKey: ["admin-rider-assignment-options"],
+    queryKey: ["admin-rider-assignment-options", adminScopeKey],
     queryFn: listAdminRidersAssignmentOptions,
     staleTime: 30_000,
   })
   const dispatchSettingsQuery = useQuery({
-    queryKey: ["admin-dispatch-settings"],
+    queryKey: ["admin-dispatch-settings", adminScopeKey],
     queryFn: getAdminDispatchSettings,
     staleTime: 30_000,
   })
@@ -1230,6 +1268,32 @@ export function LiveMapPage() {
     },
   })
   const snapshot = liveMapQuery.data
+  const visibleServiceZones = React.useMemo(
+    () =>
+      (serviceAreasQuery.data?.zones ?? []).filter((zone) =>
+        isScopedZoneVisible(zone, adminZoneScope)
+      ),
+    [adminZoneScope, serviceAreasQuery.data?.zones]
+  )
+  const selectedScopeZone = React.useMemo(
+    () =>
+      adminZoneScope.type === "zone"
+        ? visibleServiceZones.find((zone) => zone.id === adminZoneScope.id) ?? null
+        : null,
+    [adminZoneScope, visibleServiceZones]
+  )
+  const firstVisibleZoneRadiusKm = visibleServiceZones[0]?.radiusKm
+
+  React.useEffect(() => {
+    const radius = selectedScopeZone?.radiusKm ?? firstVisibleZoneRadiusKm
+    if (radius == null) return
+    setCoveragePreviewRadiusKm(Math.min(5, Math.max(1, Number(radius))))
+  }, [
+    adminScopeKey,
+    firstVisibleZoneRadiusKm,
+    selectedScopeZone?.id,
+    selectedScopeZone?.radiusKm,
+  ])
 
   const handleAssignmentDraftChange = React.useCallback(
     (orderId: string, riderId: string) => {
@@ -1323,6 +1387,7 @@ export function LiveMapPage() {
   const deliveries = React.useMemo(() => {
     const items = snapshot?.deliveries ?? []
     return items.filter((delivery) => {
+      if (!isLiveOrderDrawerDelivery(delivery)) return false
       if (
         debouncedSearch &&
         !matchesSearch(deliverySearchText(delivery), debouncedSearch)
@@ -1462,8 +1527,16 @@ export function LiveMapPage() {
       const point = getPoint(restaurant)
       if (point) points.push(point)
     })
+    visibleServiceZones.forEach((zone) => {
+      if (
+        typeof zone.center?.latitude === "number" &&
+        typeof zone.center?.longitude === "number"
+      ) {
+        points.push([zone.center.latitude, zone.center.longitude])
+      }
+    })
     return points
-  }, [deliveries, restaurants, riders])
+  }, [deliveries, restaurants, riders, visibleServiceZones])
 
   React.useEffect(() => {
     if (didInitialFitRef.current || mapPoints.length === 0) return
@@ -1495,7 +1568,7 @@ export function LiveMapPage() {
     const allRiders = snapshot?.riders ?? []
     const allRestaurants = snapshot?.restaurants ?? []
 
-    allDeliveries.forEach((delivery) => {
+    allDeliveries.filter(isLiveOrderDrawerDelivery).forEach((delivery) => {
       if (delivery.isDelayed || delivery.delaySeverity !== "none") {
         items.push({
           id: `delivery-delay-${delivery.id}`,
@@ -1653,7 +1726,7 @@ export function LiveMapPage() {
 
   const restaurantDelaySeverityById = React.useMemo(() => {
     const delayMap = new Map<string, "warning" | "critical">()
-    ;(snapshot?.deliveries ?? []).forEach((delivery) => {
+    ;(snapshot?.deliveries ?? []).filter(isLiveOrderDrawerDelivery).forEach((delivery) => {
       if (!delivery.isDelayed && delivery.delaySeverity === "none") return
       const restaurantId = delivery.restaurant.id
       if (!restaurantId) return
@@ -1710,13 +1783,14 @@ export function LiveMapPage() {
     const allRiders = snapshot?.riders ?? []
     const allDeliveries = snapshot?.deliveries ?? []
     const allRestaurants = snapshot?.restaurants ?? []
+    const liveDeliveries = allDeliveries.filter(isLiveOrderDrawerDelivery)
     const staleRiders = allRiders.filter(
       (rider) => riderFreshness(rider) === "stale"
     ).length
     const busyRiders = allRiders.filter(
       (rider) => (rider.activeOrderCount ?? 0) > 0
     ).length
-    const readyWithoutRider = allDeliveries.filter(
+    const readyWithoutRider = liveDeliveries.filter(
       (delivery) => delivery.status === "ReadyForPickup" && !delivery.rider
     ).length
     const activeStores = allRestaurants.filter(
@@ -1792,6 +1866,31 @@ export function LiveMapPage() {
           />
           <MapResizeObserver />
           <MapCameraTracker onChange={handleCameraChange} />
+          {visibleServiceZones.map((zone) => {
+            if (
+              typeof zone.center?.latitude !== "number" ||
+              typeof zone.center?.longitude !== "number"
+            ) {
+              return null
+            }
+            const isSelectedScope =
+              adminZoneScope.type === "zone" && adminZoneScope.id === zone.id
+            return (
+              <Circle
+                key={`service-zone-${zone.id}`}
+                center={[zone.center.latitude, zone.center.longitude]}
+                radius={coveragePreviewRadiusKm * 1000}
+                pathOptions={{
+                  color: isSelectedScope ? "#fb3f8a" : "#0ea5e9",
+                  fillColor: isSelectedScope ? "#f9a8d4" : "#bae6fd",
+                  fillOpacity: isSelectedScope ? 0.12 : 0.08,
+                  opacity: 0.75,
+                  weight: isSelectedScope ? 3 : 2,
+                  dashArray: isSelectedScope ? undefined : "8 8",
+                }}
+              />
+            )
+          })}
           {shouldClusterMarkers
             ? restaurantClusters.map((cluster) => (
                 <Marker
@@ -2216,6 +2315,9 @@ export function LiveMapPage() {
             Visible markers: {visibleMarkerCount}/{totalFilteredMarkerCount} -
             zoom {camera.zoom}
           </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Area restaurants: {snapshot?.restaurants.length ?? 0} lightweight markers
+          </p>
           {liveOrderMetrics.unassigned > 0 ? (
             <p className="mt-1 text-[11px] font-semibold text-orange-600">
               {liveOrderMetrics.unassigned} ready order needs rider assignment.
@@ -2227,6 +2329,35 @@ export function LiveMapPage() {
               {missingLocationSummary.hiddenRiders} riders,{" "}
               {missingLocationSummary.hiddenRestaurants} stores.
             </p>
+          ) : null}
+          {visibleServiceZones.length > 0 ? (
+            <div className="mt-3 border-t border-slate-200 pt-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[11px] font-semibold text-slate-700">
+                  Area circle
+                </span>
+                <Badge className="rounded-md bg-pink-500 text-[10px] text-white">
+                  {coveragePreviewRadiusKm.toFixed(1)} km
+                </Badge>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={5}
+                step={0.1}
+                value={coveragePreviewRadiusKm}
+                onChange={(event) =>
+                  setCoveragePreviewRadiusKm(Number(event.target.value))
+                }
+                className="mt-2 h-2 w-full accent-pink-500"
+                aria-label="Selected area circle radius"
+              />
+              <div className="mt-1 flex justify-between text-[10px] text-slate-400">
+                <span>1 km</span>
+                <span>3 km</span>
+                <span>5 km</span>
+              </div>
+            </div>
           ) : null}
         </div>
       </div>

@@ -14,6 +14,8 @@ import {
 
 const listSupportQuerySchema = z.object({
   search: z.string().optional(),
+  zoneId: z.string().optional(),
+  districtId: z.string().optional(),
   source: z.enum(["all", "customer", "owner", "rider", "admin"]).optional(),
   status: z.enum(["all", "open", "in_progress", "resolved", "closed"]).optional(),
   priority: z.enum(["all", "low", "medium", "high"]).optional(),
@@ -58,6 +60,8 @@ function getAdminId(req: AuthenticatedRequest) {
 export const getAdminSupportCases = asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const query = listSupportQuerySchema.parse({
     search: getOptionalStringParam(req.query.search),
+    zoneId: getOptionalStringParam(req.query.zoneId),
+    districtId: getOptionalStringParam(req.query.districtId),
     source: getOptionalStringParam(req.query.source),
     status: getOptionalStringParam(req.query.status),
     priority: getOptionalStringParam(req.query.priority),

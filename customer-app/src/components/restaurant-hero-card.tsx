@@ -1,7 +1,6 @@
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import {
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -9,6 +8,7 @@ import {
   type GestureResponderEvent,
 } from "react-native";
 
+import { RemoteImage } from "@/src/components/remote-image";
 import { formatDurationMinutes } from "@/src/lib/date-time";
 import { formatDistanceValue } from "@/src/lib/distance";
 import { palette } from "@/src/theme/palette";
@@ -78,13 +78,14 @@ export function RestaurantHeroCard({
       onPress={onPress}
     >
       <View style={[styles.imageWrap, compact ? styles.imageWrapCompact : null]}>
-        {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={styles.coverImage} />
-        ) : (
-          <View style={styles.coverFallback}>
-            <Ionicons name="restaurant-outline" size={28} color={palette.primary} />
-          </View>
-        )}
+        <RemoteImage
+          uri={imageUrl}
+          style={styles.coverImage}
+          fallbackIcon="restaurant-outline"
+          fallbackIconSize={28}
+          fallbackTint={palette.primary}
+          accessibilityLabel={`${name} restaurant photo`}
+        />
 
         <View style={[styles.imageOverlay, !isOpen ? styles.closedImageOverlay : null]} />
 

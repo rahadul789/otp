@@ -1,10 +1,11 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import { PromoDetailsSkeleton } from "@/src/components/loading-skeleton";
+import { RemoteImage } from "@/src/components/remote-image";
 import { Screen } from "@/src/components/screen";
 import { useCustomerNotificationCampaignQuery } from "@/src/hooks/use-customer-api";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
@@ -85,7 +86,13 @@ export default function PromoDetailsScreen() {
           >
             <View style={styles.heroCard}>
               {imageUrl ? (
-                <Image source={{ uri: imageUrl }} style={styles.heroImage} resizeMode="cover" />
+                <RemoteImage
+                  uri={imageUrl}
+                  style={styles.heroImage}
+                  fallbackIcon="gift-outline"
+                  fallbackIconSize={34}
+                  accessibilityLabel={`${title} offer image`}
+                />
               ) : (
                 <View style={styles.heroFallback}>
                   <Text style={styles.heroEmoji}>🍔</Text>
