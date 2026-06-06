@@ -13,7 +13,10 @@ function resolveAppEnvironment(): AppEnvironment {
 }
 
 function normalizeApiBaseUrl(value?: string) {
-  const normalized = value?.trim().replace(/\/+$/, "");
+  const normalized = value
+    ?.trim()
+    .replace(/[,\s]+$/, "")
+    .replace(/\/+$/, "");
   if (!normalized) return null;
 
   if (!/^https?:\/\/[^/\s]+(?:\/.*)?$/i.test(normalized)) {
