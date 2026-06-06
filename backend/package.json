@@ -18,6 +18,8 @@
     "perf:seed": "tsx scripts/perf-seed.ts",
     "seed:showcase": "tsx scripts/reset-showcase-seed.ts --seed-only",
     "db:reset-showcase": "tsx scripts/reset-showcase-seed.ts",
+    "cleanup:scheduler-events": "tsx src/scripts/cleanup-transient-scheduler-events.ts",
+    "alert:test": "tsx src/scripts/send-test-alert.ts",
     "test:smoke": "node scripts/smoke-test.js"
   },
   "engines": {

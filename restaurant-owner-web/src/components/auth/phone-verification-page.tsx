@@ -132,10 +132,10 @@ export function PhoneVerificationPage() {
         <>
           Need a different number?{" "}
           <Link
-            to="/auth/signup"
+            to="/auth/signin"
             className="font-medium text-foreground underline-offset-4 hover:underline"
           >
-            Change details
+            Back to sign in
           </Link>{" "}
           or review the{" "}
           <Link
@@ -231,9 +231,9 @@ export function PhoneVerificationPage() {
         </div>
 
         <Button asChild variant="ghost" className="w-full rounded-2xl">
-          <Link to="/auth/signup">
+          <Link to="/auth/signin">
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to sign up
+            Back to sign in
           </Link>
         </Button>
       </form>

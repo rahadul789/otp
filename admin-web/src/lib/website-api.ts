@@ -1,5 +1,13 @@
 import { adminRequest } from "./api"
 
+export type WebsiteSocialLinkKey =
+  | "facebook"
+  | "instagram"
+  | "youtube"
+  | "linkedin"
+  | "tiktok"
+  | "snapchat"
+
 export type WebsiteLead = {
   id: string
   type: "restaurant" | "rider" | "contact"
@@ -22,6 +30,16 @@ export type WebsiteLead = {
 }
 
 export type WebsiteSettings = {
+  siteUrl: string
+  seoDefaultTitle: string
+  seoDefaultDescription: string
+  seoOgImageUrl: string
+  googleSiteVerification: string
+  businessAddress: string
+  businessCity: string
+  businessRegion: string
+  businessPostalCode: string
+  businessCountry: string
   playStoreUrl: string
   appDownloadUrl: string
   restaurantApplyUrl: string
@@ -32,7 +50,9 @@ export type WebsiteSettings = {
   instagramUrl: string
   linkedinUrl: string
   tiktokUrl: string
+  youtubeUrl: string
   snapchatUrl: string
+  socialLinksOrder: WebsiteSocialLinkKey[]
   heroTitle: string
   heroSubtitle: string
   heroTitleEn: string
@@ -49,6 +69,11 @@ export type WebsiteSettings = {
     name: string
     status: "active" | "coming_soon" | "paused"
     note?: string
+    seoTitle?: string
+    seoDescription?: string
+    popularSearches?: string[]
+    cuisineKeywords?: string[]
+    postalCodes?: string[]
   }>
   updatedAt: string | null
 }
@@ -79,11 +104,32 @@ export type WebsiteAnalytics = {
       contact: number
     }
     totalLeads: number
+    leadConversionRate: number
+    ctaClickRate: number
+    pageViewsPerSession: number
   }
   topPages: Array<{ path: string; views: number }>
   topReferrers: Array<{ referrer: string; visits: number }>
   daily: Array<{
     date: string
+    events: number
+    pageViews: number
+    visitors: number
+    sessions: number
+    leads: number
+  }>
+  hourlyBreakdown: Array<{
+    hour: number
+    label: string
+    events: number
+    pageViews: number
+    visitors: number
+    sessions: number
+    leads: number
+  }>
+  peakVisitorHours: Array<{
+    hour: number
+    label: string
     events: number
     pageViews: number
     visitors: number

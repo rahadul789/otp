@@ -29,6 +29,7 @@ import {
   type WebsiteAnalytics,
   type WebsiteLead,
   type WebsiteSettings,
+  type WebsiteSocialLinkKey,
 } from "@/lib/website-api"
 import { AdminDateRangeFilter } from "@/components/admin-date-range-filter"
 import { Badge } from "@/components/ui/badge"
@@ -50,6 +51,35 @@ const statusOptions: WebsiteLead["status"][] = [
   "converted",
   "closed",
 ]
+
+const socialLinkOptions: Array<{
+  key: WebsiteSocialLinkKey
+  formKey: `${WebsiteSocialLinkKey}Url`
+  label: string
+}> = [
+  { key: "facebook", formKey: "facebookUrl", label: "Facebook" },
+  { key: "instagram", formKey: "instagramUrl", label: "Instagram" },
+  { key: "youtube", formKey: "youtubeUrl", label: "YouTube" },
+  { key: "linkedin", formKey: "linkedinUrl", label: "LinkedIn" },
+  { key: "tiktok", formKey: "tiktokUrl", label: "TikTok" },
+  { key: "snapchat", formKey: "snapchatUrl", label: "Snapchat" },
+]
+
+const defaultSocialLinksOrder = socialLinkOptions.map((item) => item.key)
+
+function normalizeSocialLinksOrder(order?: WebsiteSocialLinkKey[]) {
+  const seen = new Set<WebsiteSocialLinkKey>()
+  const next: WebsiteSocialLinkKey[] = []
+  for (const key of order ?? []) {
+    if (!defaultSocialLinksOrder.includes(key) || seen.has(key)) continue
+    seen.add(key)
+    next.push(key)
+  }
+  for (const key of defaultSocialLinksOrder) {
+    if (!seen.has(key)) next.push(key)
+  }
+  return next
+}
 
 const leadTypeOptions = ["all", "restaurant", "rider", "contact"] as const
 const leadStatusOptions = ["all", ...statusOptions] as const
@@ -129,6 +159,16 @@ function defaultFromDate() {
 
 function settingsToForm(settings?: WebsiteSettings) {
   return {
+    siteUrl: settings?.siteUrl ?? "https://foodbela.com",
+    seoDefaultTitle: settings?.seoDefaultTitle ?? "",
+    seoDefaultDescription: settings?.seoDefaultDescription ?? "",
+    seoOgImageUrl: settings?.seoOgImageUrl ?? "",
+    googleSiteVerification: settings?.googleSiteVerification ?? "",
+    businessAddress: settings?.businessAddress ?? "",
+    businessCity: settings?.businessCity ?? "Dhaka",
+    businessRegion: settings?.businessRegion ?? "Dhaka",
+    businessPostalCode: settings?.businessPostalCode ?? "",
+    businessCountry: settings?.businessCountry ?? "BD",
     playStoreUrl: settings?.playStoreUrl ?? "",
     appDownloadUrl: settings?.appDownloadUrl ?? "",
     restaurantApplyUrl: settings?.restaurantApplyUrl ?? "/restaurants#apply",
@@ -139,7 +179,9 @@ function settingsToForm(settings?: WebsiteSettings) {
     instagramUrl: settings?.instagramUrl ?? "",
     linkedinUrl: settings?.linkedinUrl ?? "",
     tiktokUrl: settings?.tiktokUrl ?? "",
+    youtubeUrl: settings?.youtubeUrl ?? "",
     snapchatUrl: settings?.snapchatUrl ?? "",
+    socialLinksOrder: normalizeSocialLinksOrder(settings?.socialLinksOrder),
     heroTitle: settings?.heroTitle ?? "",
     heroSubtitle: settings?.heroSubtitle ?? "",
     heroTitleEn: settings?.heroTitleEn ?? "",
@@ -153,24 +195,55 @@ function settingsToForm(settings?: WebsiteSettings) {
     customerOfferCtaUrl: settings?.customerOfferCtaUrl ?? "",
     coverageRewardAmount: String(settings?.coverageRewardAmount ?? 2000),
     serviceAreas: (settings?.serviceAreas ?? [])
-      .map((area) => `${area.name}|${area.status}|${area.note ?? ""}`)
+      .map((area) =>
+        [
+          area.name,
+          area.status,
+          area.note ?? "",
+          area.seoTitle ?? "",
+          area.seoDescription ?? "",
+          (area.popularSearches ?? []).join(", "),
+          (area.cuisineKeywords ?? []).join(", "),
+          (area.postalCodes ?? []).join(", "),
+        ].join("|"),
+      )
       .join("\n"),
   }
 }
 
 function parseServiceAreas(value: string): WebsiteSettings["serviceAreas"] {
+  const parseList = (text = "") =>
+    text
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+
   return value
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [name, status = "active", note = ""] = line.split("|").map((part) => part.trim())
+      const [
+        name,
+        status = "active",
+        note = "",
+        seoTitle = "",
+        seoDescription = "",
+        popularSearches = "",
+        cuisineKeywords = "",
+        postalCodes = "",
+      ] = line.split("|").map((part) => part.trim())
       return {
         name,
         status: ["active", "coming_soon", "paused"].includes(status)
           ? (status as "active" | "coming_soon" | "paused")
           : "active",
         note,
+        seoTitle,
+        seoDescription,
+        popularSearches: parseList(popularSearches),
+        cuisineKeywords: parseList(cuisineKeywords),
+        postalCodes: parseList(postalCodes),
       }
     })
     .filter((area) => area.name)
@@ -221,6 +294,9 @@ function analyticsRows(analytics: WebsiteAnalytics) {
     ["Sessions", analytics.totals.sessions],
     ["CTA clicks", analytics.totals.ctaClicks],
     ["Lead submits", analytics.totals.leadSubmits],
+    ["Lead conversion rate", `${analytics.totals.leadConversionRate}%`],
+    ["CTA click rate", `${analytics.totals.ctaClickRate}%`],
+    ["Views per session", analytics.totals.pageViewsPerSession],
     ["Restaurant leads", analytics.totals.leads.restaurant],
     ["Rider leads", analytics.totals.leads.rider],
     ["Messages", analytics.totals.leads.contact],
@@ -233,6 +309,24 @@ function analyticsRows(analytics: WebsiteAnalytics) {
       day.visitors,
       day.sessions,
       day.leads,
+    ]),
+    [],
+    ["Hourly visitors", "Visitors", "Page views", "Events", "Leads"],
+    ...analytics.hourlyBreakdown.map((hour) => [
+      hour.label,
+      hour.visitors,
+      hour.pageViews,
+      hour.events,
+      hour.leads,
+    ]),
+    [],
+    ["Peak visitor hours", "Visitors", "Page views", "Events", "Leads"],
+    ...analytics.peakVisitorHours.map((hour) => [
+      hour.label,
+      hour.visitors,
+      hour.pageViews,
+      hour.events,
+      hour.leads,
     ]),
     [],
     ["Top pages", "Views"],
@@ -289,6 +383,13 @@ function printAnalyticsReport(analytics: WebsiteAnalytics) {
         `<tr><td>${formatPlaceBreakdownLabel(item)}</td><td>${item.count}</td><td>${item.visitors}</td><td>${item.pageViews}</td></tr>`
     )
     .join("")
+  const hourlyRows = analytics.hourlyBreakdown
+    .map(
+      (hour) =>
+        `<tr><td>${hour.label}</td><td>${hour.visitors}</td><td>${hour.pageViews}</td><td>${hour.events}</td><td>${hour.leads}</td></tr>`
+    )
+    .join("")
+  const peakHour = analytics.peakVisitorHours[0]
 
   report.document.write(`
     <html>
@@ -316,7 +417,11 @@ function printAnalyticsReport(analytics: WebsiteAnalytics) {
           <div class="card">Page views<strong>${formatNumber(analytics.totals.pageViews)}</strong></div>
           <div class="card">CTA clicks<strong>${formatNumber(analytics.totals.ctaClicks)}</strong></div>
           <div class="card">Leads<strong>${formatNumber(analytics.totals.totalLeads)}</strong></div>
+          <div class="card">Peak time<strong>${peakHour?.label ?? "N/A"}</strong></div>
+          <div class="card">Conversion<strong>${analytics.totals.leadConversionRate}%</strong></div>
         </div>
+        <h2>Hourly visitors</h2>
+        <table><thead><tr><th>Hour</th><th>Visitors</th><th>Page views</th><th>Events</th><th>Leads</th></tr></thead><tbody>${hourlyRows}</tbody></table>
         <h2>Daily activity</h2>
         <table><thead><tr><th>Date</th><th>Events</th><th>Page views</th><th>Visitors</th><th>Leads</th></tr></thead><tbody>${dailyRows}</tbody></table>
         <h2>Device mix</h2>
@@ -527,6 +632,22 @@ export function WebsitePage() {
     },
   })
 
+  function updateSocialUrl(formKey: (typeof socialLinkOptions)[number]["formKey"], value: string) {
+    setSettingsForm((current) => ({ ...current, [formKey]: value }))
+  }
+
+  function moveSocialLink(key: WebsiteSocialLinkKey, direction: -1 | 1) {
+    setSettingsForm((current) => {
+      const order = normalizeSocialLinksOrder(current.socialLinksOrder)
+      const index = order.indexOf(key)
+      const nextIndex = index + direction
+      if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return current
+      const next = [...order]
+      ;[next[index], next[nextIndex]] = [next[nextIndex], next[index]]
+      return { ...current, socialLinksOrder: next }
+    })
+  }
+
   function openLead(leadId: string) {
     const next = new URLSearchParams(searchParams)
     next.set("leadId", leadId)
@@ -554,8 +675,13 @@ export function WebsitePage() {
   const leads = leadsQuery.data?.items ?? overview?.recentLeads ?? []
   const totals = analytics?.totals
   const maxDailyEvents = Math.max(...(analytics?.daily ?? []).map((day) => day.events), 1)
+  const maxHourlyVisitors = Math.max(
+    ...(analytics?.hourlyBreakdown ?? []).map((hour) => hour.visitors),
+    1
+  )
   const maxPlaceEvents = Math.max(...(analytics?.placeBreakdown ?? []).map((item) => item.count), 1)
   const recentEventsMeta = analytics?.recentEventsMeta
+  const topPeakHour = analytics?.peakVisitorHours?.[0]
   const selectedLead = selectedLeadQuery.data
 
   return (
@@ -637,6 +763,7 @@ export function WebsitePage() {
         <TabsList>
           <TabsTrigger value="leads">Lead inbox</TabsTrigger>
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
+          <TabsTrigger value="seo">SEO</TabsTrigger>
           <TabsTrigger value="settings">Website settings</TabsTrigger>
         </TabsList>
 
@@ -874,6 +1001,64 @@ export function WebsitePage() {
                   Export PDF
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Peak visitor time</CardDescription>
+                <CardTitle className="text-xl">{topPeakHour?.label ?? "No traffic yet"}</CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-muted-foreground">
+                {formatNumber(topPeakHour?.visitors ?? 0)} visitors · Asia/Dhaka time
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Lead conversion</CardDescription>
+                <CardTitle className="text-xl">{totals?.leadConversionRate ?? 0}%</CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-muted-foreground">Leads per unique visitor</CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>CTA click rate</CardDescription>
+                <CardTitle className="text-xl">{totals?.ctaClickRate ?? 0}%</CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-muted-foreground">CTA clicks per page view</CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardDescription>Views per session</CardDescription>
+                <CardTitle className="text-xl">{totals?.pageViewsPerSession ?? 0}</CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-muted-foreground">Useful for engagement quality</CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Hourly visitor pattern</CardTitle>
+              <CardDescription>
+                Shows when visitors arrive most often in Asia/Dhaka time.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {(analytics?.hourlyBreakdown ?? []).map((hour) => (
+                <div key={hour.hour} className="grid grid-cols-[94px_1fr_auto] items-center gap-3">
+                  <span className="text-xs text-muted-foreground">{hour.label}</span>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-rose-500"
+                      style={{ width: `${hour.visitors ? Math.max(5, (hour.visitors / maxHourlyVisitors) * 100) : 0}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-medium">
+                    {formatNumber(hour.visitors)} visitors
+                  </span>
+                </div>
+              ))}
             </CardContent>
           </Card>
 
@@ -1137,6 +1322,75 @@ export function WebsitePage() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="seo">
+          <Card>
+            <CardHeader>
+              <CardTitle>SEO and search presence</CardTitle>
+              <CardDescription>
+                Control Foodbela.com canonical domain, Google verification, share preview, and structured data.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4 lg:grid-cols-2">
+              {[
+                ["siteUrl", "Public site URL"],
+                ["seoOgImageUrl", "Social preview image URL"],
+                ["googleSiteVerification", "Google verification code"],
+                ["businessAddress", "Business address"],
+                ["businessCity", "Business city"],
+                ["businessRegion", "Business region"],
+                ["businessPostalCode", "Postal code(s), comma allowed"],
+                ["businessCountry", "Country code"],
+              ].map(([key, label]) => (
+                <div key={key} className="grid gap-2">
+                  <Label>{label}</Label>
+                  <Input
+                    value={String(settingsForm[key as keyof typeof settingsForm] ?? "")}
+                    onChange={(event) =>
+                      setSettingsForm((current) => ({ ...current, [key]: event.target.value }))
+                    }
+                  />
+                </div>
+              ))}
+              <div className="grid gap-2 lg:col-span-2">
+                <Label>Default SEO title</Label>
+                <Input
+                  value={settingsForm.seoDefaultTitle}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({
+                      ...current,
+                      seoDefaultTitle: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="grid gap-2 lg:col-span-2">
+                <Label>Default SEO description</Label>
+                <Textarea
+                  value={settingsForm.seoDefaultDescription}
+                  rows={3}
+                  onChange={(event) =>
+                    setSettingsForm((current) => ({
+                      ...current,
+                      seoDefaultDescription: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground lg:col-span-2">
+                Sitemap: <span className="font-medium text-foreground">{settingsForm.siteUrl || "https://foodbela.com"}/sitemap.xml</span>
+                <br />
+                Robots: <span className="font-medium text-foreground">{settingsForm.siteUrl || "https://foodbela.com"}/robots.txt</span>
+              </div>
+              <div className="lg:col-span-2">
+                <Button onClick={() => updateSettingsMutation.mutate()} disabled={updateSettingsMutation.isPending}>
+                  <Globe2 className="mr-2 size-4" />
+                  Save SEO settings
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="settings">
           <Card>
             <CardHeader>
@@ -1153,11 +1407,6 @@ export function WebsitePage() {
                 ["riderApplyUrl", "Rider apply URL"],
                 ["supportPhone", "Support phone"],
                 ["supportEmail", "Support email"],
-                ["facebookUrl", "Facebook URL"],
-                ["instagramUrl", "Instagram URL"],
-                ["linkedinUrl", "LinkedIn URL"],
-                ["tiktokUrl", "TikTok URL"],
-                ["snapchatUrl", "Snapchat URL"],
               ].map(([key, label]) => (
                 <div key={key} className="grid gap-2">
                   <Label>{label}</Label>
@@ -1169,6 +1418,56 @@ export function WebsitePage() {
                   />
                 </div>
               ))}
+              <div className="grid gap-3 rounded-xl border bg-muted/20 p-4 lg:col-span-2">
+                <div>
+                  <Label>Footer social links</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Add URLs and use Up/Down to choose the display order. Blank or # links stay hidden on Foodbela.com.
+                  </p>
+                </div>
+                <div className="grid gap-3">
+                  {normalizeSocialLinksOrder(settingsForm.socialLinksOrder).map((socialKey, index) => {
+                    const item =
+                      socialLinkOptions.find((option) => option.key === socialKey) ?? socialLinkOptions[0]
+                    return (
+                      <div
+                        key={item.key}
+                        className="grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-[130px_1fr_auto]"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline">{index + 1}</Badge>
+                          <span className="font-medium">{item.label}</span>
+                        </div>
+                        <Input
+                          value={String(settingsForm[item.formKey] ?? "")}
+                          placeholder={`https://${item.key}.com/foodbela`}
+                          onChange={(event) => updateSocialUrl(item.formKey, event.target.value)}
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={index === 0}
+                            onClick={() => moveSocialLink(item.key, -1)}
+                          >
+                            Up
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={index === socialLinkOptions.length - 1}
+                            onClick={() => moveSocialLink(item.key, 1)}
+                          >
+                            Down
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
               <div className="grid gap-2 lg:col-span-2">
                 <Label>Hero title Bangla</Label>
                 <Textarea
@@ -1319,14 +1618,13 @@ export function WebsitePage() {
                 <Textarea
                   value={settingsForm.serviceAreas}
                   rows={5}
-                  placeholder="Dhaka|active|Selected zones now live"
+                  placeholder="Netrokona|active|Live now|Food delivery in Netrokona|Order food from local restaurants in Netrokona|Netrokona food delivery, Netrokona restaurant|Biryani, Burger, Fast food|2400"
                   onChange={(event) =>
                     setSettingsForm((current) => ({ ...current, serviceAreas: event.target.value }))
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  Foodbela.com coverage is controlled manually from here. If this list is empty,
-                  the website can fall back to service zones. Use: name|active/coming_soon/paused|note
+                  Foodbela.com coverage is controlled manually from here. Format: name|active/coming_soon/paused|note|SEO title|SEO description|popular searches comma list|cuisines comma list|postal codes comma list.
                 </p>
               </div>
               <div className="grid gap-2">

@@ -468,6 +468,21 @@ const restaurantSchema = new Schema(
       type: Schema.Types.Mixed,
       default: {},
     },
+    enforcement: {
+      type: Schema.Types.Mixed,
+      default: () => ({
+        status: "active",
+        reason: "",
+        ownerNote: "",
+        customerMessage: "",
+        internalNote: "",
+        startsAt: null,
+        expiresAt: null,
+        updatedAt: null,
+        updatedByAdminId: "",
+        history: [],
+      }),
+    },
     commercial: {
       type: new Schema(
         {
@@ -555,6 +570,7 @@ restaurantSchema.index({ ownerId: 1, slug: 1 }, { unique: true });
 restaurantSchema.index({ locationPoint: "2dsphere" });
 restaurantSchema.index({ "runtime.isOnline": -1, name: 1 });
 restaurantSchema.index({ "serviceArea.zoneId": 1, "runtime.isVisible": 1, "runtime.isOnline": -1 });
+restaurantSchema.index({ "enforcement.status": 1, "enforcement.expiresAt": 1 });
 
 const payoutMethodSchema = new Schema(
   {

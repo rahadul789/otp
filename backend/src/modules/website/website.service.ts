@@ -62,6 +62,12 @@ const compactHeroSubtitleEn =
 const defaultCustomerYoutubeUrl =
   "https://www.youtube-nocookie.com/embed/ysz5S6PUM-U";
 const defaultCustomerVideoOrientation = "portrait";
+const defaultSiteUrl = "https://foodbela.com";
+const defaultSeoTitle = "Foodbela | আপনার শহরের ফুড ডেলিভারি নেটওয়ার্ক";
+const defaultSeoDescription =
+  "Foodbela দিয়ে খাবার অর্ডার, রেস্টুরেন্ট পার্টনারশিপ এবং রাইডার অনবোর্ডিং এক প্ল্যাটফর্মে করুন।";
+const socialLinkKeys = ["facebook", "instagram", "youtube", "linkedin", "tiktok", "snapchat"];
+const defaultSocialLinksOrder = ["facebook", "instagram", "youtube", "linkedin", "tiktok", "snapchat"];
 const legacyHeroTitle =
   "খাবার, রেস্টুরেন্ট আর রাইডার—সব এক স্মার্ট ডেলিভারি নেটওয়ার্কে।";
 const legacyHeroSubtitle =
@@ -109,6 +115,51 @@ function serializeZoneName(zone: any) {
   return `${zoneName}, ${districtName}`;
 }
 
+function normalizeSocialLinksOrder(value: unknown) {
+  const incoming = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const seen = new Set<string>();
+  const order: string[] = [];
+
+  for (const item of incoming) {
+    const key = String(item ?? "").trim().toLowerCase();
+    if (!socialLinkKeys.includes(key) || seen.has(key)) continue;
+    seen.add(key);
+    order.push(key);
+  }
+
+  for (const key of defaultSocialLinksOrder) {
+    if (!seen.has(key)) order.push(key);
+  }
+
+  return order;
+}
+
+function normalizeTextList(value: unknown, limit = 20) {
+  const incoming = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const seen = new Set<string>();
+  const items: string[] = [];
+
+  for (const item of incoming) {
+    const text = String(item ?? "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push(text);
+    if (items.length >= limit) break;
+  }
+
+  return items;
+}
+
 async function getServiceAreasForWebsite(row: any) {
   const fallbackAreas = Array.isArray(row.serviceAreas) ? row.serviceAreas : [];
   if (fallbackAreas.length) {
@@ -121,6 +172,11 @@ async function getServiceAreasForWebsite(row: any) {
             ? area.status
             : "active",
         note: String(area.note ?? "").trim(),
+        seoTitle: String(area.seoTitle ?? "").trim(),
+        seoDescription: String(area.seoDescription ?? "").trim(),
+        popularSearches: normalizeTextList(area.popularSearches),
+        cuisineKeywords: normalizeTextList(area.cuisineKeywords),
+        postalCodes: normalizeTextList(area.postalCodes),
       }))
       .filter((area: { name: string; status: string; note: string }) => {
         if (!area.name) return false;
@@ -150,6 +206,11 @@ async function getServiceAreasForWebsite(row: any) {
         note:
           String(zone.notes ?? "").trim() ||
           (zone.status === "active" ? "Available now" : "Temporarily paused"),
+        seoTitle: "",
+        seoDescription: "",
+        popularSearches: [],
+        cuisineKeywords: [],
+        postalCodes: [],
       };
     })
     .filter((area) => {
@@ -165,6 +226,16 @@ async function serializeSettings(row: any) {
   const serviceAreas = await getServiceAreasForWebsite(row);
 
   return {
+    siteUrl: row.siteUrl ?? defaultSiteUrl,
+    seoDefaultTitle: row.seoDefaultTitle ?? defaultSeoTitle,
+    seoDefaultDescription: row.seoDefaultDescription ?? defaultSeoDescription,
+    seoOgImageUrl: row.seoOgImageUrl ?? "",
+    googleSiteVerification: row.googleSiteVerification ?? "",
+    businessAddress: row.businessAddress ?? "",
+    businessCity: row.businessCity ?? "Dhaka",
+    businessRegion: row.businessRegion ?? "Dhaka",
+    businessPostalCode: row.businessPostalCode ?? "",
+    businessCountry: row.businessCountry ?? "BD",
     playStoreUrl: row.playStoreUrl ?? "",
     appDownloadUrl: row.appDownloadUrl ?? "",
     restaurantApplyUrl: row.restaurantApplyUrl ?? "/restaurants#apply",
@@ -175,7 +246,9 @@ async function serializeSettings(row: any) {
     instagramUrl: row.instagramUrl ?? "#",
     linkedinUrl: row.linkedinUrl ?? "#",
     tiktokUrl: row.tiktokUrl ?? "#",
+    youtubeUrl: row.youtubeUrl ?? "#",
     snapchatUrl: row.snapchatUrl ?? "#",
+    socialLinksOrder: normalizeSocialLinksOrder(row.socialLinksOrder),
     heroTitle: row.heroTitle ?? defaultHeroTitle,
     heroSubtitle: row.heroSubtitle ?? compactHeroSubtitle,
     heroTitleEn: row.heroTitleEn ?? defaultHeroTitleEn,
@@ -240,6 +313,16 @@ export async function updateWebsiteSettings(
   adminId: string,
 ) {
   const allowed = [
+    "siteUrl",
+    "seoDefaultTitle",
+    "seoDefaultDescription",
+    "seoOgImageUrl",
+    "googleSiteVerification",
+    "businessAddress",
+    "businessCity",
+    "businessRegion",
+    "businessPostalCode",
+    "businessCountry",
     "playStoreUrl",
     "appDownloadUrl",
     "restaurantApplyUrl",
@@ -250,7 +333,9 @@ export async function updateWebsiteSettings(
     "instagramUrl",
     "linkedinUrl",
     "tiktokUrl",
+    "youtubeUrl",
     "snapchatUrl",
+    "socialLinksOrder",
     "heroTitle",
     "heroSubtitle",
     "heroTitleEn",
@@ -592,6 +677,14 @@ function serializeRecentEvent(row: Record<string, any>) {
   };
 }
 
+const websiteAnalyticsTimezone = "Asia/Dhaka";
+
+function formatHourLabel(hour: number) {
+  const start = String(hour).padStart(2, "0");
+  const end = String((hour + 1) % 24).padStart(2, "0");
+  return `${start}:00-${end}:00`;
+}
+
 export async function getWebsiteAnalytics(params: WebsiteAnalyticsParams = {}) {
   const { from, to, safeDays } = buildAnalyticsRange(params);
   const match = buildAnalyticsMatch(params);
@@ -611,6 +704,8 @@ export async function getWebsiteAnalytics(params: WebsiteAnalyticsParams = {}) {
     topReferrers,
     dailyEvents,
     dailyLeads,
+    hourlyEvents,
+    hourlyLeads,
     eventBreakdown,
     deviceBreakdown,
     browserBreakdown,
@@ -676,6 +771,35 @@ export async function getWebsiteAnalytics(params: WebsiteAnalyticsParams = {}) {
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          leads: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]),
+    WebsiteAnalyticsEventModel.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: {
+            $hour: { date: "$createdAt", timezone: websiteAnalyticsTimezone },
+          },
+          events: { $sum: 1 },
+          pageViews: {
+            $sum: { $cond: [{ $eq: ["$eventName", "page_view"] }, 1, 0] },
+          },
+          visitors: { $addToSet: "$visitorId" },
+          sessions: { $addToSet: "$sessionId" },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]),
+    WebsiteLeadModel.aggregate([
+      { $match: leadDateMatch },
+      {
+        $group: {
+          _id: {
+            $hour: { date: "$createdAt", timezone: websiteAnalyticsTimezone },
+          },
           leads: { $sum: 1 },
         },
       },
@@ -779,6 +903,29 @@ export async function getWebsiteAnalytics(params: WebsiteAnalyticsParams = {}) {
     }
   }
 
+  const hourlyBreakdown = Array.from({ length: 24 }, (_, hour) => {
+    const eventRow = hourlyEvents.find((item) => Number(item._id) === hour);
+    const leadRow = hourlyLeads.find((item) => Number(item._id) === hour);
+    return {
+      hour,
+      label: formatHourLabel(hour),
+      events: eventRow?.events ?? 0,
+      pageViews: eventRow?.pageViews ?? 0,
+      visitors: Array.isArray(eventRow?.visitors) ? eventRow.visitors.length : 0,
+      sessions: Array.isArray(eventRow?.sessions) ? eventRow.sessions.length : 0,
+      leads: leadRow?.leads ?? 0,
+    };
+  });
+  const peakVisitorHours = [...hourlyBreakdown]
+    .filter((item) => item.visitors > 0 || item.pageViews > 0 || item.events > 0)
+    .sort((a, b) => {
+      if (b.visitors !== a.visitors) return b.visitors - a.visitors;
+      if (b.pageViews !== a.pageViews) return b.pageViews - a.pageViews;
+      return b.events - a.events;
+    })
+    .slice(0, 3);
+  const totalLeads = leads.restaurant + leads.rider + leads.contact;
+
   return {
     days: safeDays,
     range: {
@@ -800,7 +947,16 @@ export async function getWebsiteAnalytics(params: WebsiteAnalyticsParams = {}) {
       ctaClicks,
       leadSubmits,
       leads,
-      totalLeads: leads.restaurant + leads.rider + leads.contact,
+      totalLeads,
+      leadConversionRate: uniqueVisitors.length
+        ? Number(((totalLeads / uniqueVisitors.length) * 100).toFixed(2))
+        : 0,
+      ctaClickRate: pageViews
+        ? Number(((ctaClicks / pageViews) * 100).toFixed(2))
+        : 0,
+      pageViewsPerSession: sessions.length
+        ? Number((pageViews / sessions.length).toFixed(2))
+        : 0,
     },
     topPages: topPages.map((item) => ({
       path: item._id || "/",
@@ -815,6 +971,8 @@ export async function getWebsiteAnalytics(params: WebsiteAnalyticsParams = {}) {
       leads:
         dailyLeads.find((leadItem) => leadItem._id === item._id)?.leads ?? 0,
     })),
+    hourlyBreakdown,
+    peakVisitorHours,
     topReferrers: topReferrers.map((item) => ({
       referrer: item._id || "Direct",
       visits: item.count,

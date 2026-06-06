@@ -379,6 +379,7 @@ select {
 .lifecycle-demo {
   position: relative;
   z-index: 4;
+  --lifecycle-duration: 15.5s;
   width: min(1320px, 100%);
   height: min(700px, calc(100vh - 112px));
   min-height: 560px;
@@ -425,10 +426,13 @@ select {
 .flow-path {
   fill: none;
   stroke: rgba(17, 24, 39, 0.16);
-  stroke-width: 3;
+  stroke-width: 2.6;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-dasharray: 10 13;
+  stroke-dasharray: 6 8;
+  vector-effect: non-scaling-stroke;
+  animation: pathMarchForward 3.2s linear infinite;
+  will-change: stroke-dashoffset;
 }
 
 .path-order {
@@ -440,7 +444,13 @@ select {
 }
 
 .path-delivery {
-  stroke: rgba(58, 210, 159, 0.42);
+  stroke: rgba(58, 210, 159, 0.52);
+}
+
+@keyframes pathMarchForward {
+  to {
+    stroke-dashoffset: -56;
+  }
 }
 
 .lifecycle-device {
@@ -491,7 +501,7 @@ select {
   border-radius: 30px;
   padding: 0;
   transform: translate(-50%, -50%);
-  animation: restaurantGlow 11s ease-in-out infinite;
+  animation: restaurantGlow var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .restaurant-browser-bar {
@@ -634,7 +644,7 @@ select {
   font-weight: 900;
   box-shadow: 0 16px 34px rgba(248, 91, 138, 0.25);
   pointer-events: none;
-  animation: orderTapPulse 11s ease-in-out infinite;
+  animation: orderTapPulse var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .device-status-stack {
@@ -659,19 +669,19 @@ select {
 }
 
 .status-customer-start {
-  animation: customerStartStatus 11s ease-in-out infinite;
+  animation: customerStartStatus var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .status-customer-placed {
   background: rgba(255, 184, 76, 0.2);
   color: #ffe1aa;
-  animation: customerPlacedStatus 11s ease-in-out infinite;
+  animation: customerPlacedStatus var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .status-customer-delivered {
   background: rgba(58, 210, 159, 0.18);
   color: #b8f7de;
-  animation: customerDeliveredStatus 11s ease-in-out infinite;
+  animation: customerDeliveredStatus var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .restaurant-head {
@@ -717,7 +727,7 @@ select {
   color: var(--white);
   padding: 14px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-  animation: orderTicketIn 11s ease-in-out infinite;
+  animation: orderTicketIn var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .restaurant-order-card small,
@@ -779,37 +789,37 @@ select {
   opacity: 0;
   animation:
     spin 0.8s linear infinite,
-    stepSpinnerHidden 11s ease-in-out infinite;
+    stepSpinnerHidden var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .step-accepted {
-  animation: stepAcceptedActive 11s ease-in-out infinite;
+  animation: stepAcceptedActive var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .step-accepted::after {
   animation:
     spin 0.8s linear infinite,
-    stepAcceptedSpinner 11s ease-in-out infinite;
+    stepAcceptedSpinner var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .step-preparing {
-  animation: stepPreparingActive 11s ease-in-out infinite;
+  animation: stepPreparingActive var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .step-preparing::after {
   animation:
     spin 0.8s linear infinite,
-    stepPreparingSpinner 11s ease-in-out infinite;
+    stepPreparingSpinner var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .step-ready {
-  animation: stepReadyActive 11s ease-in-out infinite;
+  animation: stepReadyActive var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .step-ready::after {
   animation:
     spin 0.8s linear infinite,
-    stepReadySpinner 11s ease-in-out infinite;
+    stepReadySpinner var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .rider-map {
@@ -848,19 +858,25 @@ select {
   top: 48%;
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   background: var(--white);
+  padding: 4px;
+  overflow: hidden;
   font-size: 1.2rem;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
   transform: translate(-50%, -50%);
-  animation: riderMapMove 11s ease-in-out infinite;
+  animation: riderMapMove var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .rider-bike-symbol {
   display: block;
-  transform: scaleX(-1);
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  transform: scaleX(1) scale(1.06);
 }
 
 .map-node {
@@ -890,19 +906,19 @@ select {
 }
 
 .status-rider-wait {
-  animation: riderWaitStatus 11s ease-in-out infinite;
+  animation: riderWaitStatus var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .status-rider-pickup {
   background: rgba(255, 184, 76, 0.2);
   color: #ffe1aa;
-  animation: riderPickupStatus 11s ease-in-out infinite;
+  animation: riderPickupStatus var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .status-rider-going {
   background: rgba(58, 210, 159, 0.18);
   color: #b8f7de;
-  animation: riderGoingStatus 11s ease-in-out infinite;
+  animation: riderGoingStatus var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .device-pop {
@@ -921,7 +937,7 @@ select {
   text-align: center;
   opacity: 0;
   transform: translate(var(--pop-x), 14px) scale(0.94);
-  animation-duration: 11s;
+  animation-duration: var(--lifecycle-duration);
   animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
   animation-iteration-count: infinite;
 }
@@ -1000,7 +1016,7 @@ select {
   font-weight: 900;
   transform: translateX(-50%) translateY(16px);
   opacity: 0;
-  animation: lifecycleComplete 11s ease-in-out infinite;
+  animation: lifecycleComplete var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .lifecycle-route {
@@ -1072,7 +1088,7 @@ select {
     0 0 28px rgba(248, 91, 138, 0.42);
   transform: translate(-50%, -50%);
   opacity: 0;
-  animation: routePulse 11s ease-in-out infinite;
+  animation: routePulse var(--lifecycle-duration) ease-in-out infinite;
 }
 
 .route-pulse-order {
@@ -1093,7 +1109,7 @@ select {
   font-size: 1.65rem;
   opacity: 0;
   transform: translate(-50%, -50%) scale(0.88);
-  animation: packageMove 11s ease-in-out infinite;
+  animation: packageMove var(--lifecycle-duration) cubic-bezier(0.22, 0.72, 0.18, 1) infinite;
 }
 
 .delivery-rider {
@@ -1101,13 +1117,17 @@ select {
   z-index: 6;
   left: 78%;
   top: 65%;
-  --ride-hop-x: -18px;
-  --ride-hop-y: 14px;
-  --ride-mid-x: -245px;
-  --ride-mid-y: 115px;
-  --ride-x: -635px;
+  --ride-hop-x: -22px;
+  --ride-hop-y: 8px;
+  --ride-arc-one-x: -136px;
+  --ride-arc-one-y: 82px;
+  --ride-mid-x: -310px;
+  --ride-mid-y: 136px;
+  --ride-arc-two-x: -505px;
+  --ride-arc-two-y: 126px;
+  --ride-x: -650px;
   --ride-y: 72px;
-  --ride-end-x: -690px;
+  --ride-end-x: -704px;
   --ride-end-y: 78px;
   width: 48px;
   height: 48px;
@@ -1115,21 +1135,41 @@ select {
   place-items: center;
   border-radius: 50%;
   background: var(--white);
+  padding: 5px;
   box-shadow: 0 24px 48px rgba(17, 24, 39, 0.16);
+  overflow: hidden;
   opacity: 0;
   transform: translate3d(0, 0, 0) scale(0.86);
-  animation: deliveryRide 11s ease-in-out infinite;
+  animation: deliveryRide var(--lifecycle-duration) linear infinite;
+  will-change: transform, opacity;
 }
 
 .delivery-rider-symbol {
   display: block;
-  font-size: 1.65rem;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  transform: scaleX(-1) scale(1.06);
+  filter: drop-shadow(0 4px 5px rgba(17, 24, 39, 0.16));
 }
 
 .delivery-rider img {
-  width: 30px;
-  height: 30px;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+@supports (offset-path: path("M 0 0 L 1 1")) {
+  .delivery-rider {
+    offset-anchor: center;
+    offset-path: path("M 0 0 C -92 132 -334 190 -508 150 C -624 126 -678 92 -708 76");
+    offset-distance: 0%;
+    offset-rotate: 0deg;
+    transform: scale(0.86);
+    animation: deliveryRidePath var(--lifecycle-duration) linear infinite;
+    will-change: offset-distance, transform, opacity;
+  }
 }
 
 @keyframes lifecycleDeviceFloat {
@@ -1211,11 +1251,11 @@ select {
 
 @keyframes customerDeliveredStatus {
   0%,
-  88% {
+  96% {
     opacity: 0;
     transform: translateY(10px);
   }
-  93%,
+  98%,
   100% {
     opacity: 1;
     transform: translateY(0);
@@ -1355,15 +1395,15 @@ select {
 
 @keyframes riderMapMove {
   0%,
-  70% {
+  80% {
     left: 16%;
     top: 58%;
   }
-  80% {
+  88% {
     left: 44%;
     top: 42%;
   }
-  92%,
+  96%,
   100% {
     left: 82%;
     top: 34%;
@@ -1372,13 +1412,14 @@ select {
 
 @keyframes riderWaitStatus {
   0%,
-  66%,
+  76%,
+  84%,
   100% {
     opacity: 0;
     transform: translateY(10px);
   }
-  69%,
-  73% {
+  79%,
+  82% {
     opacity: 1;
     transform: translateY(0);
   }
@@ -1386,14 +1427,14 @@ select {
 
 @keyframes riderPickupStatus {
   0%,
-  71%,
   81%,
+  88%,
   100% {
     opacity: 0;
     transform: translateY(10px);
   }
-  74%,
-  79% {
+  84%,
+  86% {
     opacity: 1;
     transform: translateY(0);
   }
@@ -1401,13 +1442,13 @@ select {
 
 @keyframes riderGoingStatus {
   0%,
-  79%,
+  85%,
   100% {
     opacity: 0;
     transform: translateY(10px);
   }
-  83%,
-  94% {
+  88%,
+  96% {
     opacity: 1;
     transform: translateY(0);
   }
@@ -1490,14 +1531,14 @@ select {
 
 @keyframes lifecyclePopPickup {
   0%,
-  69%,
   81%,
+  89%,
   100% {
     opacity: 0;
     transform: translate(var(--pop-x), 14px) scale(0.94);
   }
-  72%,
-  78% {
+  84%,
+  87% {
     opacity: 1;
     transform: translate(var(--pop-x), 0) scale(1);
   }
@@ -1505,14 +1546,14 @@ select {
 
 @keyframes lifecyclePopRiderRoute {
   0%,
-  78%,
-  92%,
+  86%,
+  97%,
   100% {
     opacity: 0;
     transform: translate(var(--pop-x), 14px) scale(0.94);
   }
-  82%,
-  89% {
+  89%,
+  94% {
     opacity: 1;
     transform: translate(var(--pop-x), 0) scale(1);
   }
@@ -1520,13 +1561,12 @@ select {
 
 @keyframes lifecycleComplete {
   0%,
-  88%,
-  100% {
+  96% {
     opacity: 0;
     transform: translateX(-50%) translateY(16px);
   }
-  93%,
-  98% {
+  98%,
+  100% {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
   }
@@ -1562,31 +1602,37 @@ select {
 
 @keyframes packageMove {
   0%,
-  57%,
+  67%,
   100% {
     left: 0;
     top: 50%;
     opacity: 0;
     transform: translate(-50%, -50%) scale(0.88);
   }
-  61% {
+  70% {
     opacity: 1;
-    top: 36%;
+    top: 42%;
     transform: translate(-50%, -50%) scale(1);
   }
-  66% {
-    left: 52%;
-    top: 18%;
+  75% {
+    left: 38%;
+    top: 22%;
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1.04);
+    transform: translate(-50%, -50%) scale(1.04) rotate(-7deg);
   }
-  70% {
+  80% {
+    left: 70%;
+    top: 24%;
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.04) rotate(5deg);
+  }
+  84% {
     left: 100%;
     top: 50%;
     opacity: 1;
     transform: translate(-50%, -50%) scale(1);
   }
-  73% {
+  86% {
     left: 100%;
     opacity: 0;
     transform: translate(-50%, -50%) scale(0.88);
@@ -1595,25 +1641,91 @@ select {
 
 @keyframes deliveryRide {
   0%,
-  74% {
+  85.2% {
     opacity: 0;
-    transform: translate3d(0, 0, 0) scale(0.86);
+    transform: translate3d(0, 0, 0) scale(0.96) rotate(0deg);
   }
-  78% {
+  86.4% {
     opacity: 1;
-    transform: translate3d(var(--ride-hop-x), var(--ride-hop-y), 0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
   }
-  87% {
+  89.6% {
     opacity: 1;
-    transform: translate3d(var(--ride-mid-x), var(--ride-mid-y), 0) scale(1);
+    transform: translate3d(var(--ride-arc-one-x), var(--ride-arc-one-y), 0)
+      scale(1)
+      rotate(0deg);
+  }
+  92.8% {
+    opacity: 1;
+    transform: translate3d(var(--ride-mid-x), var(--ride-mid-y), 0)
+      scale(1)
+      rotate(0deg);
   }
   96% {
     opacity: 1;
-    transform: translate3d(var(--ride-x), var(--ride-y), 0) scale(1);
+    transform: translate3d(var(--ride-arc-two-x), var(--ride-arc-two-y), 0)
+      scale(1)
+      rotate(0deg);
+  }
+  98.6% {
+    opacity: 1;
+    transform: translate3d(var(--ride-x), var(--ride-y), 0) scale(1) rotate(0deg);
+  }
+  99.35% {
+    opacity: 0.72;
+    transform: translate3d(var(--ride-end-x), var(--ride-end-y), 0)
+      scale(1)
+      rotate(0deg);
   }
   100% {
     opacity: 0;
-    transform: translate3d(var(--ride-end-x), var(--ride-end-y), 0) scale(0.92);
+    transform: translate3d(var(--ride-end-x), var(--ride-end-y), 0)
+      scale(0.98)
+      rotate(0deg);
+  }
+}
+
+@keyframes deliveryRidePath {
+  0%,
+  85.2% {
+    opacity: 0;
+    offset-distance: 0%;
+    transform: scale(0.96);
+  }
+  86.4% {
+    opacity: 1;
+    offset-distance: 0%;
+    transform: scale(1);
+  }
+  89.6% {
+    opacity: 1;
+    offset-distance: 25%;
+    transform: scale(1);
+  }
+  92.8% {
+    opacity: 1;
+    offset-distance: 50%;
+    transform: scale(1);
+  }
+  96% {
+    opacity: 1;
+    offset-distance: 75%;
+    transform: scale(1);
+  }
+  98.6% {
+    opacity: 1;
+    offset-distance: 96%;
+    transform: scale(1);
+  }
+  99.35% {
+    opacity: 0.72;
+    offset-distance: 100%;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    offset-distance: 100%;
+    transform: scale(0.98);
   }
 }
 
@@ -2523,6 +2635,10 @@ select {
   text-wrap: pretty;
 }
 
+.step-mobile-visual {
+  display: none;
+}
+
 .reset-step {
   height: 0;
   margin: 0;
@@ -2574,7 +2690,9 @@ select {
   width: 100%;
   max-width: 520px;
   opacity: 0;
-  transition: all 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition:
+    opacity 0.55s ease,
+    transform 0.65s cubic-bezier(0.2, 0.8, 0.2, 1);
   filter: drop-shadow(0 30px 40px rgba(0, 0, 0, 0.15));
 }
 
@@ -2940,6 +3058,199 @@ select {
   font-weight: 900;
 }
 
+.mobile-visual-phone,
+.mobile-dashboard-shell,
+.mobile-delivery-shell {
+  width: min(100%, 330px);
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  box-shadow: 0 22px 48px rgba(17, 24, 39, 0.1);
+}
+
+.mobile-visual-phone {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.mobile-visual-pill {
+  border-radius: 999px;
+  background: rgba(248, 91, 138, 0.12);
+  color: var(--hot);
+  padding: 7px 11px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mobile-visual-phone strong {
+  color: var(--ink);
+  font-size: 1.35rem;
+  line-height: 1.1;
+  font-weight: 900;
+}
+
+.mobile-visual-phone img {
+  width: 132px;
+  height: 132px;
+  border-radius: 22px;
+  background: var(--white);
+  padding: 8px;
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.08);
+}
+
+.mobile-visual-phone small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.mobile-dashboard-shell {
+  padding: 16px;
+}
+
+.mobile-dashboard-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.mobile-dashboard-bar span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--hot);
+}
+
+.mobile-dashboard-bar span:nth-child(2) {
+  background: var(--orange);
+}
+
+.mobile-dashboard-bar span:nth-child(3) {
+  background: #3ad29f;
+}
+
+.mobile-dashboard-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.mobile-dashboard-kpis span {
+  display: grid;
+  gap: 4px;
+  border-radius: 18px;
+  background: #f8f9fa;
+  padding: 12px 10px;
+  text-align: left;
+}
+
+.mobile-dashboard-kpis strong {
+  color: var(--ink);
+  font-size: 1rem;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.mobile-dashboard-kpis small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.mobile-dashboard-wave {
+  height: 70px;
+  margin-top: 14px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 72% 22%, rgba(248, 91, 138, 0.18), transparent 28%),
+    linear-gradient(180deg, rgba(255, 184, 76, 0.18), rgba(58, 210, 159, 0.1));
+  position: relative;
+  overflow: hidden;
+}
+
+.mobile-dashboard-wave::after {
+  content: "";
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 18px;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--hot), var(--orange), #3ad29f);
+}
+
+.mobile-delivery-shell {
+  min-height: 230px;
+  position: relative;
+  overflow: hidden;
+  padding: 22px;
+  background:
+    radial-gradient(circle at 20% 70%, rgba(255, 184, 76, 0.22), transparent 28%),
+    radial-gradient(circle at 74% 25%, rgba(58, 210, 159, 0.2), transparent 26%),
+    rgba(255, 255, 255, 0.92);
+}
+
+.mobile-delivery-shell i {
+  position: absolute;
+  left: 20%;
+  right: 18%;
+  top: 47%;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--hot), var(--orange), #3ad29f);
+  transform: rotate(-18deg);
+}
+
+.mobile-delivery-shell b {
+  position: absolute;
+  left: 47%;
+  top: 37%;
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--white);
+  box-shadow: 0 18px 34px rgba(17, 24, 39, 0.14);
+  font-size: 1.9rem;
+}
+
+.mobile-delivery-shell strong {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 22px;
+  border-radius: 18px;
+  background: var(--ink);
+  color: var(--white);
+  padding: 14px 16px;
+  font-weight: 900;
+}
+
+.mobile-delivery-pin {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--hot);
+  box-shadow: 0 0 0 9px rgba(248, 91, 138, 0.13);
+}
+
+.mobile-delivery-pin.pickup {
+  left: 18%;
+  top: 58%;
+}
+
+.mobile-delivery-pin.dropoff {
+  right: 18%;
+  top: 27%;
+  background: #3ad29f;
+  box-shadow: 0 0 0 9px rgba(58, 210, 159, 0.14);
+}
+
 .magic-status-card {
   position: absolute;
   left: 50%;
@@ -3044,9 +3355,7 @@ select {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.72),
     0 22px 46px rgba(17, 24, 39, 0.08);
-  filter: blur(0.1px) drop-shadow(0 20px 24px rgba(17, 24, 39, 0.08));
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  filter: drop-shadow(0 18px 22px rgba(17, 24, 39, 0.08));
   animation: sceneFloat 8s ease-in-out infinite;
 }
 
@@ -3143,6 +3452,232 @@ select {
   text-wrap: pretty;
 }
 
+.local-seo-section,
+.local-keyword-section {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 90px 5%;
+}
+
+.local-status-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 26px;
+  align-items: center;
+  padding: 34px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 28px;
+  background:
+    linear-gradient(135deg, rgba(255, 184, 76, 0.15), rgba(248, 91, 138, 0.12)),
+    var(--white);
+  box-shadow: var(--shadow);
+}
+
+.local-status-card h2 {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  line-height: 1.05;
+  letter-spacing: -1px;
+  margin-bottom: 14px;
+  color: var(--ink);
+}
+
+.local-status-card p {
+  max-width: 780px;
+  color: var(--muted);
+  line-height: 1.7;
+  font-size: 1.08rem;
+}
+
+.postal-list,
+.keyword-list,
+.area-directory-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.postal-list span,
+.keyword-list span,
+.area-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  color: var(--ink);
+  font-weight: 900;
+  font-size: 0.88rem;
+}
+
+.local-intent-grid,
+.area-directory-grid,
+.restaurant-directory-grid,
+.keyword-panels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.local-status-card + .local-intent-grid {
+  margin-top: 28px;
+}
+
+.local-intent-card,
+.area-directory-card,
+.keyword-panel,
+.restaurant-mini-card,
+.local-empty-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow);
+}
+
+.local-intent-card,
+.area-directory-card,
+.keyword-panel,
+.local-empty-card {
+  padding: 30px;
+}
+
+.local-intent-card::before,
+.area-directory-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  background: linear-gradient(90deg, var(--hot), var(--orange));
+}
+
+.local-card-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 18px;
+  border-radius: 16px;
+  background: var(--ink);
+  color: var(--white);
+  font-weight: 900;
+}
+
+.local-intent-card h3,
+.area-directory-card h3,
+.keyword-panel h3,
+.restaurant-mini-card h3,
+.local-empty-card h3 {
+  color: var(--ink);
+  font-size: 1.55rem;
+  line-height: 1.12;
+  margin-bottom: 12px;
+  letter-spacing: -0.4px;
+}
+
+.local-intent-card p,
+.area-directory-card p,
+.keyword-panel p,
+.restaurant-mini-card p,
+.local-empty-card p {
+  color: var(--muted);
+  line-height: 1.65;
+  margin-bottom: 22px;
+}
+
+.keyword-panels {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.area-directory-card {
+  min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.area-status-pill.area-active {
+  background: rgba(30, 208, 145, 0.12);
+  color: #00805b;
+}
+
+.area-status-pill.area-coming_soon {
+  background: rgba(255, 184, 76, 0.16);
+  color: #a66000;
+}
+
+.area-status-pill.area-paused {
+  background: rgba(17, 24, 39, 0.08);
+  color: var(--muted);
+}
+
+.area-directory-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(248, 91, 138, 0.08);
+  color: var(--hot);
+  font-weight: 900;
+  font-size: 0.86rem;
+}
+
+.area-directory-links a:hover {
+  background: var(--hot);
+  color: var(--white);
+}
+
+.restaurant-directory-grid {
+  margin-top: 34px;
+}
+
+.restaurant-mini-card {
+  min-height: 270px;
+}
+
+.restaurant-mini-card img {
+  width: 100%;
+  height: 150px;
+  object-fit: cover;
+  background: rgba(17, 24, 39, 0.08);
+}
+
+.restaurant-mini-card div {
+  padding: 22px;
+}
+
+.restaurant-mini-card span {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--hot);
+  font-weight: 900;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+}
+
+.local-empty-card {
+  max-width: 760px;
+  margin: 34px auto 0;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .local-status-card,
+  .local-intent-grid,
+  .area-directory-grid,
+  .restaurant-directory-grid,
+  .keyword-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .local-status-card {
+    padding: 26px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hero-flow-packet,
   .hero-status-popup,
@@ -3167,6 +3702,10 @@ select {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 30px;
+}
+
+.cards-grid.two-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .four-grid {
@@ -4363,6 +4902,7 @@ select {
 
 .social-instagram:hover,
 .social-tiktok:hover,
+.social-youtube:hover,
 .social-linkedin:hover,
 .social-facebook:hover {
   background: var(--brand-pink);
@@ -4431,10 +4971,24 @@ select {
   }
 
   .delivery-rider {
-    --ride-x: -560px;
+    --ride-hop-x: -18px;
+    --ride-hop-y: 8px;
+    --ride-arc-one-x: -118px;
+    --ride-arc-one-y: 78px;
+    --ride-mid-x: -270px;
+    --ride-mid-y: 128px;
+    --ride-arc-two-x: -435px;
+    --ride-arc-two-y: 122px;
+    --ride-x: -575px;
     --ride-y: 74px;
-    --ride-end-x: -605px;
+    --ride-end-x: -620px;
     --ride-end-y: 84px;
+  }
+
+  @supports (offset-path: path("M 0 0 L 1 1")) {
+    .delivery-rider {
+      offset-path: path("M 0 0 C -82 118 -292 168 -446 142 C -532 122 -590 94 -620 84");
+    }
   }
 
   .hero-signal-card {
@@ -4667,14 +5221,24 @@ select {
   .delivery-rider {
     left: 71%;
     top: 70%;
-    --ride-hop-x: 8px;
-    --ride-hop-y: -16px;
-    --ride-mid-x: -62px;
-    --ride-mid-y: -190px;
-    --ride-x: -250px;
-    --ride-y: -330px;
-    --ride-end-x: -280px;
-    --ride-end-y: -350px;
+    --ride-hop-x: 0px;
+    --ride-hop-y: -22px;
+    --ride-arc-one-x: -38px;
+    --ride-arc-one-y: -92px;
+    --ride-mid-x: -110px;
+    --ride-mid-y: -182px;
+    --ride-arc-two-x: -198px;
+    --ride-arc-two-y: -268px;
+    --ride-x: -266px;
+    --ride-y: -336px;
+    --ride-end-x: -292px;
+    --ride-end-y: -356px;
+  }
+
+  @supports (offset-path: path("M 0 0 L 1 1")) {
+    .delivery-rider {
+      offset-path: path("M 0 0 C -24 -72 -82 -148 -142 -208 C -202 -268 -250 -326 -292 -356");
+    }
   }
 
   .device-pop-customer {
@@ -4691,16 +5255,18 @@ select {
 
   .magic-scroll-container {
     flex-direction: column;
+    max-width: 760px;
+    padding: 70px 5% 40px;
   }
 
-  .scroll-texts,
-  .scroll-visual {
+  .scroll-texts {
     width: 100%;
+    padding: 0;
   }
 
-  .scroll-visual {
-    height: 50vh;
-    position: relative;
+  .scroll-visual,
+  .floating-food-scene {
+    display: none;
   }
 
   .visual-wrapper {
@@ -4709,10 +5275,6 @@ select {
 
   .magic-img {
     max-width: min(100%, 440px);
-  }
-
-  .floating-food-scene {
-    opacity: 0.76;
   }
 
   .float-item {
@@ -4736,9 +5298,21 @@ select {
 
   .step-block {
     height: auto;
-    margin-bottom: 80px;
-    text-align: center;
+    margin-bottom: 64px;
+    padding: 8px 0;
+    text-align: left;
     opacity: 1;
+  }
+
+  .step-block h2,
+  .step-block p {
+    max-width: 620px;
+  }
+
+  .step-mobile-visual {
+    display: grid;
+    place-items: center;
+    margin-top: 26px;
   }
 
   .cards-grid,
@@ -4993,16 +5567,26 @@ select {
   }
 
   .delivery-rider {
-    width: 46px;
-    height: 46px;
-    --ride-hop-x: 6px;
-    --ride-hop-y: -14px;
-    --ride-mid-x: -48px;
-    --ride-mid-y: -186px;
-    --ride-x: -214px;
-    --ride-y: -322px;
-    --ride-end-x: -236px;
-    --ride-end-y: -344px;
+    width: 44px;
+    height: 44px;
+    --ride-hop-x: 0px;
+    --ride-hop-y: -20px;
+    --ride-arc-one-x: -30px;
+    --ride-arc-one-y: -88px;
+    --ride-mid-x: -88px;
+    --ride-mid-y: -178px;
+    --ride-arc-two-x: -170px;
+    --ride-arc-two-y: -262px;
+    --ride-x: -224px;
+    --ride-y: -326px;
+    --ride-end-x: -248px;
+    --ride-end-y: -346px;
+  }
+
+  @supports (offset-path: path("M 0 0 L 1 1")) {
+    .delivery-rider {
+      offset-path: path("M 0 0 C -16 -70 -62 -150 -116 -206 C -166 -260 -218 -322 -248 -346");
+    }
   }
 
   .dashboard-screen {

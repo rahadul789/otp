@@ -11,6 +11,7 @@ import {
   PayoutMethodModel,
   RestaurantModel,
 } from "../auth/auth.model";
+import { getRestaurantEnforcement } from "../restaurant-enforcement";
 import { SupportCaseModel, ReviewModel } from "../owner/experience.model";
 import { LedgerEntryModel, PayoutBatchModel } from "../owner/finance.model";
 import { invalidateOwnerFinanceCaches } from "../owner/finance.service";
@@ -19,6 +20,7 @@ import {
   isRestaurantPayoutEligibleOrder,
 } from "../owner/finance-rules";
 import { getOperationalFinanceSettings } from "../public/content.service";
+import { invalidateCustomerRestaurantAvailabilityCaches } from "../customer/customer.service";
 import {
   CategoryModel,
   MenuItemModel,
@@ -625,6 +627,7 @@ function mapRestaurantSummary(params: {
       owner?.restaurantLifecycleStatus,
       "approved",
     ),
+    enforcement: getRestaurantEnforcement(restaurant),
     isOnline: restaurant.runtime?.isOnline === true,
     isVisible: restaurant.runtime?.isVisible !== false,
     isFeatured: restaurant.discovery?.isFeatured === true,
@@ -2145,10 +2148,110 @@ export async function updateAdminRestaurantVisibility(params: {
     isVisible: params.isVisible,
   };
   await restaurant.save();
+  invalidateCustomerRestaurantAvailabilityCaches();
 
   return {
     id: restaurant.id,
     name: restaurant.name,
+    isVisible: restaurant.runtime?.isVisible !== false,
+    updatedAt: serializeDate(restaurant.updatedAt),
+  };
+}
+
+export async function updateAdminRestaurantEnforcement(params: {
+  restaurantId: string;
+  adminId?: string;
+  status:
+    | "active"
+    | "under_review"
+    | "quality_hold"
+    | "temporarily_suspended"
+    | "permanently_disabled";
+  reason?: string;
+  ownerNote?: string;
+  customerMessage?: string;
+  internalNote?: string;
+  expiresAt?: string | null;
+}) {
+  const restaurant = await getRestaurantOrThrow(params.restaurantId);
+  const previous = getRestaurantEnforcement(restaurant);
+  const now = new Date();
+  const expiresAt =
+    params.status === "active" || !params.expiresAt
+      ? null
+      : new Date(params.expiresAt);
+  if (expiresAt && Number.isNaN(expiresAt.getTime())) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "INVALID_ENFORCEMENT_EXPIRY",
+      "Choose a valid enforcement end time.",
+    );
+  }
+
+  const current = (restaurant.get("enforcement") as Record<string, any>) ?? {};
+  restaurant.set("enforcement", {
+    ...current,
+    status: params.status,
+    reason: params.status === "active" ? "" : params.reason ?? "",
+    ownerNote: params.status === "active" ? "" : params.ownerNote ?? "",
+    customerMessage: params.status === "active" ? "" : params.customerMessage ?? "",
+    internalNote: params.status === "active" ? "" : params.internalNote ?? "",
+    startsAt: params.status === "active" ? null : now,
+    expiresAt,
+    updatedAt: now,
+    updatedByAdminId: params.adminId ?? "",
+    history: [
+      ...previous.history.slice(-19),
+      {
+        previousStatus: previous.effectiveStatus,
+        status: params.status,
+        reason: params.reason ?? "",
+        ownerNote: params.ownerNote ?? "",
+        customerMessage: params.customerMessage ?? "",
+        internalNote: params.internalNote ?? "",
+        startsAt: params.status === "active" ? null : now,
+        expiresAt,
+        adminId: params.adminId ?? "",
+        createdAt: now,
+      },
+    ],
+  });
+
+  if (
+    params.status === "quality_hold" ||
+    params.status === "temporarily_suspended" ||
+    params.status === "permanently_disabled"
+  ) {
+    restaurant.runtime = {
+      ...(restaurant.runtime ?? {}),
+      isOnline: false,
+      currentOperationalStatus: "restricted",
+    };
+  }
+
+  await restaurant.save();
+  invalidateCustomerRestaurantAvailabilityCaches();
+
+  await createAdminAuditLog({
+    adminId: params.adminId,
+    entityType: "restaurant",
+    entityId: restaurant.id,
+    action: "restaurant.enforcement_updated",
+    title: "Restaurant enforcement updated",
+    description: `${restaurant.name} enforcement changed from ${previous.effectiveStatus} to ${params.status}.`,
+    metadata: {
+      previousStatus: previous.effectiveStatus,
+      status: params.status,
+      reason: params.reason ?? "",
+      expiresAt: expiresAt ? expiresAt.toISOString() : null,
+    },
+  });
+
+  return {
+    id: restaurant.id,
+    name: restaurant.name,
+    enforcement: getRestaurantEnforcement(restaurant),
+    isOnline: restaurant.runtime?.isOnline === true,
     isVisible: restaurant.runtime?.isVisible !== false,
     updatedAt: serializeDate(restaurant.updatedAt),
   };

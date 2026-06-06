@@ -4,7 +4,7 @@
     const value = String(url || "").trim();
     return value && value !== "#" ? value : "";
   };
-  const footerSocialLinks = [
+  const footerSocialLinkItems = [
     {
       key: "facebook",
       label: "Facebook",
@@ -24,6 +24,12 @@
       icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 3c.3 2.2 1.6 3.7 3.7 3.9v3.1a7 7 0 0 1-3.7-1.1v5.8c0 3.6-2.4 6.3-6 6.3A5.8 5.8 0 0 1 5 15.2c0-3.4 2.7-5.9 6.2-5.7v3.2c-1.6-.2-3 .8-3 2.5a2.6 2.6 0 0 0 2.6 2.7c1.6 0 2.7-1 2.7-3.1V3h3.3Z"/></svg>',
     },
     {
+      key: "youtube",
+      label: "YouTube",
+      url: cleanSocialUrl(websiteSettings.youtubeUrl),
+      icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 7.2a3 3 0 0 0-2.1-2.1C17.6 4.6 12 4.6 12 4.6s-5.6 0-7.5.5a3 3 0 0 0-2.1 2.1C2 9 2 12 2 12s0 3 .4 4.8a3 3 0 0 0 2.1 2.1c1.9.5 7.5.5 7.5.5s5.6 0 7.5-.5a3 3 0 0 0 2.1-2.1c.4-1.8.4-4.8.4-4.8s0-3-.4-4.8ZM10 15.4V8.6l5.8 3.4-5.8 3.4Z"/></svg>',
+    },
+    {
       key: "instagram",
       label: "Instagram",
       url: cleanSocialUrl(websiteSettings.instagramUrl),
@@ -35,7 +41,20 @@
       url: cleanSocialUrl(websiteSettings.snapchatUrl),
       icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2c2.7 0 4.5 1.8 4.5 4.8v2.7c0 .4.2.6.6.8l1.3.5c.5.2.6.9.1 1.2l-1.6 1c-.5.3-.8.7-.9 1.3-.2 1.2-1.2 2.1-2.4 2.1-.4 0-.8.1-1.1.4l-.5.5-.5-.5c-.3-.3-.7-.4-1.1-.4-1.2 0-2.2-.9-2.4-2.1-.1-.6-.4-1-.9-1.3l-1.6-1c-.5-.3-.4-1 .1-1.2l1.3-.5c.4-.2.6-.4.6-.8V8c0-3 1.8-4.8 4.5-4.8Z"/></svg>',
     },
-  ].filter((item) => item.url);
+  ];
+  const defaultSocialOrder = ["facebook", "instagram", "youtube", "linkedin", "tiktok", "snapchat"];
+  const requestedSocialOrder = Array.isArray(websiteSettings.socialLinksOrder)
+    ? websiteSettings.socialLinksOrder
+    : defaultSocialOrder;
+  const normalizedSocialOrder = [...requestedSocialOrder, ...defaultSocialOrder].reduce((order, key) => {
+    const normalizedKey = String(key || "").trim().toLowerCase();
+    if (!defaultSocialOrder.includes(normalizedKey) || order.includes(normalizedKey)) return order;
+    order.push(normalizedKey);
+    return order;
+  }, []);
+  const footerSocialLinks = normalizedSocialOrder
+    .map((key) => footerSocialLinkItems.find((item) => item.key === key))
+    .filter((item) => item && item.url);
 %>
 
 <footer class="site-footer">
@@ -43,7 +62,7 @@
     <div class="footer-brand">
       <a class="logo footer-logo hover-trigger" href="/">
         <span class="logo-mark logo-mark-image" aria-hidden="true">
-          <img src="/images/foodbela.svg" alt="" />
+          <img src="/images/Foodbela.svg" alt="" />
         </span>
         <span class="logo-word"
           ><span class="logo-food">Food</span><span class="logo-bela">bela</span
@@ -61,6 +80,7 @@
       <a href="/" data-i18n="navHome">হোম</a>
       <a href="/restaurants" data-i18n="navRestaurant">রেস্টুরেন্ট</a>
       <a href="/riders" data-i18n="navRider">রাইডার</a>
+      <a href="/areas">সার্ভিস এলাকা</a>
       <a href="/about" data-i18n="navAbout">আমাদের সম্পর্কে</a>
     </div>
 

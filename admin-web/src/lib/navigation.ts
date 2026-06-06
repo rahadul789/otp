@@ -13,6 +13,7 @@ import {
   KeyRound,
   Landmark,
   LayoutDashboard,
+  MailCheck,
   Map,
   MapPin,
   ReceiptText,
@@ -202,6 +203,11 @@ export const adminSidebarGroups: AdminNavigationGroup[] = [
         title: "Operations Health",
         to: "/operations",
         icon: HeartPulse,
+      },
+      {
+        title: "Test",
+        to: "/test",
+        icon: MailCheck,
       },
       {
         title: "Notifications",

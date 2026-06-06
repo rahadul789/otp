@@ -387,6 +387,12 @@ function PasswordDrawer({
   )
 }
 
+function profileSectionRoute(sectionId: string) {
+  if (sectionId === "payoutSetup") return "/payouts"
+  if (sectionId === "openingHours") return "/hours"
+  return "/settings"
+}
+
 export function OwnerAccountPage() {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const storeSettings = useAppStore((state) => state.storeSettings)
@@ -824,7 +830,7 @@ export function OwnerAccountPage() {
                   {profileCompletion.sections.map((section) => (
                     <div
                       key={section.id}
-                      className="flex items-start justify-between gap-3 rounded-2xl border bg-muted/15 px-4 py-3"
+                      className="flex flex-col gap-3 rounded-2xl border bg-muted/15 px-4 py-3 sm:flex-row sm:items-start sm:justify-between"
                     >
                       <div>
                         <p className="text-sm font-medium">{section.label}</p>
@@ -832,9 +838,23 @@ export function OwnerAccountPage() {
                           {section.isComplete ? section.benefit : section.hint}
                         </p>
                       </div>
-                      <div className="text-sm font-medium">
-                        {section.isComplete ? "Done" : `${section.weight}%`}
-                      </div>
+                      {section.isComplete ? (
+                        <div className="text-sm font-medium text-emerald-600">
+                          Done
+                        </div>
+                      ) : (
+                        <Button
+                          asChild
+                          size="sm"
+                          variant="outline"
+                          className="h-8 self-start rounded-xl"
+                        >
+                          <Link to={profileSectionRoute(section.id)}>
+                            Update
+                            <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                          </Link>
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>

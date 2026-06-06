@@ -7,6 +7,7 @@ import {
   decorateTrackingSnapshot,
 } from "../../common/utils/tracking-freshness";
 import { getSocketConnectionSnapshot } from "../../config/socket";
+import { getInfrastructureHealthSnapshot } from "../monitoring/infrastructure-health.service";
 import mongoose from "mongoose";
 import { AdminOperationalAlertModel } from "./admin-alert.model";
 import { AdminBusinessEventModel } from "./business-event.model";
@@ -355,6 +356,7 @@ export async function getAdminOperationalHealthSnapshot() {
       alertSummaryRows,
       eventSummaryRows,
       realtime,
+      infrastructure,
     ] = await Promise.all([
       AdminBusinessEventModel.find().sort({ createdAt: -1 }).limit(80).lean(),
       AdminOperationalAlertModel.find(activeAlertQuery)
@@ -414,6 +416,7 @@ export async function getAdminOperationalHealthSnapshot() {
         },
       ]),
       getRealtimeOperationsSnapshot(),
+      getInfrastructureHealthSnapshot(),
     ]);
 
     const alertSummary = alertSummaryRows[0] ?? {
@@ -427,16 +430,33 @@ export async function getAdminOperationalHealthSnapshot() {
       warningEventsLast24h: 0,
     };
 
+    const runtime = getRuntimeSnapshot();
+    const requestMonitor = getRequestMonitorSnapshot();
+    const schedulerJobList = Array.from(schedulerJobs.values());
+    const failedSchedulerJobs = schedulerJobList.filter(
+      (job) => job.status === "failed",
+    ).length;
+    const infrastructureComponents = Array.isArray(infrastructure.components)
+      ? infrastructure.components
+      : [];
+    const criticalInfrastructure = infrastructureComponents.filter(
+      (component: { status?: string }) => component.status === "critical",
+    ).length;
+    const warningInfrastructure = infrastructureComponents.filter(
+      (component: { status?: string }) => component.status === "warning",
+    ).length;
+
+    const currentCriticalSignals =
+      alertSummary.openCriticalAlerts + failedSchedulerJobs + criticalInfrastructure;
+    const currentWarningSignals =
+      alertSummary.openWarningAlerts + warningInfrastructure;
     const attentionScore =
-      alertSummary.openCriticalAlerts * 5 +
-      eventSummary.criticalEventsLast24h * 3 +
-      alertSummary.openWarningAlerts * 2 +
-      eventSummary.warningEventsLast24h;
+      currentCriticalSignals * 5 + currentWarningSignals * 2;
 
     const systemStatus =
-      alertSummary.openCriticalAlerts > 0 || eventSummary.criticalEventsLast24h > 0
+      currentCriticalSignals > 0 || !runtime.ready
         ? "needs_attention"
-        : alertSummary.openWarningAlerts > 0 || eventSummary.warningEventsLast24h > 0
+        : currentWarningSignals > 0
           ? "watching"
           : "healthy";
 
@@ -444,9 +464,10 @@ export async function getAdminOperationalHealthSnapshot() {
       generatedAt: new Date().toISOString(),
       systemStatus,
       attentionScore,
-      runtime: getRuntimeSnapshot(),
+      runtime,
       backgroundTasks: getBackgroundTaskQueueSnapshot(),
-      requestMonitor: getRequestMonitorSnapshot(),
+      requestMonitor,
+      infrastructure,
       summary: {
         openCriticalAlerts: alertSummary.openCriticalAlerts,
         openWarningAlerts: alertSummary.openWarningAlerts,
@@ -457,7 +478,7 @@ export async function getAdminOperationalHealthSnapshot() {
         criticalEventsLast24h: eventSummary.criticalEventsLast24h,
         warningEventsLast24h: eventSummary.warningEventsLast24h,
       },
-      schedulerJobs: Array.from(schedulerJobs.values()),
+      schedulerJobs: schedulerJobList,
       timeline: recentEvents.map((event) => serializeBusinessEvent(event)),
       activeAlerts: activeAlerts.map((alert) => ({
         id: String(alert._id ?? ""),

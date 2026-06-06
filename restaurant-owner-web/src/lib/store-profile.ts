@@ -94,8 +94,7 @@ function hasValidPayoutMethod(payoutMethod: PayoutMethod) {
   if (payoutMethod.type === "bkash") {
     return (
       isValidBangladeshPhone(payoutMethod.accountNumber) &&
-      payoutMethod.isVerified === true &&
-      !payoutMethod.pendingAccountNumber
+      payoutMethod.isVerified === true
     )
   }
 

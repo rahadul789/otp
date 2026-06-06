@@ -17,7 +17,7 @@ export function TermsAndConditionsPage() {
           <aside className="border-b bg-muted/20 p-6 lg:sticky lg:top-0 lg:h-screen lg:border-r lg:border-b-0 lg:p-8">
             <div className="space-y-6">
               <Link
-                to="/auth/signup"
+                to="/auth/signin"
                 className="inline-flex items-center gap-3"
               >
                 <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary text-primary-foreground">

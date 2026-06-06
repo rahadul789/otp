@@ -886,6 +886,8 @@ export type AdminOperationalHealthSnapshot = {
     summary: {
       totalRequests: number
       errorRequests: number
+      actionableErrorRequests: number
+      authSessionRequests: number
       successRequests: number
       averageDurationMs: number
       p95DurationMs: number
@@ -896,6 +898,8 @@ export type AdminOperationalHealthSnapshot = {
       app: string
       totalRequests: number
       errorRequests: number
+      actionableErrorRequests: number
+      authSessionRequests: number
       averageDurationMs: number
       p95DurationMs: number
       lastSeenAt: string | null
@@ -908,10 +912,19 @@ export type AdminOperationalHealthSnapshot = {
       lastPath: string
       totalRequests: number
       errorRequests: number
+      actionableErrorRequests: number
+      authSessionRequests: number
       successRequests: number
       averageDurationMs: number
       p95DurationMs: number
       statusCounts: Record<string, number>
+      errorSamples: Array<{
+        code: string
+        message: string
+        statusCode: number
+        lastSeenAt: string
+        count: number
+      }>
       lastStatusCode: number
       lastSeenAt: string | null
     }>
@@ -922,7 +935,34 @@ export type AdminOperationalHealthSnapshot = {
       path: string
       route: string
       statusCode: number
+      errorCode: string
+      errorMessage: string
       timestamp: string
+    }>
+    recentErrors: Array<{
+      app: string
+      durationMs: number
+      method: string
+      path: string
+      route: string
+      statusCode: number
+      errorCode: string
+      errorMessage: string
+      timestamp: string
+    }>
+  }
+  infrastructure: {
+    status: "healthy" | "warning" | "critical" | "unknown" | string
+    checkedAt: string | null
+    components: Array<{
+      key: string
+      label: string
+      status: "healthy" | "warning" | "critical" | "unknown" | string
+      message: string
+      checkedAt: string
+      value?: number | string | null
+      threshold?: number | string | null
+      details?: Record<string, unknown>
     }>
   }
   summary: {
@@ -1073,6 +1113,20 @@ export type AdminRestaurantSummary = {
   ownerEmail: string
   ownerStatus: string
   restaurantLifecycleStatus: string
+  enforcement: {
+    status: string
+    effectiveStatus: string
+    isRestricted: boolean
+    reason: string
+    ownerNote: string
+    customerMessage: string
+    internalNote: string
+    startsAt: string | null
+    expiresAt: string | null
+    updatedAt: string | null
+    updatedByAdminId: string
+    history: Array<Record<string, unknown>>
+  }
   isOnline: boolean
   isVisible: boolean
   isFeatured: boolean
@@ -4880,8 +4934,13 @@ export async function listAdminOrdersMonitor(params?: {
 }
 
 export async function listAdminRidersAssignmentOptions() {
+  const scope = getAdminZoneScopeQueryParams()
+  const searchParams = new URLSearchParams()
+  if ("zoneId" in scope && scope.zoneId) searchParams.set("zoneId", scope.zoneId)
+  if ("districtId" in scope && scope.districtId) searchParams.set("districtId", scope.districtId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminRiderAssignmentOption[]>(
-    "/admin/riders-assignment-options"
+    `/admin/riders-assignment-options${query}`
   )
   return response.data
 }
@@ -4993,8 +5052,13 @@ export async function updateAdminOrderCodCollection(params: {
 }
 
 export async function getAdminDispatchSettings() {
+  const scope = getAdminZoneScopeQueryParams()
+  const searchParams = new URLSearchParams()
+  if ("zoneId" in scope && scope.zoneId) searchParams.set("zoneId", scope.zoneId)
+  if ("districtId" in scope && scope.districtId) searchParams.set("districtId", scope.districtId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminDispatchSettings>(
-    "/admin/dispatch-settings"
+    `/admin/dispatch-settings${query}`
   )
   return response.data
 }
@@ -5008,6 +5072,7 @@ export async function listAdminDispatchLogs(params?: {
   page?: number
   pageSize?: number
 }) {
+  const scope = getAdminZoneScopeQueryParams()
   const searchParams = new URLSearchParams()
   if (params?.search) searchParams.set("search", params.search)
   if (params?.outcome && params.outcome !== "all") {
@@ -5020,6 +5085,8 @@ export async function listAdminDispatchLogs(params?: {
   if (params?.to) searchParams.set("to", params.to)
   if (params?.page) searchParams.set("page", `${params.page}`)
   if (params?.pageSize) searchParams.set("pageSize", `${params.pageSize}`)
+  if ("zoneId" in scope && scope.zoneId) searchParams.set("zoneId", scope.zoneId)
+  if ("districtId" in scope && scope.districtId) searchParams.set("districtId", scope.districtId)
 
   const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<AdminDispatchLogsResponse>(
@@ -5050,12 +5117,17 @@ export async function updateAdminDispatchSettings(
 }
 
 export async function runAdminAutoDispatch() {
+  const scope = getAdminZoneScopeQueryParams()
+  const searchParams = new URLSearchParams()
+  if ("zoneId" in scope && scope.zoneId) searchParams.set("zoneId", scope.zoneId)
+  if ("districtId" in scope && scope.districtId) searchParams.set("districtId", scope.districtId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
   const response = await adminRequest<{
     assigned: number
     scanned: number
     skipped: number
     reason: string
-  }>("/admin/dispatch/run", {
+  }>(`/admin/dispatch/run${query}`, {
     method: "POST",
   })
   return response.data
@@ -5161,6 +5233,44 @@ export async function updateAdminRestaurantVisibility(params: {
       }),
     }
   )
+  return response.data
+}
+
+export async function updateAdminRestaurantEnforcement(params: {
+  restaurantId: string
+  status:
+    | "active"
+    | "under_review"
+    | "quality_hold"
+    | "temporarily_suspended"
+    | "permanently_disabled"
+  reason?: string
+  ownerNote?: string
+  customerMessage?: string
+  internalNote?: string
+  expiresAt?: string | null
+}) {
+  const response = await adminRequest<{
+    id: string
+    name: string
+    enforcement: AdminRestaurantSummary["enforcement"]
+    isOnline: boolean
+    isVisible: boolean
+    updatedAt: string | null
+  }>(`/admin/restaurants/${params.restaurantId}/enforcement`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      status: params.status,
+      reason: params.reason,
+      ownerNote: params.ownerNote,
+      customerMessage: params.customerMessage,
+      internalNote: params.internalNote,
+      expiresAt: params.expiresAt,
+    }),
+  })
   return response.data
 }
 
@@ -5724,6 +5834,16 @@ export async function resolveAdminOperationalAlert(alertId: string) {
   const response = await adminRequest<{ updated: boolean }>(
     `/admin/operations/alerts/${alertId}/resolve`,
     { method: "PATCH" }
+  )
+  return response.data
+}
+
+export async function clearAdminRequestMonitor() {
+  const response = await adminRequest<{ cleared: boolean }>(
+    "/admin/operations/requests/clear",
+    {
+      method: "POST",
+    },
   )
   return response.data
 }

@@ -92,9 +92,24 @@ const serviceAreaSchema = z.object({
   name: z.string().trim().min(1).max(120),
   status: z.enum(["active", "coming_soon", "paused"]),
   note: z.string().trim().max(240).optional(),
+  seoTitle: z.string().trim().max(180).optional(),
+  seoDescription: z.string().trim().max(320).optional(),
+  popularSearches: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+  cuisineKeywords: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+  postalCodes: z.array(z.string().trim().min(1).max(20)).max(20).optional(),
 });
 
 const updateSettingsSchema = z.object({
+  siteUrl: z.string().trim().max(500).optional(),
+  seoDefaultTitle: z.string().trim().max(180).optional(),
+  seoDefaultDescription: z.string().trim().max(500).optional(),
+  seoOgImageUrl: z.string().trim().max(500).optional(),
+  googleSiteVerification: z.string().trim().max(200).optional(),
+  businessAddress: z.string().trim().max(500).optional(),
+  businessCity: z.string().trim().max(120).optional(),
+  businessRegion: z.string().trim().max(120).optional(),
+  businessPostalCode: z.string().trim().max(120).optional(),
+  businessCountry: z.string().trim().max(12).optional(),
   playStoreUrl: z.string().trim().max(500).optional(),
   appDownloadUrl: z.string().trim().max(500).optional(),
   restaurantApplyUrl: z.string().trim().max(240).optional(),
@@ -105,7 +120,12 @@ const updateSettingsSchema = z.object({
   instagramUrl: z.string().trim().max(500).optional(),
   linkedinUrl: z.string().trim().max(500).optional(),
   tiktokUrl: z.string().trim().max(500).optional(),
+  youtubeUrl: z.string().trim().max(500).optional(),
   snapchatUrl: z.string().trim().max(500).optional(),
+  socialLinksOrder: z
+    .array(z.enum(["facebook", "instagram", "youtube", "linkedin", "tiktok", "snapchat"]))
+    .max(6)
+    .optional(),
   heroTitle: z.string().trim().min(1).max(180).optional(),
   heroSubtitle: z.string().trim().min(1).max(500).optional(),
   heroTitleEn: z.string().trim().min(1).max(180).optional(),
@@ -118,7 +138,7 @@ const updateSettingsSchema = z.object({
   customerOfferCtaLabel: z.string().trim().max(80).optional(),
   customerOfferCtaUrl: z.string().trim().max(500).optional(),
   coverageRewardAmount: z.coerce.number().min(0).max(100000).optional(),
-  serviceAreas: z.array(serviceAreaSchema).max(30).optional(),
+  serviceAreas: z.array(serviceAreaSchema).max(100).optional(),
 });
 
 function getHeaderValue(value: string | string[] | undefined) {

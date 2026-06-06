@@ -4,6 +4,7 @@ import type { PipelineStage } from "mongoose";
 import { AppError } from "../../common/utils/app-error";
 import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
 import { decorateTrackingSnapshot } from "../../common/utils/tracking-freshness";
+import { env } from "../../config/env";
 import { AdminModel } from "./admin.model";
 import { OwnerModel, RiderModel, RestaurantModel } from "../auth/auth.model";
 import { LedgerEntryModel, PayoutBatchModel } from "../owner/finance.model";
@@ -13,6 +14,7 @@ import {
   syncOrderLedgerForFinalStatus,
 } from "../owner/finance.service";
 import { NotificationModel, OrderModel } from "../owner/operational.model";
+import { SupportCaseModel } from "../owner/experience.model";
 import {
   buildOrderPreparationTiming,
   buildPreparationMetaForStart,
@@ -2308,13 +2310,16 @@ export async function updateAdminDispatchSettings(params: {
   return getAdminDispatchSettings();
 }
 
-export async function runAutoDispatchForReadyOrders() {
+export async function runAutoDispatchForReadyOrders(params: {
+  zoneId?: string;
+  districtId?: string;
+} = {}) {
   if (activeAutoDispatchRun) {
     rerunAutoDispatchRequested = true;
     return activeAutoDispatchRun;
   }
 
-  activeAutoDispatchRun = executeAutoDispatchForReadyOrders()
+  activeAutoDispatchRun = executeAutoDispatchForReadyOrders(params)
     .finally(() => {
       activeAutoDispatchRun = null;
     });
@@ -2332,7 +2337,10 @@ type AutoDispatchRunResult = {
 let activeAutoDispatchRun: Promise<AutoDispatchRunResult> | null = null;
 let rerunAutoDispatchRequested = false;
 
-async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResult> {
+async function executeAutoDispatchForReadyOrders(params: {
+  zoneId?: string;
+  districtId?: string;
+} = {}): Promise<AutoDispatchRunResult> {
   rerunAutoDispatchRequested = false;
   const content = await getPlatformContent();
   const settings = getDispatchSettingsFromContent(content);
@@ -2347,6 +2355,7 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
 
   const readyOrders = await OrderModel.find({
     status: "ReadyForPickup",
+    ...buildOrderServiceAreaScopeFilter(params),
   })
     .sort({ createdAt: 1 })
     .lean();
@@ -2460,7 +2469,7 @@ async function executeAutoDispatchForReadyOrders(): Promise<AutoDispatchRunResul
   };
 
   if (rerunAutoDispatchRequested) {
-    const rerunResult = await executeAutoDispatchForReadyOrders();
+    const rerunResult = await executeAutoDispatchForReadyOrders(params);
     return {
       assigned: result.assigned + rerunResult.assigned,
       scanned: Math.max(result.scanned, rerunResult.scanned),
@@ -6651,6 +6660,93 @@ async function createOwnerSystemNotification(params: {
   emitSocketEvent(`owner:${owner._id.toString()}`, "notification.created", notification.toObject());
 }
 
+async function processRefundPendingOperationalAlerts() {
+  const cutoff = new Date(Date.now() - env.ALERT_REFUND_PENDING_MINUTES * 60_000);
+  const overdueRefundOrders = await OrderModel.find({
+    paymentStatus: "refund_pending",
+    $or: [
+      { "paymentSnapshot.refundRequestedAt": { $lte: cutoff } },
+      {
+        "paymentSnapshot.refundRequestedAt": { $exists: false },
+        updatedAt: { $lte: cutoff },
+      },
+    ],
+  })
+    .sort({ updatedAt: 1 })
+    .limit(25)
+    .lean();
+
+  for (const order of overdueRefundOrders) {
+    const orderId = String(order._id ?? "");
+    const orderNumber = String(order.orderNumber ?? "Order");
+    const refundRequestedAt =
+      (order.paymentSnapshot as Record<string, any> | undefined)?.refundRequestedAt ??
+      order.updatedAt;
+    const pendingMinutes = minutesSince(refundRequestedAt);
+    await createAdminOperationalAlert({
+      alertType: "payment_refund_pending_overdue",
+      severity: "critical",
+      title: `${orderNumber} refund pending too long`,
+      description: `Refund has been pending for ${pendingMinutes} minutes. Review and complete or reject the refund.`,
+      source: "Payments",
+      entityType: "order",
+      entityId: orderId,
+      path: `/payments?orderId=${orderId}`,
+      iconKey: "credit-card",
+      dedupeKey: `payment:${orderId}:refund_pending_overdue`,
+      metadata: {
+        orderId,
+        orderNumber,
+        pendingMinutes,
+        thresholdMinutes: env.ALERT_REFUND_PENDING_MINUTES,
+        refundRequestedAt: refundRequestedAt
+          ? new Date(refundRequestedAt as Date | string).toISOString()
+          : null,
+      },
+    });
+  }
+}
+
+async function processSupportSlaOperationalAlerts() {
+  const cutoff = new Date(Date.now() - env.ALERT_SUPPORT_SLA_OVERDUE_MINUTES * 60_000);
+  const overdueCases = await SupportCaseModel.find({
+    status: { $nin: ["resolved", "closed"] },
+    slaDueAt: { $lte: cutoff },
+  })
+    .sort({ slaDueAt: 1, createdAt: 1 })
+    .limit(25)
+    .lean();
+
+  for (const supportCase of overdueCases) {
+    const supportCaseId = String(supportCase._id ?? "");
+    const priority = String(supportCase.priority ?? "medium");
+    const dueAt = supportCase.slaDueAt ? new Date(supportCase.slaDueAt) : null;
+    const overdueMinutes = dueAt
+      ? Math.max(0, Math.floor((Date.now() - dueAt.getTime()) / 60_000))
+      : env.ALERT_SUPPORT_SLA_OVERDUE_MINUTES;
+    await createAdminOperationalAlert({
+      alertType: "support_sla_overdue",
+      severity: priority === "high" || overdueMinutes >= 120 ? "critical" : "warning",
+      title: "Support SLA overdue",
+      description: `${String(supportCase.subject ?? "Support case")} is ${overdueMinutes} minutes past SLA.`,
+      source: "Support",
+      entityType: "support_case",
+      entityId: supportCaseId,
+      path: `/support?caseId=${supportCaseId}`,
+      iconKey: "headphones",
+      dedupeKey: `support:${supportCaseId}:sla_overdue`,
+      metadata: {
+        supportCaseId,
+        priority,
+        source: String(supportCase.source ?? ""),
+        status: String(supportCase.status ?? ""),
+        overdueMinutes,
+        slaDueAt: dueAt ? dueAt.toISOString() : null,
+      },
+    });
+  }
+}
+
 export async function processAdminOperationalAlerts() {
   const settings = getDispatchSettingsFromContent(await getPlatformContent());
   const liveOrders = await OrderModel.find({
@@ -7190,6 +7286,11 @@ export async function processAdminOperationalAlerts() {
       }
     }
   }
+
+  await Promise.all([
+    processRefundPendingOperationalAlerts(),
+    processSupportSlaOperationalAlerts(),
+  ]);
 
   if (didMutateOrders) {
     invalidateAdminMonitoringCaches();

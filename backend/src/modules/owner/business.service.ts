@@ -20,6 +20,7 @@ import {
   RestaurantModel
 } from "../auth/auth.model"
 import { sendPushToCustomer } from "../customer/push.service"
+import { getRestaurantEnforcement, isRestaurantOrderingRestricted } from "../restaurant-enforcement"
 import { resolveServiceZoneForCoordinates } from "../service-area/service-area.service"
 import { createOwnerNotification } from "./operational.service"
 import { ReviewModel, SupportCaseModel } from "./experience.model"
@@ -216,7 +217,9 @@ export async function getStoreSettings(ownerId: string) {
     await restaurant.save()
   }
 
-  return restaurant
+  const storeSettings = restaurant.toObject()
+  storeSettings.enforcement = getRestaurantEnforcement(storeSettings)
+  return storeSettings
 }
 
 export async function updateStoreSettings(params: {
@@ -403,6 +406,15 @@ export async function updateRestaurantStatus(params: {
   isOnline: boolean
 }) {
   const { restaurant, restaurantId } = await getOwnerBusinessContext(params.ownerId)
+  if (params.isOnline && isRestaurantOrderingRestricted(restaurant)) {
+    const enforcement = getRestaurantEnforcement(restaurant)
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "RESTAURANT_RESTRICTED",
+      enforcement.ownerNote ||
+        "Your restaurant is temporarily unavailable while Foodbela reviews service quality."
+    )
+  }
 
   restaurant.runtime = {
     ...(restaurant.runtime ?? {}),

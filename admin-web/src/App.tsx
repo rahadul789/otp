@@ -281,6 +281,11 @@ const OperationsHealthPage = React.lazy(() =>
     default: module.OperationsHealthPage,
   }))
 )
+const TestPage = React.lazy(() =>
+  import("@/components/test-page").then((module) => ({
+    default: module.TestPage,
+  }))
+)
 const ActionCenterPage = React.lazy(() =>
   import("@/components/action-center-page").then((module) => ({
     default: module.ActionCenterPage,
@@ -3255,6 +3260,14 @@ const router = createBrowserRouter([
         element: (
           <React.Suspense fallback={<RouteLoading />}>
             <OperationsHealthPage />
+          </React.Suspense>
+        ),
+      },
+      {
+        path: "test",
+        element: (
+          <React.Suspense fallback={<RouteLoading />}>
+            <TestPage />
           </React.Suspense>
         ),
       },

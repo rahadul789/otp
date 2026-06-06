@@ -69,6 +69,23 @@ const websiteSettingsSchema = new Schema(
       unique: true,
       immutable: true,
     },
+    siteUrl: { type: String, default: "https://foodbela.com" },
+    seoDefaultTitle: {
+      type: String,
+      default: "Foodbela | আপনার শহরের ফুড ডেলিভারি নেটওয়ার্ক",
+    },
+    seoDefaultDescription: {
+      type: String,
+      default:
+        "Foodbela দিয়ে খাবার অর্ডার, রেস্টুরেন্ট পার্টনারশিপ এবং রাইডার অনবোর্ডিং এক প্ল্যাটফর্মে করুন।",
+    },
+    seoOgImageUrl: { type: String, default: "" },
+    googleSiteVerification: { type: String, default: "" },
+    businessAddress: { type: String, default: "" },
+    businessCity: { type: String, default: "Dhaka" },
+    businessRegion: { type: String, default: "Dhaka" },
+    businessPostalCode: { type: String, default: "" },
+    businessCountry: { type: String, default: "BD" },
     playStoreUrl: { type: String, default: "" },
     appDownloadUrl: { type: String, default: "" },
     restaurantApplyUrl: { type: String, default: "/restaurants#apply" },
@@ -79,7 +96,12 @@ const websiteSettingsSchema = new Schema(
     instagramUrl: { type: String, default: "#" },
     linkedinUrl: { type: String, default: "#" },
     tiktokUrl: { type: String, default: "#" },
+    youtubeUrl: { type: String, default: "#" },
     snapchatUrl: { type: String, default: "#" },
+    socialLinksOrder: {
+      type: [String],
+      default: ["facebook", "instagram", "youtube", "linkedin", "tiktok", "snapchat"],
+    },
     heroTitle: {
       type: String,
       default:
@@ -123,6 +145,11 @@ const websiteSettingsSchema = new Schema(
             default: "active",
           },
           note: { type: String, default: "" },
+          seoTitle: { type: String, default: "" },
+          seoDescription: { type: String, default: "" },
+          popularSearches: { type: [String], default: [] },
+          cuisineKeywords: { type: [String], default: [] },
+          postalCodes: { type: [String], default: [] },
         },
       ],
       default: [

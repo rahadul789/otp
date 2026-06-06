@@ -25,7 +25,6 @@ import {
   useRestaurantStatus,
 } from "@/components/restaurant-status-context"
 import { OwnerSignInPage } from "@/components/auth/owner-sign-in-page"
-import { OwnerSignUpPage } from "@/components/auth/owner-sign-up-page"
 import { VerificationModalHost } from "@/components/auth/verification-modal-host"
 import { ForgotPasswordPage } from "@/components/auth/forgot-password-page"
 import { ResetVerificationPage } from "@/components/auth/reset-verification-page"
@@ -57,7 +56,10 @@ import { useOnboardingDraftQuery, useReviewStatusQuery } from "@/hooks/use-owner
 import { useOwnerSocketBridge } from "@/hooks/use-owner-socket"
 import { routeTitleByPath } from "@/lib/navigation"
 import { useAppStore } from "@/store/app-store"
+import { liveOrderStatuses } from "@/components/orders/types"
 import type { OwnerAccount, RestaurantLifecycleStatus } from "@/store/app-store"
+
+const OWNER_DOCUMENT_TITLE = "Foodbela Owner"
 const OnboardingPage = React.lazy(() =>
   import("@/components/onboarding-page").then((module) => ({
     default: module.OnboardingPage,
@@ -151,6 +153,25 @@ function resolveOwnerFlowPath(
   return "/onboarding"
 }
 
+function formatTitleCount(count: number) {
+  return count > 99 ? "99+" : `${count}`
+}
+
+function pluralizeTitleItem(count: number, singular: string, plural: string) {
+  return count === 1 ? singular : plural
+}
+
+function buildOwnerDocumentTitle(
+  pageTitle: string,
+  storeDisplayName: string,
+  attentionCount = 0
+) {
+  const suffix = `${pageTitle} - ${storeDisplayName} - ${OWNER_DOCUMENT_TITLE}`
+  return attentionCount > 0
+    ? `(${formatTitleCount(attentionCount)}) ${suffix}`
+    : suffix
+}
+
 function RouteFallback() {
   const location = useLocation()
 
@@ -224,10 +245,19 @@ function AppLayout() {
   const pageTitle = routeTitleByPath[location.pathname] ?? "Dashboard"
   const { isOnline } = useRestaurantStatus()
   const storeName = useAppStore((state) => state.storeSettings.name)
+  const orders = useAppStore((state) => state.orders)
+  const notifications = useAppStore((state) => state.notifications)
   const { theme, setTheme } = useTheme()
 
   const resolvedIsDark = theme === "dark"
   const storeDisplayName = storeName.trim() || "Your store"
+  const liveOrderCount = orders.filter((order) =>
+    liveOrderStatuses.includes(order.currentStatus)
+  ).length
+  const unreadNotificationCount = notifications.filter(
+    (notification) => !notification.read
+  ).length
+  const titleAttentionCount = liveOrderCount + unreadNotificationCount
   const hasRestoredRef = React.useRef(false)
 
   useOwnerSocketBridge()
@@ -274,6 +304,69 @@ function AppLayout() {
     navigate,
     ownerAccount.isAuthenticated,
     restaurantLifecycleStatus,
+  ])
+
+  React.useEffect(() => {
+    let blinkTimer: number | undefined
+    let showAlertTitle = true
+    const baseTitle = buildOwnerDocumentTitle(
+      pageTitle,
+      storeDisplayName,
+      titleAttentionCount
+    )
+    const alertTitle =
+      liveOrderCount > 0
+        ? `(${formatTitleCount(liveOrderCount)}) ${pluralizeTitleItem(
+            liveOrderCount,
+            "Live order",
+            "Live orders"
+          )} - ${OWNER_DOCUMENT_TITLE}`
+        : unreadNotificationCount > 0
+          ? `(${formatTitleCount(
+              unreadNotificationCount
+            )}) New ${pluralizeTitleItem(
+              unreadNotificationCount,
+              "notification",
+              "notifications"
+            )} - ${OWNER_DOCUMENT_TITLE}`
+          : baseTitle
+
+    function applyTitle() {
+      if (document.hidden && titleAttentionCount > 0) {
+        document.title = showAlertTitle ? alertTitle : baseTitle
+        return
+      }
+      document.title = baseTitle
+    }
+
+    function syncTitleMode() {
+      if (blinkTimer) {
+        window.clearInterval(blinkTimer)
+        blinkTimer = undefined
+      }
+      showAlertTitle = true
+      applyTitle()
+      if (document.hidden && titleAttentionCount > 0) {
+        blinkTimer = window.setInterval(() => {
+          showAlertTitle = !showAlertTitle
+          applyTitle()
+        }, 1200)
+      }
+    }
+
+    syncTitleMode()
+    document.addEventListener("visibilitychange", syncTitleMode)
+
+    return () => {
+      document.removeEventListener("visibilitychange", syncTitleMode)
+      if (blinkTimer) window.clearInterval(blinkTimer)
+    }
+  }, [
+    liveOrderCount,
+    pageTitle,
+    storeDisplayName,
+    titleAttentionCount,
+    unreadNotificationCount,
   ])
 
   return (
@@ -394,33 +487,6 @@ function SignInRoute() {
   return (
     <PublicPageLayout>
       <OwnerSignInPage />
-    </PublicPageLayout>
-  )
-}
-
-function SignUpRoute() {
-  const ownerAccount = useAppStore((state) => state.ownerAccount)
-  const restaurantLifecycleStatus = useAppStore(
-    (state) => state.restaurantLifecycleStatus
-  )
-  const authBootstrapped = useAppStore((state) => state.authBootstrapped)
-
-  if (!authBootstrapped) {
-    return <div className="min-h-screen bg-background" />
-  }
-
-  if (ownerAccount.isAuthenticated) {
-    return (
-      <Navigate
-        to={resolveOwnerFlowPath(ownerAccount, restaurantLifecycleStatus)}
-        replace
-      />
-    )
-  }
-
-  return (
-    <PublicPageLayout>
-      <OwnerSignUpPage />
     </PublicPageLayout>
   )
 }
@@ -714,7 +780,7 @@ export const router = createBrowserRouter([
   },
   {
     path: "/auth/signup",
-    element: <SignUpRoute />,
+    element: <Navigate to="/auth/signin" replace />,
     errorElement: <RouteErrorBoundary />,
   },
   {

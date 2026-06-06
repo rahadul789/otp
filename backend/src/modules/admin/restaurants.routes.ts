@@ -10,6 +10,7 @@ import {
   getAdminRestaurants,
   patchAdminRestaurantCommission,
   patchAdminRestaurantDeliveryPricing,
+  patchAdminRestaurantEnforcement,
   patchAdminRestaurantMerchandising,
   patchAdminRestaurantPayoutStatus,
   patchAdminRestaurantVisibility,
@@ -56,6 +57,10 @@ adminRestaurantsRouter.patch(
 adminRestaurantsRouter.patch(
   "/restaurants/:restaurantId/visibility",
   patchAdminRestaurantVisibility,
+);
+adminRestaurantsRouter.patch(
+  "/restaurants/:restaurantId/enforcement",
+  patchAdminRestaurantEnforcement,
 );
 adminRestaurantsRouter.patch(
   "/restaurants/:restaurantId/merchandising",

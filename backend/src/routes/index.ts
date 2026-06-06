@@ -16,6 +16,7 @@ import { adminOperationsHealthRouter } from "../modules/admin/operations-health.
 import { adminPlatformContentRouter } from "../modules/admin/platform-content.routes";
 import { adminSettingsRouter } from "../modules/admin/settings.routes";
 import { adminServiceAreasRouter } from "../modules/admin/service-areas.routes";
+import { adminAlertSettingsRouter } from "../modules/monitoring/alert-settings.routes";
 import { adminReviewRouter } from "../modules/admin/review.routes";
 import { adminReferralsRouter } from "../modules/admin/referrals.routes";
 import { adminReportsRouter } from "../modules/admin/reports.routes";
@@ -63,6 +64,7 @@ apiRouter.use("/admin", adminOtpSecurityRouter);
 apiRouter.use("/admin", adminOperationsHealthRouter);
 apiRouter.use("/admin", adminPlatformContentRouter);
 apiRouter.use("/admin", adminSettingsRouter);
+apiRouter.use("/admin", adminAlertSettingsRouter);
 apiRouter.use("/admin", adminServiceAreasRouter);
 apiRouter.use("/admin", adminReviewRouter);
 apiRouter.use("/admin", adminReferralsRouter);

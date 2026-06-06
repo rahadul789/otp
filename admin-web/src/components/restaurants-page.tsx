@@ -60,6 +60,7 @@ import {
   updateAdminOrderStatus,
   updateAdminRestaurantCommission,
   updateAdminRestaurantDeliveryPricing,
+  updateAdminRestaurantEnforcement,
   updateAdminRestaurantMerchandising,
   updateAdminRestaurantPayoutStatus,
   updateAdminRestaurantVisibility,
@@ -409,6 +410,28 @@ function getNextAdminOrderAction(status: string) {
 }
 
 function restaurantStatusBadge(restaurant: AdminRestaurantSummary) {
+  if (restaurant.enforcement?.isRestricted) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-rose-200 bg-rose-50 text-rose-700"
+      >
+        {restaurant.enforcement.effectiveStatus.replaceAll("_", " ")}
+      </Badge>
+    )
+  }
+
+  if (restaurant.enforcement?.effectiveStatus === "under_review") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-200 bg-amber-50 text-amber-700"
+      >
+        Under review
+      </Badge>
+    )
+  }
+
   if (!restaurant.isVisible) {
     return (
       <Badge
@@ -1385,6 +1408,22 @@ function RestaurantDetailsSheet({
     },
   })
 
+  const enforcementMutation = useMutation({
+    mutationFn: updateAdminRestaurantEnforcement,
+    onSuccess: () => {
+      toast.success("Restaurant enforcement updated.")
+      void queryClient.invalidateQueries({ queryKey: ["admin-restaurants"] })
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-restaurant-details", restaurantId],
+      })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Enforcement update failed."
+      )
+    },
+  })
+
   const reconcileMutation = useMutation({
     mutationFn: reconcileAdminRestaurantFinance,
     onSuccess: (result) => {
@@ -1579,6 +1618,10 @@ function RestaurantDetailsSheet({
               setDeliveryStepAmountDraft={setDeliveryStepAmountDraft}
               reconcilePending={reconcileMutation.isPending}
               payoutStatusPending={payoutStatusMutation.isPending}
+              enforcementPending={enforcementMutation.isPending}
+              onEnforcementSave={(payload) =>
+                enforcementMutation.mutate({ restaurantId, ...payload })
+              }
               onVisibilityChange={(isVisible) =>
                 visibilityMutation.mutate({ restaurantId, isVisible })
               }
@@ -2911,6 +2954,226 @@ function PromotionMetricCard({
   )
 }
 
+type EnforcementStatus =
+  | "active"
+  | "under_review"
+  | "quality_hold"
+  | "temporarily_suspended"
+  | "permanently_disabled"
+
+function getDefaultEnforcementMessage(status: EnforcementStatus) {
+  if (status === "quality_hold") {
+    return "This restaurant is temporarily unavailable while Foodbela reviews service quality."
+  }
+  if (status === "temporarily_suspended") {
+    return "This restaurant is temporarily unavailable."
+  }
+  if (status === "permanently_disabled") {
+    return "This restaurant is no longer available on Foodbela."
+  }
+  return ""
+}
+
+function toDatetimeLocalValue(value?: string | null) {
+  if (!value) return ""
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
+function datetimeLocalToIso(value: string) {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+}
+
+function RestaurantEnforcementControl({
+  details,
+  pending,
+  onSave,
+}: {
+  details: AdminRestaurantDetails
+  pending: boolean
+  onSave: (payload: {
+    status: EnforcementStatus
+    reason?: string
+    ownerNote?: string
+    customerMessage?: string
+    internalNote?: string
+    expiresAt?: string | null
+  }) => void
+}) {
+  const enforcement = details.enforcement
+  const [status, setStatus] = React.useState<EnforcementStatus>(
+    (enforcement.effectiveStatus as EnforcementStatus) || "active"
+  )
+  const [reason, setReason] = React.useState(enforcement.reason || "")
+  const [ownerNote, setOwnerNote] = React.useState(enforcement.ownerNote || "")
+  const [customerMessage, setCustomerMessage] = React.useState(
+    enforcement.customerMessage || ""
+  )
+  const [internalNote, setInternalNote] = React.useState(
+    enforcement.internalNote || ""
+  )
+  const [expiresAt, setExpiresAt] = React.useState(
+    toDatetimeLocalValue(enforcement.expiresAt)
+  )
+
+  React.useEffect(() => {
+    setStatus((enforcement.effectiveStatus as EnforcementStatus) || "active")
+    setReason(enforcement.reason || "")
+    setOwnerNote(enforcement.ownerNote || "")
+    setCustomerMessage(enforcement.customerMessage || "")
+    setInternalNote(enforcement.internalNote || "")
+    setExpiresAt(toDatetimeLocalValue(enforcement.expiresAt))
+  }, [enforcement])
+
+  function applyDuration(hours: number | "permanent") {
+    if (hours === "permanent") {
+      setExpiresAt("")
+      return
+    }
+    const date = new Date(Date.now() + hours * 60 * 60 * 1000)
+    setExpiresAt(toDatetimeLocalValue(date.toISOString()))
+  }
+
+  function handleStatusChange(value: string) {
+    const nextStatus = value as EnforcementStatus
+    setStatus(nextStatus)
+    if (!customerMessage) setCustomerMessage(getDefaultEnforcementMessage(nextStatus))
+    if (nextStatus === "active" || nextStatus === "under_review") {
+      setExpiresAt("")
+    } else if (!expiresAt && nextStatus !== "permanently_disabled") {
+      applyDuration(72)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border bg-background p-3 xl:col-span-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-medium">Restaurant enforcement</p>
+            <Badge
+              variant="outline"
+              className={
+                enforcement.isRestricted
+                  ? "border-rose-200 bg-rose-50 text-rose-700"
+                  : enforcement.effectiveStatus === "under_review"
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+              }
+            >
+              {enforcement.effectiveStatus.replaceAll("_", " ")}
+            </Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Quality hold and suspension keep owner login available, but block
+            customer ordering and owner online status.
+          </p>
+        </div>
+        {enforcement.expiresAt ? (
+          <Badge variant="secondary">Ends {formatDate(enforcement.expiresAt)}</Badge>
+        ) : null}
+      </div>
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="space-y-1">
+          <Label>Status</Label>
+          <select
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+            value={status}
+            onChange={(event) => handleStatusChange(event.target.value)}
+          >
+            <option value="active">Active</option>
+            <option value="under_review">Under review</option>
+            <option value="quality_hold">Quality hold</option>
+            <option value="temporarily_suspended">Temporarily suspended</option>
+            <option value="permanently_disabled">Permanently disabled</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label>Ends at</Label>
+          <Input
+            type="datetime-local"
+            value={expiresAt}
+            disabled={status === "active" || status === "under_review"}
+            onChange={(event) => setExpiresAt(event.target.value)}
+          />
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={() => applyDuration(24)}>
+          24h
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => applyDuration(72)}>
+          3 days
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => applyDuration(168)}>
+          7 days
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={() => applyDuration("permanent")}>
+          No expiry
+        </Button>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="space-y-1">
+          <Label>Reason</Label>
+          <Input
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Repeated quality complaints"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Customer message</Label>
+          <Input
+            value={customerMessage}
+            onChange={(event) => setCustomerMessage(event.target.value)}
+            placeholder="Temporarily unavailable due to quality review"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Owner-visible note</Label>
+          <Input
+            value={ownerNote}
+            onChange={(event) => setOwnerNote(event.target.value)}
+            placeholder="Review food handling and packaging standards."
+          />
+        </div>
+        <div className="space-y-1">
+          <Label>Internal note</Label>
+          <Input
+            value={internalNote}
+            onChange={(event) => setInternalNote(event.target.value)}
+            placeholder="Admin-only context"
+          />
+        </div>
+      </div>
+      <div className="mt-3 flex justify-end">
+        <Button
+          type="button"
+          disabled={pending}
+          onClick={() =>
+            onSave({
+              status,
+              reason,
+              ownerNote,
+              customerMessage,
+              internalNote,
+              expiresAt: datetimeLocalToIso(expiresAt),
+            })
+          }
+        >
+          {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+          Save enforcement
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function RestaurantDetailsContent({
   details,
   commissionDraft,
@@ -2931,6 +3194,8 @@ function RestaurantDetailsContent({
   setDeliveryStepAmountDraft,
   reconcilePending,
   payoutStatusPending,
+  enforcementPending,
+  onEnforcementSave,
   onVisibilityChange,
   onFeatureChange,
   onCommissionSave,
@@ -2965,6 +3230,20 @@ function RestaurantDetailsContent({
   setDeliveryStepAmountDraft: (value: string) => void
   reconcilePending: boolean
   payoutStatusPending: boolean
+  enforcementPending: boolean
+  onEnforcementSave: (payload: {
+    status:
+      | "active"
+      | "under_review"
+      | "quality_hold"
+      | "temporarily_suspended"
+      | "permanently_disabled"
+    reason?: string
+    ownerNote?: string
+    customerMessage?: string
+    internalNote?: string
+    expiresAt?: string | null
+  }) => void
   onVisibilityChange: (isVisible: boolean) => void
   onFeatureChange: (isFeatured: boolean) => void
   onCommissionSave: () => void
@@ -3262,6 +3541,11 @@ function RestaurantDetailsContent({
                   </div>
                 </div>
               </div>
+              <RestaurantEnforcementControl
+                details={details}
+                pending={enforcementPending}
+                onSave={onEnforcementSave}
+              />
             </CardContent>
           </Card>
 

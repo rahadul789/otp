@@ -8,9 +8,12 @@ import {
 import { pruneAdminOperationalAlerts } from "./admin-alert.service";
 import { processDueAdminNotificationSchedules } from "./notifications.service";
 import { processPendingBkashPaymentAttemptReconciliation } from "../customer/customer.service";
+import { sendOperationalAlert } from "../monitoring/alert-notifier";
+import { classifySchedulerError } from "../monitoring/scheduler-error-policy";
 
 let intervalHandle: NodeJS.Timeout | null = null;
 let isProcessing = false;
+let consecutiveFailures = 0;
 const ADMIN_SCHEDULER_INTERVAL_MS = 10_000;
 
 function runAdminSchedulerCycle() {
@@ -25,19 +28,46 @@ function runAdminSchedulerCycle() {
     processPendingBkashPaymentAttemptReconciliation(),
   ])
     .then(() => {
+      consecutiveFailures = 0;
       markOperationalJobFinished("admin_notifications", "ok", startedAt);
     })
     .catch((error) => {
+      consecutiveFailures += 1;
       markOperationalJobFinished("admin_notifications", "failed", startedAt, error);
       logger.error(error, "Scheduled admin notifications failed");
-      void recordBusinessEvent({
-        event: "scheduler.admin_notifications.failed",
-        category: "scheduler",
-        severity: "critical",
-        title: "Admin scheduler failed",
-        description:
-          error instanceof Error ? error.message : "Scheduled admin work failed",
-      });
+      const policy = classifySchedulerError("admin_notifications", error);
+      if (policy.shouldRecord) {
+        void recordBusinessEvent({
+          event: "scheduler.admin_notifications.failed",
+          category: "scheduler",
+          severity: policy.severity,
+          title:
+            policy.severity === "critical"
+              ? "Admin scheduler failed"
+              : "Admin scheduler database retry",
+          description: policy.description,
+        });
+      }
+      if (consecutiveFailures >= 3) {
+        const description =
+          error instanceof Error ? error.message : String(error ?? "Unknown scheduler error");
+        void recordBusinessEvent({
+          event: "scheduler.admin_notifications.repeated_failure",
+          category: "scheduler",
+          severity: "critical",
+          title: "Admin scheduler repeatedly failing",
+          description,
+          metadata: { consecutiveFailures },
+        });
+        void sendOperationalAlert({
+          dedupeKey: "scheduler:admin_notifications:repeated_failure",
+          severity: "critical",
+          layer: "system",
+          title: "Admin scheduler repeatedly failing",
+          body: `Admin scheduler failed ${consecutiveFailures} consecutive times.`,
+          details: { error: description, consecutiveFailures },
+        });
+      }
     })
     .finally(() => {
       isProcessing = false;

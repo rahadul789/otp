@@ -1012,11 +1012,20 @@
 
   const lifecycleDemo = document.querySelector(".lifecycle-demo");
   if (lifecycleDemo && "IntersectionObserver" in window) {
+    let lifecycleWasPlaying = lifecycleDemo.classList.contains("is-playing");
+    const restartLifecycle = () => {
+      lifecycleDemo.classList.remove("is-playing");
+      void lifecycleDemo.offsetWidth;
+      lifecycleDemo.classList.add("is-playing");
+    };
     const setLifecyclePlayback = (shouldPlay) => {
-      lifecycleDemo.classList.toggle(
-        "is-playing",
-        shouldPlay && !document.hidden && !reduceMotion,
-      );
+      const canPlay = shouldPlay && !document.hidden && !reduceMotion;
+      if (canPlay && !lifecycleWasPlaying) {
+        restartLifecycle();
+      } else if (!canPlay) {
+        lifecycleDemo.classList.remove("is-playing");
+      }
+      lifecycleWasPlaying = canPlay;
     };
     const lifecycleObserver = new IntersectionObserver(
       ([entry]) => {
@@ -1128,7 +1137,12 @@
   function initAnimations() {
     if (reduceMotion) return;
 
-    if (window.gsap && window.ScrollTrigger) {
+    const shouldUseScrollTrigger =
+      window.gsap &&
+      window.ScrollTrigger &&
+      !window.matchMedia("(max-width: 900px)").matches;
+
+    if (shouldUseScrollTrigger) {
       window.gsap.registerPlugin(window.ScrollTrigger);
 
       stepBlocks.forEach((block) => {

@@ -1,0 +1,55 @@
+<%- include("../partials/document-start", { title, description, seo }) %>
+
+<%
+  const allAreas = (areas || []).filter((area) => area && area.name);
+  const areaPath = (name) => {
+    const slug = String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/&/g, " and ")
+      .replace(/[^a-z0-9\u0980-\u09FF]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return `/areas/${slug}-food-delivery`;
+  };
+%>
+
+<section class="page-hero area-page">
+  <div class="page-hero-content gs-up">
+    <p class="eyebrow">Foodbela service areas</p>
+    <h1>Foodbela কোন কোন এলাকায় কাজ করছে?</h1>
+    <p>লাইভ food delivery area, নতুন launch planning এবং restaurant/rider onboarding coverage এক জায়গায় দেখুন।</p>
+    <div class="hero-actions">
+      <a class="btn-main hover-trigger" href="/download">অ্যাপ ডাউনলোড</a>
+      <a class="btn-ghost hover-trigger" href="/contact?topic=coverage#coverage-request">নতুন এলাকা সাজেস্ট করুন</a>
+    </div>
+  </div>
+</section>
+
+<section class="local-seo-section">
+  <div class="sec-title gs-fade">
+    <p class="eyebrow">Coverage directory</p>
+    <h2>Foodbela local pages</h2>
+  </div>
+  <div class="area-directory-grid">
+    <% allAreas.forEach((area) => { %>
+      <% const isActive = area.status === "active"; %>
+      <article class="area-directory-card gs-fade">
+        <div>
+          <span class="area-status-pill area-<%= area.status %>">
+            <%= isActive ? "Live" : area.status === "coming_soon" ? "Soon" : "Paused" %>
+          </span>
+          <h3><%= area.name %></h3>
+          <p><%= area.note || "Foodbela coverage update" %></p>
+        </div>
+        <div class="area-directory-links">
+          <a href="<%= areaPath(area.name) %>">Food delivery</a>
+          <a href="<%= areaPath(area.name) %>/restaurants">Restaurants</a>
+          <a href="<%= areaPath(area.name) %>/restaurant-partner">Partner</a>
+          <a href="<%= areaPath(area.name) %>/riders">Riders</a>
+        </div>
+      </article>
+    <% }) %>
+  </div>
+</section>
+
+<%- include("../partials/document-end") %>

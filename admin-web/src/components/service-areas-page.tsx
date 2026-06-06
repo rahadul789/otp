@@ -806,9 +806,10 @@ export function ServiceAreasPage() {
 
               <div className="space-y-3">
                 <div>
-                  <h3 className="text-sm font-semibold">Dispatch rules</h3>
+                  <h3 className="text-sm font-semibold">Zone dispatch override</h3>
                   <p className="text-xs text-muted-foreground">
-                    These rules only affect orders inside this zone.
+                    These rules only affect orders inside this zone and override
+                    the global dispatch fallback.
                   </p>
                 </div>
                 <div className="flex items-center justify-between rounded-md border p-3">

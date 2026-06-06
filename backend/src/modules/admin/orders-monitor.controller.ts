@@ -658,8 +658,12 @@ export const patchAdminDispatchConfig = asyncHandler(
 );
 
 export const postAdminRunAutoDispatch = asyncHandler(
-  async (_req: Request, res: Response) => {
-    const data = await runAutoDispatchForReadyOrders();
+  async (req: Request, res: Response) => {
+    const query = dispatchConfigQuerySchema.parse(req.query);
+    const data = await runAutoDispatchForReadyOrders({
+      zoneId: query.zoneId,
+      districtId: query.districtId,
+    });
 
     return sendSuccess(res, {
       message: "Auto dispatch run completed",

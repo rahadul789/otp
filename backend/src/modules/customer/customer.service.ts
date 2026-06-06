@@ -44,6 +44,10 @@ import { buildOrderPreparationTiming } from "../owner/preparation-timing";
 import { sendPushToOwner } from "../owner/push.service";
 import { ReviewModel, SupportCaseModel } from "../owner/experience.model";
 import {
+  getRestaurantEnforcement,
+  isRestaurantOrderingRestricted,
+} from "../restaurant-enforcement";
+import {
   CategoryModel,
   MenuItemModel,
   OrderModel,
@@ -1782,12 +1786,22 @@ function getVisibleRestaurantQuery() {
   return {
     "runtime.isVisible": true,
     "runtime.isOnline": true,
+    $or: [
+      { "enforcement.status": { $exists: false } },
+      { "enforcement.status": { $in: ["active", "under_review"] } },
+      { "enforcement.expiresAt": { $lte: new Date() } },
+    ],
   };
 }
 
 function getDiscoverableRestaurantQuery() {
   return {
     "runtime.isVisible": true,
+    $or: [
+      { "enforcement.status": { $exists: false } },
+      { "enforcement.status": { $in: ["active", "under_review"] } },
+      { "enforcement.expiresAt": { $lte: new Date() } },
+    ],
   };
 }
 
@@ -2776,7 +2790,7 @@ export async function getCustomerRestaurantDetails(
     async () => {
       const restaurant = await RestaurantModel.findOne({
         _id: new mongoose.Types.ObjectId(restaurantId),
-        ...getDiscoverableRestaurantQuery(),
+        "runtime.isVisible": true,
       })
         .select({
           name: 1,
@@ -2790,6 +2804,7 @@ export async function getCustomerRestaurantDetails(
           location: 1,
           serviceArea: 1,
           runtime: 1,
+          enforcement: 1,
           discovery: 1,
           preparationTimeMinutes: 1,
           createdAt: 1,
@@ -2804,7 +2819,9 @@ export async function getCustomerRestaurantDetails(
         );
       }
 
-      restaurant.isOpen = restaurant.runtime?.isOnline ?? false;
+      restaurant.enforcement = getRestaurantEnforcement(restaurant);
+      restaurant.isOpen =
+        (restaurant.runtime?.isOnline ?? false) && !restaurant.enforcement.isRestricted;
       const platformContent = await getPlatformContent();
       const selectedServiceArea =
         typeof params?.latitude === "number" && typeof params?.longitude === "number"
@@ -4221,6 +4238,14 @@ export async function placeCustomerOrder(params: {
       StatusCodes.NOT_FOUND,
       "RESTAURANT_NOT_FOUND",
       "Restaurant not found",
+    );
+  }
+  if (isRestaurantOrderingRestricted(restaurant)) {
+    const enforcement = getRestaurantEnforcement(restaurant);
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "RESTAURANT_RESTRICTED",
+      enforcement.customerMessage,
     );
   }
 
@@ -5906,3 +5931,10 @@ const customerCartQuoteCache = createInMemoryAsyncCache<CustomerCartQuoteResult>
   ttlMs: CUSTOMER_READ_CACHE_TTL_MS,
   maxEntries: CUSTOMER_READ_CACHE_MAX_ENTRIES,
 })
+
+export function invalidateCustomerRestaurantAvailabilityCaches() {
+  discoverableRestaurantsCache.clear();
+  customerDiscoveryHomeCache.clear();
+  customerRestaurantDetailsCache.clear();
+  customerCartQuoteCache.clear();
+}

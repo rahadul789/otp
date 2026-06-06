@@ -87,9 +87,9 @@
   <div class="lifecycle-demo is-playing" aria-label="Foodbela অর্ডার লাইফসাইকেল ডেমো">
     <div class="lifecycle-grid" aria-hidden="true"></div>
     <svg class="lifecycle-route-svg" viewBox="0 0 1000 520" aria-hidden="true" preserveAspectRatio="none">
-      <path class="flow-path path-order" d="M135 250 C265 155 375 170 486 235" />
-      <path class="flow-path path-package" d="M525 236 C625 165 735 174 860 255" />
-      <path class="flow-path path-delivery" d="M858 336 C705 476 385 468 150 332" />
+      <path class="flow-path path-order" d="M150 282 C248 148 386 146 500 244" />
+      <path class="flow-path path-package" d="M500 244 C614 146 752 148 860 282" />
+      <path class="flow-path path-delivery" d="M860 332 C724 494 378 502 150 332" />
     </svg>
     <div class="lifecycle-route route-customer-restaurant" aria-hidden="true">
       <span class="route-pulse route-pulse-order"></span>
@@ -164,7 +164,7 @@
         <span class="map-node node-pickup"></span>
         <span class="map-node node-drop"></span>
         <i></i>
-        <b><span class="rider-bike-symbol">🛵</span></b>
+        <b><img class="rider-bike-symbol" src="/images/foodbela-icon.png" alt="" loading="lazy" /></b>
       </div>
       <div class="device-status-stack rider-status-stack">
         <span class="device-status status-rider-wait" data-i18n="lifeRiderWait">রেডি অর্ডার পাওয়া গেছে</span>
@@ -176,7 +176,7 @@
     </article>
 
     <div class="delivery-rider" aria-hidden="true">
-      <span class="delivery-rider-symbol">🛵</span>
+      <img class="delivery-rider-symbol" src="/images/foodbela-icon.png" alt="" loading="lazy" />
     </div>
     <div class="lifecycle-complete" data-i18n="lifeComplete">কাস্টমারের কাছে ডেলিভারড</div>
   </div>
@@ -190,10 +190,11 @@
     </div>
     <div class="coverage-area-list">
       <% (websiteSettings.serviceAreas || []).forEach((area) => { %>
-        <span class="area-chip area-<%= area.status %>">
+        <% const areaSlug = String(area.name || "").trim().toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9\u0980-\u09FF]+/g, "-").replace(/^-+|-+$/g, ""); %>
+        <a class="area-chip area-<%= area.status %>" href="/areas/<%= areaSlug %>-food-delivery">
           <strong><%= area.name %></strong>
           <small><%= area.status === "active" ? "Live" : area.status === "coming_soon" ? "Soon" : "Paused" %></small>
-        </span>
+        </a>
       <% }) %>
     </div>
     <div class="coverage-request-card">
@@ -282,14 +283,46 @@
     <div class="step-block active" data-color="#FFF3CF" data-img="img1">
       <h2 data-i18n="stepOneTitle">১. আপনার ক্রেভিং খুঁজুন 🍔</h2>
       <p data-i18n="stepOneCopy">শহরের সেরা রেস্টুরেন্ট, হাজারো মেন্যু, লোকাল অফার এবং পছন্দের খাবার মাত্র কয়েক ক্লিকে আপনার হাতের মুঠোয়।</p>
+      <div class="step-mobile-visual step-mobile-qr" aria-hidden="true">
+        <div class="mobile-visual-phone">
+          <span class="mobile-visual-pill">Foodbela app</span>
+          <strong>Scan & order</strong>
+          <img
+            src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&margin=8&data=<%= qrInstallUrl %>"
+            alt=""
+            loading="lazy"
+          />
+          <small>Play Store link</small>
+        </div>
+      </div>
     </div>
     <div class="step-block" data-color="#FFE6F0" data-img="img2">
       <h2 data-i18n="stepTwoTitle">২. কিচেন ম্যাজিক 🔥</h2>
       <p data-i18n="stepTwoCopy">অর্ডার এলেই রেস্টুরেন্ট তা সঙ্গে সঙ্গে দেখতে পায়। মোবাইল অ্যাপ বা ওয়েব প্যানেল—দুই জায়গা থেকেই অর্ডার গ্রহণ, প্রস্তুতির আপডেট আর স্ট্যাটাস ম্যানেজ করা যায়।</p>
+      <div class="step-mobile-visual step-mobile-dashboard" aria-hidden="true">
+        <div class="mobile-dashboard-shell">
+          <div class="mobile-dashboard-bar"><span></span><span></span><span></span></div>
+          <div class="mobile-dashboard-kpis">
+            <span><strong>9,755 tk</strong><small>Revenue</small></span>
+            <span><strong>25</strong><small>Orders</small></span>
+            <span><strong>4 live</strong><small>Status</small></span>
+          </div>
+          <div class="mobile-dashboard-wave"></div>
+        </div>
+      </div>
     </div>
     <div class="step-block" data-color="#F3FFF8" data-img="img3">
       <h2 data-i18n="stepThreeTitle">৩. সুপারফাস্ট ডেলিভারি 🚀</h2>
       <p data-i18n="stepThreeCopy">রাইডার পিকআপ থেকে দরজায় পৌঁছে দেওয়া পর্যন্ত পরিষ্কার নির্দেশনা পায়, আর কাস্টমার লাইভ ট্র্যাকিংয়ে পুরো অর্ডার জার্নি দেখতে পারে।</p>
+      <div class="step-mobile-visual step-mobile-delivery" aria-hidden="true">
+        <div class="mobile-delivery-shell">
+          <span class="mobile-delivery-pin pickup"></span>
+          <span class="mobile-delivery-pin dropoff"></span>
+          <i></i>
+          <b>🛵</b>
+          <strong>Rider on route</strong>
+        </div>
+      </div>
     </div>
   </div>
 

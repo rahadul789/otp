@@ -73,6 +73,23 @@ services:
       retries: 20
       start_period: 90s
 
+  health-alerts:
+    build:
+      context: ./backend
+    command: ["node", "dist/scripts/health-alert-worker.js"]
+    restart: unless-stopped
+    logging: *default-logging
+    env_file:
+      - ${APP_ENV_FILE:-./.env}
+    environment:
+      NODE_ENV: production
+      PORT: 5001
+      ALERT_METRICS_URL: ${ALERT_METRICS_URL:-http://backend:5000/metrics}
+    depends_on:
+      - backend
+    networks:
+      - foodbela
+
   restaurant-owner-web:
     build:
       context: ./restaurant-owner-web

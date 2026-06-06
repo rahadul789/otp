@@ -2797,6 +2797,7 @@ export function RidersPage() {
           <DispatchControlsPanel
             settings={dispatchQuery.data ?? null}
             isLoading={dispatchQuery.isPending}
+            scope={adminZoneScope}
             onSaved={() => {
               void dispatchQuery.refetch()
               invalidateRiderQueries(queryClient)
@@ -3420,10 +3421,12 @@ function RiderPerformanceAnalytics({
 function DispatchControlsPanel({
   settings,
   isLoading,
+  scope,
   onSaved,
 }: {
   settings: AdminDispatchSettings | null
   isLoading: boolean
+  scope: ReturnType<typeof getAdminZoneScope>
   onSaved: () => void
 }) {
   const queryClient = useQueryClient()
@@ -3632,6 +3635,24 @@ function DispatchControlsPanel({
   const skippedLogs = logSummary.skipped ?? 0
   const successfulLogs = assignedLogs + reassignedLogs
   const successRate = logTotal ? Math.round((successfulLogs / logTotal) * 100) : 0
+  const scopeLabel =
+    scope.type === "zone"
+      ? `Selected zone: ${scope.label}`
+      : scope.type === "district"
+        ? `Selected district: ${scope.label}`
+        : "All areas"
+  const policyScopeLabel =
+    scope.type === "all"
+      ? "Global fallback policy"
+      : scope.type === "zone"
+        ? "Zone dispatch override"
+        : "District dispatch override"
+  const policyScopeDescription =
+    scope.type === "all"
+      ? "Saved values are used as the platform fallback. Zone dispatch rules override these values for orders inside a service area."
+      : scope.type === "zone"
+        ? "Saved values apply only to this service zone. Global fallback remains unchanged."
+        : "Saved values apply to every active zone in this district. Global fallback remains unchanged."
 
   function resetLogFilters() {
     setLogSearch("")
@@ -3690,8 +3711,12 @@ function DispatchControlsPanel({
             <div>
               <CardTitle>Auto dispatch controls</CardTitle>
               <CardDescription>
-                Configure rider assignment rules and run dispatch manually.
+                {policyScopeLabel}. {policyScopeDescription}
               </CardDescription>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Badge variant="outline">{scopeLabel}</Badge>
+                <Badge variant="secondary">{policyScopeLabel}</Badge>
+              </div>
             </div>
             <Button
               disabled={runMutation.isPending}
@@ -3707,6 +3732,11 @@ function DispatchControlsPanel({
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="rounded-lg border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
+            Presets below are one-click draft shortcuts. They are not scheduled
+            lunch or busy-hour automation. Choose a preset, review the values,
+            then save to publish it for the current scope.
+          </div>
           <div className="grid gap-3 md:grid-cols-3">
             <Button
               type="button"
@@ -3725,7 +3755,7 @@ function DispatchControlsPanel({
                   ) : null}
                 </div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  Prefer one primary rider, then use fallback if allowed.
+                  Primary rider first, higher capacity, slower timeout.
                 </div>
               </div>
             </Button>
@@ -3746,7 +3776,7 @@ function DispatchControlsPanel({
                   ) : null}
                 </div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  Spread orders across riders with controlled load.
+                  Fleet mode with controlled load and normal retry timing.
                 </div>
               </div>
             </Button>
@@ -3767,7 +3797,7 @@ function DispatchControlsPanel({
                   ) : null}
                 </div>
                 <div className="mt-1 text-sm text-muted-foreground">
-                  Faster timeout and lower surge threshold.
+                  Fleet mode with faster timeout and lower pressure threshold.
                 </div>
               </div>
             </Button>

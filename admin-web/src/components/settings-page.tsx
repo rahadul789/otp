@@ -991,6 +991,18 @@ export function SettingsPage() {
       : settingsScope?.settingsMode === "district_zones"
         ? "Operational dispatch and delivery defaults save to every active zone in this district."
         : "Global fallback used only when no selected service zone override exists."
+  const dispatchPolicyTitle =
+    settingsScope?.settingsMode === "global"
+      ? "Global dispatch fallback"
+      : settingsScope?.settingsMode === "single_zone"
+        ? "Zone dispatch override"
+        : "District dispatch override"
+  const dispatchPolicyDescription =
+    settingsScope?.settingsMode === "global"
+      ? "These defaults are used when an order has no service-zone override. Service Areas and scoped settings can override them per area."
+      : settingsScope?.settingsMode === "single_zone"
+        ? "These values save to the selected service zone and override the global fallback for orders in this area."
+        : "These values save to every active zone in the selected district and override the global fallback there."
   const serviceAreaHelper =
     settingsScope?.settingsMode === "global"
       ? `${settingsScope?.zoneCount ?? 0} active zone${(settingsScope?.zoneCount ?? 0) === 1 ? "" : "s"}, largest radius ${serviceArea.radiusKm} km`
@@ -1276,11 +1288,10 @@ export function SettingsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Truck className="size-4" />
-                  Dispatch policy
+                  {dispatchPolicyTitle}
                 </CardTitle>
                 <CardDescription>
-                  These values are read by rider assignment and order
-                  monitoring.
+                  {dispatchPolicyDescription}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">

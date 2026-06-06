@@ -107,18 +107,7 @@ export function OwnerSignInPage() {
     <AuthShell
       title="Welcome back"
       description="Sign in to continue managing your restaurant, orders, and onboarding progress."
-      footer={
-        <>
-          Don&apos;t have an account?{" "}
-          <button
-            type="button"
-            onClick={() => navigate("/auth/signup")}
-            className="font-medium text-foreground underline-offset-4 hover:underline"
-          >
-            Create one
-          </button>
-        </>
-      }
+      footer="Restaurant owner access is created by Foodbela admin."
     >
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className="space-y-2">

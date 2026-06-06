@@ -237,6 +237,16 @@ export type OwnerStoreSettingsResponse = {
     isVisible?: boolean
     currentOperationalStatus?: string
   }
+  enforcement?: {
+    status?: string
+    effectiveStatus?: string
+    isRestricted?: boolean
+    reason?: string
+    ownerNote?: string
+    customerMessage?: string
+    startsAt?: string | null
+    expiresAt?: string | null
+  }
   settings?: {
     orderSettings?: {
       autoAcceptOrders?: boolean
@@ -893,6 +903,22 @@ export function mapOwnerStoreSettings(
       newOrder: notificationSettings.newOrder ?? current.notifications.newOrder,
       cancellation:
         notificationSettings.cancellation ?? current.notifications.cancellation,
+    },
+    enforcement: {
+      ...current.enforcement,
+      status: response.enforcement?.status ?? current.enforcement.status,
+      effectiveStatus:
+        response.enforcement?.effectiveStatus ??
+        current.enforcement.effectiveStatus,
+      isRestricted:
+        response.enforcement?.isRestricted ?? current.enforcement.isRestricted,
+      reason: response.enforcement?.reason ?? current.enforcement.reason,
+      ownerNote: response.enforcement?.ownerNote ?? current.enforcement.ownerNote,
+      customerMessage:
+        response.enforcement?.customerMessage ??
+        current.enforcement.customerMessage,
+      startsAt: response.enforcement?.startsAt ?? current.enforcement.startsAt,
+      expiresAt: response.enforcement?.expiresAt ?? current.enforcement.expiresAt,
     },
     updatedAt: response.updatedAt ?? current.updatedAt,
   }

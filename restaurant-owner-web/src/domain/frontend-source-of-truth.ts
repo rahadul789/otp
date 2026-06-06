@@ -71,6 +71,16 @@ export const APP_FALLBACK_STATE = {
         cancellation: true,
       },
       offlineReason: "",
+      enforcement: {
+        status: "active",
+        effectiveStatus: "active",
+        isRestricted: false,
+        reason: "",
+        ownerNote: "",
+        customerMessage: "",
+        startsAt: null,
+        expiresAt: null,
+      },
       updatedAt: "",
     } satisfies StoreSettings,
     openingHours: {

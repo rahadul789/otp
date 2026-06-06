@@ -183,7 +183,75 @@ docker compose up -d --build --remove-orphans
 docker image prune -f
 ```
 
-## 9. Monitoring
+## 9. Email and Alerting
+
+Hostinger Email দিয়ে alert পাঠাতে hPanel-এ:
+
+```text
+Emails -> foodbela.com -> Manage -> Email Accounts
+```
+
+একটি mailbox বানান, যেমন:
+
+```text
+alerts@foodbela.com
+```
+
+এই mailbox password-টাই SMTP password। Hostinger Email configuration সাধারণত:
+
+```text
+SMTP host: smtp.hostinger.com
+SMTP port: 465
+Encryption: SSL
+Username: full email address, e.g. alerts@foodbela.com
+Password: mailbox password
+```
+
+Root `.env`-এ:
+
+```env
+ALERTS_ENABLED=true
+ALERT_RECIPIENT_EMAILS=admin@foodbela.com
+ALERT_FROM_EMAIL=alerts@foodbela.com
+ALERT_FROM_NAME=Foodbela Monitor
+SMTP_HOST=smtp.hostinger.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=alerts@foodbela.com
+SMTP_PASS=YOUR_HOSTINGER_MAILBOX_PASSWORD
+ALERT_BACKEND_HEALTH_URL=https://api.foodbela.com/api/v1/health/ready
+ALERT_METRICS_URL=http://backend:5000/metrics
+ALERT_SSL_HOSTS=foodbela.com,www.foodbela.com,api.foodbela.com,owner.foodbela.com,admin.foodbela.com
+ALERT_SSL_EXPIRY_DAYS=14
+ALERT_MEMORY_RSS_MB=900
+ALERT_5XX_THRESHOLD=5
+```
+
+Telegram optional:
+
+```env
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+Deploy:
+
+```bash
+docker compose up -d --build
+docker compose logs -f health-alerts
+```
+
+এই alert worker check করবে:
+
+- backend readiness down
+- MongoDB disconnected
+- backend 5xx error spike
+- backend RSS memory high
+- SSL certificate expiry/failure
+
+Backend process নিজে admin critical operational alerts email/Telegram-এ পাঠাবে।
+
+## 10. Monitoring
 
 Monitoring ports public internet-এ খোলা নেই। SSH tunnel দিয়ে দেখুন:
 

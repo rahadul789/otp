@@ -4,58 +4,157 @@ const {
   restaurantBenefits,
   riderBenefits,
 } = require("../data/site");
+const {
+  buildAreaIntentSeo,
+  buildAreaSeo,
+  buildAreasIndexSeo,
+  buildPageSeo,
+  buildRobotsTxt,
+  buildSitemapXml,
+  findServiceAreaBySlug,
+  getAreaCuisines,
+  getAreaPopularSearches,
+} = require("../services/seo.service");
+const { getAreaRestaurants } = require("../services/website-api.service");
 
 const router = express.Router();
 
-router.get("/", (req, res) => {
-  res.render("pages/home", {
-    title: "Foodbela | ভবিষ্যতের ফুড ডেলিভারি এক্সপেরিয়েন্স",
-    description:
-      "Foodbela কাস্টমার, রেস্টুরেন্ট এবং রাইডারকে একটি দ্রুত, স্মার্ট এবং লোকাল-ফার্স্ট ফুড ডেলিভারি ইকোসিস্টেমে যুক্ত করে।",
+function getSettings(res) {
+  return res.locals.websiteSettings || {};
+}
+
+function renderSeoPage(req, res, view, pageKey, options = {}) {
+  const seo = buildPageSeo(req, getSettings(res), pageKey, options);
+  res.render(view, {
+    title: seo.title,
+    description: seo.description,
+    seo,
+    ...options.viewData,
   });
+}
+
+router.get("/robots.txt", (req, res) => {
+  res.type("text/plain").send(buildRobotsTxt(getSettings(res)));
+});
+
+router.get("/sitemap.xml", (req, res) => {
+  res.type("application/xml").send(buildSitemapXml(getSettings(res)));
+});
+
+router.get("/", (req, res) => {
+  renderSeoPage(req, res, "pages/home", "home");
 });
 
 router.get("/restaurants", (req, res) => {
-  res.render("pages/restaurants", {
-    title: "Foodbela for Restaurants | রেস্টুরেন্ট পার্টনারশিপ",
-    description:
-      "Foodbela-এর সাথে পার্টনার হয়ে আরও অনলাইন অর্ডার নিন, ডেলিভারি ডিমান্ড ম্যানেজ করুন এবং আপনার রেস্টুরেন্ট বড় করুন।",
-    benefits: restaurantBenefits,
+  renderSeoPage(req, res, "pages/restaurants", "restaurants", {
     faqs: faqs.restaurants,
+    breadcrumbs: [{ name: "Restaurants", path: "/restaurants" }],
+    viewData: {
+      benefits: restaurantBenefits,
+      faqs: faqs.restaurants,
+    },
   });
 });
 
 router.get("/download", (req, res) => {
-  res.render("pages/download", {
-    title: "Download Foodbela App | কাস্টমার অ্যাপ গাইড",
-    description:
-      "Foodbela customer app Play Store থেকে কীভাবে ডাউনলোড করবেন, অর্ডার করবেন এবং অফার ব্যবহার করবেন তার সহজ গাইড।",
+  renderSeoPage(req, res, "pages/download", "download", {
+    breadcrumbs: [{ name: "Download", path: "/download" }],
   });
 });
 
 router.get("/riders", (req, res) => {
-  res.render("pages/riders", {
-    title: "Ride with Foodbela | রাইডার অনবোর্ডিং",
-    description:
-      "Foodbela রাইডার হিসেবে আবেদন করুন এবং আপনার এলাকায় খাবার ডেলিভারি করে আয় করুন।",
-    benefits: riderBenefits,
+  renderSeoPage(req, res, "pages/riders", "riders", {
     faqs: faqs.riders,
+    breadcrumbs: [{ name: "Riders", path: "/riders" }],
+    viewData: {
+      benefits: riderBenefits,
+      faqs: faqs.riders,
+    },
   });
 });
 
 router.get("/about", (req, res) => {
-  res.render("pages/about", {
-    title: "About Foodbela | আমাদের সম্পর্কে",
-    description:
-      "Foodbela কাস্টমার, রেস্টুরেন্ট এবং রাইডারদের জন্য একটি লোকাল-ফার্স্ট ফুড ডেলিভারি নেটওয়ার্ক তৈরি করছে।",
+  renderSeoPage(req, res, "pages/about", "about", {
+    breadcrumbs: [{ name: "About", path: "/about" }],
   });
 });
 
 router.get("/contact", (req, res) => {
-  res.render("pages/contact", {
-    title: "Contact Foodbela | যোগাযোগ",
-    description:
-      "কাস্টমার হেল্প, রেস্টুরেন্ট অনবোর্ডিং, রাইডার অনবোর্ডিং এবং পার্টনারশিপ সাপোর্টের জন্য Foodbela টিমের সাথে যোগাযোগ করুন।",
+  renderSeoPage(req, res, "pages/contact", "contact", {
+    breadcrumbs: [{ name: "Contact", path: "/contact" }],
+  });
+});
+
+router.get("/areas", (req, res) => {
+  const seo = buildAreasIndexSeo(req, getSettings(res));
+  res.render("pages/areas", {
+    title: seo.title,
+    description: seo.description,
+    seo,
+    areas: getSettings(res).serviceAreas || [],
+  });
+});
+
+router.get("/areas/:slug/restaurants", async (req, res, next) => {
+  const area = findServiceAreaBySlug(getSettings(res), req.params.slug);
+  if (!area) return next();
+  const restaurants = await getAreaRestaurants(area.name, 6);
+  const seo = buildAreaIntentSeo(req, getSettings(res), area, "restaurants", restaurants);
+  res.render("pages/area-intent", {
+    title: seo.title,
+    description: seo.description,
+    seo,
+    area,
+    intent: "restaurants",
+    restaurants,
+    cuisines: getAreaCuisines(area),
+    popularSearches: getAreaPopularSearches(area),
+  });
+});
+
+router.get("/areas/:slug/restaurant-partner", (req, res, next) => {
+  const area = findServiceAreaBySlug(getSettings(res), req.params.slug);
+  if (!area) return next();
+  const seo = buildAreaIntentSeo(req, getSettings(res), area, "partner");
+  res.render("pages/area-intent", {
+    title: seo.title,
+    description: seo.description,
+    seo,
+    area,
+    intent: "partner",
+    restaurants: [],
+    cuisines: getAreaCuisines(area),
+    popularSearches: getAreaPopularSearches(area),
+  });
+});
+
+router.get("/areas/:slug/riders", (req, res, next) => {
+  const area = findServiceAreaBySlug(getSettings(res), req.params.slug);
+  if (!area) return next();
+  const seo = buildAreaIntentSeo(req, getSettings(res), area, "riders");
+  res.render("pages/area-intent", {
+    title: seo.title,
+    description: seo.description,
+    seo,
+    area,
+    intent: "riders",
+    restaurants: [],
+    cuisines: getAreaCuisines(area),
+    popularSearches: getAreaPopularSearches(area),
+  });
+});
+
+router.get("/areas/:slug", (req, res, next) => {
+  const area = findServiceAreaBySlug(getSettings(res), req.params.slug);
+  if (!area) return next();
+  const seo = buildAreaSeo(req, getSettings(res), area);
+  res.render("pages/area", {
+    title: seo.title,
+    description: seo.description,
+    seo,
+    area,
+    cuisines: getAreaCuisines(area),
+    popularSearches: getAreaPopularSearches(area),
   });
 });
 

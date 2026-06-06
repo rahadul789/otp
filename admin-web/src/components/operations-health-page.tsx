@@ -30,6 +30,7 @@ import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
 import {
+  clearAdminRequestMonitor,
   getAdminOperationalHealth,
   resolveAdminOperationalAlert,
   snoozeAdminOperationalAlert,
@@ -203,6 +204,8 @@ function requestStatusTone(statusCode: number) {
 }
 
 function endpointHealth(endpoint: {
+  actionableErrorRequests?: number
+  authSessionRequests?: number
   errorRequests: number
   p95DurationMs: number
   statusCounts?: Record<string, number>
@@ -253,19 +256,19 @@ function endpointHealth(endpoint: {
       severity: "warning" as const,
     }
   }
-  if (authErrors > 0) {
+  if (authErrors > 0 && (endpoint.actionableErrorRequests ?? endpoint.errorRequests) === 0) {
     return {
-      label: "Auth/session",
+      label: "Unauthorized",
       className: "border-slate-200 bg-slate-50 text-slate-600",
-      note: `${authErrors} auth check${authErrors === 1 ? "" : "s"}`,
+      note: `${authErrors} request${authErrors === 1 ? "" : "s"} without a valid token`,
       severity: "neutral" as const,
     }
   }
-  if (endpoint.p95DurationMs >= 1500) {
+  if (endpoint.totalRequests >= 5 && endpoint.p95DurationMs >= 1500) {
     return {
       label: "Slow",
       className: "border-amber-200 bg-amber-50 text-amber-700",
-      note: "P95 is high",
+      note: "P95 is high across enough samples",
       severity: "warning" as const,
     }
   }
@@ -360,6 +363,98 @@ function MetricCard({
             {helper}
           </div>
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function infrastructureTone(status: string) {
+  if (status === "healthy") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (status === "warning") return "border-amber-200 bg-amber-50 text-amber-700"
+  if (status === "critical") return "border-rose-200 bg-rose-50 text-rose-700"
+  return "border-border bg-muted text-muted-foreground"
+}
+
+function InfrastructurePanel({
+  infrastructure,
+}: {
+  infrastructure?: AdminOperationalHealthSnapshot["infrastructure"]
+}) {
+  const components = infrastructure?.components ?? []
+  const checkedAt = infrastructure?.checkedAt
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle>Infrastructure alerts</CardTitle>
+            <CardDescription>
+              Health-alert worker status for backend, database, errors,
+              memory, CPU, and SSL certificates.
+            </CardDescription>
+          </div>
+          <Badge
+            variant="outline"
+            className={infrastructureTone(infrastructure?.status ?? "unknown")}
+          >
+            {titleCase(infrastructure?.status ?? "unknown")}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {components.length ? (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {components.map((component) => (
+              <div
+                key={component.key}
+                className={cn(
+                  "rounded-lg border p-3",
+                  infrastructureTone(component.status)
+                )}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">
+                      {component.label}
+                    </div>
+                    <div className="mt-1 line-clamp-2 text-xs opacity-85">
+                      {component.message}
+                    </div>
+                  </div>
+                  <Badge variant="outline" className="bg-background/70">
+                    {titleCase(component.status)}
+                  </Badge>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  {component.value !== undefined ? (
+                    <span className="rounded-md bg-background/70 px-2 py-1">
+                      Value {String(component.value)}
+                    </span>
+                  ) : null}
+                  {component.threshold !== undefined ? (
+                    <span className="rounded-md bg-background/70 px-2 py-1">
+                      Threshold {String(component.threshold)}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-2 text-[11px] opacity-75">
+                  Checked {formatDateTime(component.checkedAt)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+            Infrastructure status will appear after the health-alert worker
+            completes its first check.
+          </div>
+        )}
+        {checkedAt ? (
+          <div className="text-xs text-muted-foreground">
+            Last worker snapshot {formatDateTime(checkedAt)}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   )
@@ -781,7 +876,8 @@ function summarizeMonitorIssues(
         (status) =>
           status >= 400 && status < 500 && ![401, 403, 404, 429].includes(status)
       )
-      summary.slowEndpoints += endpoint.p95DurationMs >= 1500 ? 1 : 0
+      summary.slowEndpoints +=
+        endpoint.totalRequests >= 5 && endpoint.p95DurationMs >= 1500 ? 1 : 0
       return summary
     },
     {
@@ -832,6 +928,7 @@ function buildRequestDiagnostics(params: {
       totalRequests: endpoint.totalRequests,
       errorRequests: endpoint.errorRequests,
       statusCounts: endpoint.statusCounts,
+      errorSamples: endpoint.errorSamples,
       averageDurationMs: endpoint.averageDurationMs,
       p95DurationMs: endpoint.p95DurationMs,
       lastStatusCode: endpoint.lastStatusCode,
@@ -847,16 +944,22 @@ function RequestMonitorPanel({
 }: {
   monitor: AdminOperationalHealthSnapshot["requestMonitor"]
 }) {
+  const queryClient = useQueryClient()
   const [appFilter, setAppFilter] = React.useState<RequestAppFilter>("all")
   const [onlyErrors, setOnlyErrors] = React.useState(false)
+  const [showSessionChecks, setShowSessionChecks] = React.useState(false)
   const filteredEndpoints = React.useMemo(
     () =>
       monitor.endpoints.filter((endpoint) => {
         const matchesApp = appFilter === "all" || endpoint.app === appFilter
-        const matchesErrors = !onlyErrors || endpoint.errorRequests > 0
-        return matchesApp && matchesErrors
+        const actionableErrors =
+          endpoint.actionableErrorRequests ?? endpoint.errorRequests
+        const matchesErrors = !onlyErrors || actionableErrors > 0
+        const sessionOnly =
+          actionableErrors === 0 && (endpoint.authSessionRequests ?? 0) > 0
+        return matchesApp && matchesErrors && (showSessionChecks || !sessionOnly)
       }),
-    [appFilter, monitor.endpoints, onlyErrors],
+    [appFilter, monitor.endpoints, onlyErrors, showSessionChecks],
   )
   const filteredRecent = React.useMemo(
     () =>
@@ -866,6 +969,19 @@ function RequestMonitorPanel({
         return matchesApp && matchesErrors
       }),
     [appFilter, monitor.recent, onlyErrors],
+  )
+  const filteredRecentErrors = React.useMemo(
+    () =>
+      (monitor.recentErrors ?? monitor.recent.filter((event) => event.statusCode >= 400)).filter(
+        (event) => {
+          const matchesApp = appFilter === "all" || event.app === appFilter
+          const actionable =
+            event.statusCode >= 400 && event.statusCode !== 401 && event.statusCode !== 403
+          const sessionCheck = event.statusCode === 401 || event.statusCode === 403
+          return matchesApp && actionable && (!sessionCheck || showSessionChecks)
+        },
+      ),
+    [appFilter, monitor.recent, monitor.recentErrors, showSessionChecks],
   )
   const issueSummary = React.useMemo(
     () => summarizeMonitorIssues(monitor.endpoints),
@@ -879,8 +995,8 @@ function RequestMonitorPanel({
     issueSummary.serverErrors > 0 ||
     issueSummary.notFound > 0 ||
     issueSummary.rateLimited > 0 ||
-    issueSummary.validation > 0 ||
-    issueSummary.slowEndpoints > 0
+    issueSummary.validation > 0
+  const hasPerformanceWatch = !hasActionableIssues && issueSummary.slowEndpoints > 0
   const diagnostics = React.useMemo(
     () =>
       buildRequestDiagnostics({
@@ -909,6 +1025,19 @@ function RequestMonitorPanel({
       .catch(() => toast.error("Could not copy diagnostics"))
   }, [diagnostics])
 
+  const clearMonitorMutation = useMutation({
+    mutationFn: clearAdminRequestMonitor,
+    onSuccess: () => {
+      toast.success("Request monitor cleared")
+      void queryClient.invalidateQueries({ queryKey: ["admin-operational-health"] })
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Could not clear request monitor"
+      )
+    },
+  })
+
   const downloadDiagnostics = React.useCallback(() => {
     const blob = new Blob([JSON.stringify(diagnostics, null, 2)], {
       type: "application/json",
@@ -936,12 +1065,16 @@ function RequestMonitorPanel({
           icon={Activity}
         />
         <MetricCard
-          title="Errors"
-          value={monitor.summary.errorRequests}
-          helper={`${monitor.summary.successRequests} successful`}
+          title="Actionable errors"
+          value={
+            monitor.summary.actionableErrorRequests ??
+            monitor.summary.errorRequests
+          }
+          helper={`${monitor.summary.authSessionRequests ?? 0} unauthorized requests ignored`}
           icon={ShieldAlert}
           className={
-            monitor.summary.errorRequests > 0
+            (monitor.summary.actionableErrorRequests ??
+              monitor.summary.errorRequests) > 0
               ? "border-amber-200 bg-amber-50 text-amber-700"
               : undefined
           }
@@ -970,18 +1103,39 @@ function RequestMonitorPanel({
                 checks so the signal stays clean.
               </CardDescription>
             </div>
-            <Badge
-              variant="outline"
-              className={
-                hasActionableIssues
-                  ? "border-amber-200 bg-amber-50 text-amber-700"
-                  : "border-emerald-200 bg-emerald-50 text-emerald-700"
-              }
-            >
-              {hasActionableIssues
-                ? `${suspiciousEndpoints.length} endpoint${suspiciousEndpoints.length === 1 ? "" : "s"} need review`
-                : "Traffic looks normal"}
-            </Badge>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge
+                variant="outline"
+                className={
+                  hasActionableIssues
+                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                    : hasPerformanceWatch
+                      ? "border-sky-200 bg-sky-50 text-sky-700"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                }
+              >
+                {hasActionableIssues
+                  ? `${suspiciousEndpoints.length} endpoint${suspiciousEndpoints.length === 1 ? "" : "s"} need review`
+                  : hasPerformanceWatch
+                    ? `${issueSummary.slowEndpoints} endpoint${issueSummary.slowEndpoints === 1 ? "" : "s"} on performance watch`
+                  : "Traffic looks normal"}
+              </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => clearMonitorMutation.mutate()}
+                disabled={
+                  !monitor.summary.totalRequests || clearMonitorMutation.isPending
+                }
+              >
+                {clearMonitorMutation.isPending ? (
+                  <Loader2 className="mr-2 size-3.5 animate-spin" />
+                ) : (
+                  <RefreshCcw className="mr-2 size-3.5" />
+                )}
+                Clear requests
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -1011,7 +1165,7 @@ function RequestMonitorPanel({
               </div>
             </div>
             <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
-              <div className="text-xs text-slate-600">Auth/session</div>
+              <div className="text-xs text-slate-600">Unauthorized requests</div>
               <div className="mt-1 text-xl font-semibold text-slate-700">
                 {issueSummary.authChecks}
               </div>
@@ -1025,9 +1179,9 @@ function RequestMonitorPanel({
           </div>
           <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
             Priority order: fix `Server errors` first, then `Missing routes`,
-            then `Validation` or `Rate limited`. `Auth/session` usually means a
-            token refresh or signed-out request and is not highlighted as a
-            platform bug unless it keeps increasing unexpectedly.
+            then `Validation` or `Rate limited`. `Unauthorized requests` are
+            request attempts without a valid admin token; they are counted as
+            request noise, not active admin sessions.
           </div>
           <div className="flex flex-wrap gap-2">
             {requestAppFilters.map((filter) => (
@@ -1049,13 +1203,21 @@ function RequestMonitorPanel({
             >
               {onlyErrors ? "Showing non-2xx only" : "Show non-2xx only"}
             </Button>
-            {(appFilter !== "all" || onlyErrors) && (
+            <Button
+              size="sm"
+              variant={showSessionChecks ? "default" : "outline"}
+              onClick={() => setShowSessionChecks((value) => !value)}
+            >
+              {showSessionChecks ? "Showing unauthorized" : "Show unauthorized"}
+            </Button>
+            {(appFilter !== "all" || onlyErrors || showSessionChecks) && (
               <Button
                 size="sm"
                 variant="ghost"
                 onClick={() => {
                   setAppFilter("all")
                   setOnlyErrors(false)
+                  setShowSessionChecks(false)
                 }}
               >
                 Clear filters
@@ -1104,7 +1266,7 @@ function RequestMonitorPanel({
                     <Badge
                       variant="outline"
                       className={
-                        row.errorRequests > 0
+                        (row.actionableErrorRequests ?? row.errorRequests) > 0
                           ? "border-amber-200 bg-amber-50 text-amber-700"
                           : undefined
                       }
@@ -1113,10 +1275,10 @@ function RequestMonitorPanel({
                     </Badge>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                    <span>Errors {row.errorRequests}</span>
+                    <span>Errors {row.actionableErrorRequests ?? row.errorRequests}</span>
+                    <span>Unauthorized {row.authSessionRequests ?? 0}</span>
                     <span>Avg {formatDuration(row.averageDurationMs)}</span>
                     <span>P95 {formatDuration(row.p95DurationMs)}</span>
-                    <span>Last {formatDateTime(row.lastSeenAt)}</span>
                   </div>
                 </div>
               </CardContent>
@@ -1173,13 +1335,42 @@ function RequestMonitorPanel({
                     <div className="mt-1 break-all text-xs text-muted-foreground">
                       Last path: {endpoint.lastPath}
                     </div>
+                    {endpoint.errorSamples?.length ? (
+                      <div className="mt-2 space-y-1">
+                        {endpoint.errorSamples.slice(0, 2).map((sample) => (
+                          <div
+                            key={`${sample.code}-${sample.message}-${sample.lastSeenAt}`}
+                            className="rounded-md border bg-muted/30 px-2 py-1 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge
+                                variant="outline"
+                                className={requestStatusTone(sample.statusCode)}
+                              >
+                                {sample.statusCode}
+                              </Badge>
+                              <span className="font-medium">{sample.code}</span>
+                              <span className="text-muted-foreground">
+                                {sample.count}x
+                              </span>
+                            </div>
+                            <div className="mt-1 break-words text-muted-foreground">
+                              {sample.message}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="text-sm">
                     <div className="font-medium">
                       {endpoint.totalRequests} hits
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      {endpoint.errorRequests} errors
+                      {endpoint.actionableErrorRequests ?? endpoint.errorRequests} errors
+                      {endpoint.authSessionRequests
+                        ? ` · ${endpoint.authSessionRequests} unauthorized`
+                        : ""}
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {formatStatusCounts(endpoint.statusCounts)}
@@ -1219,6 +1410,63 @@ function RequestMonitorPanel({
                 Started {formatDateTime(monitor.startedAt)} · Last captured{" "}
                 {formatDateTime(monitor.lastCapturedAt)}
               </div>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent actionable error timeline</CardTitle>
+          <CardDescription>
+            Latest failed API calls that need investigation. Unauthorized admin
+            token checks are hidden unless you choose to show them.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {filteredRecentErrors.map((event, index) => (
+            <div
+              key={`${event.timestamp}-${event.method}-${event.path}-${index}`}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
+            >
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">{requestAppLabel(event.app)}</Badge>
+                  <Badge variant="outline">{event.method}</Badge>
+                  <Badge
+                    variant="outline"
+                    className={requestStatusTone(event.statusCode)}
+                  >
+                    {event.statusCode}
+                  </Badge>
+                </div>
+                <div className="mt-2 break-all font-medium">{event.route}</div>
+                <div className="mt-1 break-all text-xs text-muted-foreground">
+                  {event.path}
+                </div>
+                {event.statusCode >= 400 ? (
+                  <div className="mt-2 rounded-md border bg-muted/30 px-2 py-1 text-xs">
+                    <span className="font-medium">
+                      {event.errorCode || "REQUEST_ERROR"}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      {event.errorMessage || "Request failed."}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+              <div className="text-right text-sm text-muted-foreground">
+                <div>{formatDuration(event.durationMs)}</div>
+                <div>{formatDateTime(event.timestamp)}</div>
+              </div>
+            </div>
+          ))}
+          {!filteredRecentErrors.length ? (
+            <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+              {(monitor.summary.actionableErrorRequests ?? monitor.summary.errorRequests) > 0
+                ? "No recent actionable errors match the selected filters."
+                : "No recent actionable request errors captured."}
             </div>
           ) : null}
         </CardContent>
@@ -2267,7 +2515,7 @@ export function OperationsHealthPage() {
             <MetricCard
               title="Events today"
               value={data.summary.eventsLast24h}
-              helper={`${data.summary.criticalEventsLast24h} critical, ${data.summary.warningEventsLast24h} warning`}
+              helper={`${data.summary.criticalEventsLast24h} critical history, ${data.summary.warningEventsLast24h} warning history`}
               icon={RadioTower}
             />
             <MetricCard
@@ -2277,6 +2525,8 @@ export function OperationsHealthPage() {
               icon={Gauge}
             />
           </div>
+
+          <InfrastructurePanel infrastructure={data.infrastructure} />
 
           <RealtimeOpsPanel realtime={data.realtime} />
 

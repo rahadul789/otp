@@ -12,6 +12,10 @@ export function errorHandlerMiddleware(
   _next: NextFunction
 ) {
   if (error instanceof ZodError) {
+    res.locals.requestMonitorError = {
+      code: "VALIDATION_ERROR",
+      message: "Validation failed",
+    }
     return res.status(StatusCodes.BAD_REQUEST).json({
       success: false,
       message: "Validation failed",
@@ -25,6 +29,10 @@ export function errorHandlerMiddleware(
   }
 
   if (error instanceof AppError) {
+    res.locals.requestMonitorError = {
+      code: error.code,
+      message: error.message,
+    }
     return res.status(error.statusCode).json({
       success: false,
       message: error.message,
@@ -36,6 +44,10 @@ export function errorHandlerMiddleware(
   }
 
   logger.error(error)
+  res.locals.requestMonitorError = {
+    code: "INTERNAL_SERVER_ERROR",
+    message: error instanceof Error ? error.message : "Internal server error",
+  }
 
   return res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
     success: false,

@@ -1,13 +1,41 @@
 <!doctype html>
 <html lang="bn">
   <head>
+    <%
+      const seoData = typeof seo !== "undefined" && seo ? seo : {};
+      const pageTitle = seoData.title || title || "Foodbela";
+      const pageDescription = seoData.description || description || "Foodbela food delivery, restaurant partners, and rider onboarding.";
+      const canonicalUrl = seoData.canonicalUrl || "";
+      const ogImageUrl = seoData.ogImageUrl || "/images/foodbela-icon.png";
+      const robotsContent = seoData.robots || "index,follow";
+    %>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="<%= description %>" />
+    <meta name="description" content="<%= pageDescription %>" />
+    <meta name="robots" content="<%= robotsContent %>" />
     <meta name="theme-color" content="#FFB84C" />
-    <title><%= title %></title>
-    <link rel="icon" type="image/png" href="/images/foodbela.svg" />
-    <link rel="apple-touch-icon" href="/images/foodbela.svg" />
+    <% if (seoData.googleSiteVerification) { %>
+      <meta name="google-site-verification" content="<%= seoData.googleSiteVerification %>" />
+    <% } %>
+    <title><%= pageTitle %></title>
+    <% if (canonicalUrl) { %>
+      <link rel="canonical" href="<%= canonicalUrl %>" />
+    <% } %>
+    <meta property="og:site_name" content="<%= seoData.siteName || 'Foodbela' %>" />
+    <meta property="og:type" content="<%= seoData.ogType || 'website' %>" />
+    <meta property="og:title" content="<%= pageTitle %>" />
+    <meta property="og:description" content="<%= pageDescription %>" />
+    <% if (canonicalUrl) { %>
+      <meta property="og:url" content="<%= canonicalUrl %>" />
+    <% } %>
+    <meta property="og:image" content="<%= ogImageUrl %>" />
+    <meta property="og:locale" content="<%= seoData.locale || 'bn_BD' %>" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="<%= pageTitle %>" />
+    <meta name="twitter:description" content="<%= pageDescription %>" />
+    <meta name="twitter:image" content="<%= ogImageUrl %>" />
+    <link rel="icon" type="image/svg+xml" href="/images/Foodbela.svg" />
+    <link rel="apple-touch-icon" href="/images/Foodbela.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -23,12 +51,13 @@
       src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js"
       defer
     ></script>
+    <% if (seoData.structuredDataJson) { %>
+      <script type="application/ld+json"><%- seoData.structuredDataJson %></script>
+    <% } %>
   </head>
   <body>
     <div class="cursor-dot" id="cursor-dot" aria-hidden="true"></div>
     <div class="cursor-outline" id="cursor-outline" aria-hidden="true"></div>
     <a class="skip-link" href="#main">Skip to content</a>
     <%- include("nav") %>
-    <main id="main"></main>
-  </body>
-</html>
+    <main id="main">

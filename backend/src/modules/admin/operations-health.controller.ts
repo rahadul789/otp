@@ -2,6 +2,7 @@ import type { Response } from "express";
 import { z } from "zod";
 
 import type { AuthenticatedRequest } from "../../common/middleware/auth";
+import { clearRequestMonitorEvents } from "../../common/middleware/request-monitor";
 import { sendSuccess } from "../../common/utils/api-response";
 import { asyncHandler } from "../../common/utils/async-handler";
 import {
@@ -46,6 +47,17 @@ export const patchAdminOperationalAlertSnooze = asyncHandler(
     return sendSuccess(res, {
       message: data.updated ? "Operational alert snoozed" : "Operational alert not found",
       data,
+    });
+  },
+);
+
+export const postAdminOperationsRequestMonitorClear = asyncHandler(
+  async (_req: AuthenticatedRequest, res: Response) => {
+    clearRequestMonitorEvents();
+
+    return sendSuccess(res, {
+      message: "Request monitor cleared",
+      data: { cleared: true },
     });
   },
 );

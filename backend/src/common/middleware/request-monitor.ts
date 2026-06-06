@@ -12,6 +12,8 @@ type RequestMonitorApp =
 type RequestMonitorEvent = {
   app: RequestMonitorApp;
   durationMs: number;
+  errorCode?: string;
+  errorMessage?: string;
   method: string;
   path: string;
   route: string;
@@ -19,10 +21,23 @@ type RequestMonitorEvent = {
   timestamp: number;
 };
 
+function isAuthSessionStatus(statusCode: number) {
+  return statusCode === 401 || statusCode === 403;
+}
+
+function isActionableError(event: RequestMonitorEvent) {
+  return event.statusCode >= 400 && !isAuthSessionStatus(event.statusCode);
+}
+
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_EVENTS = 5000;
 const monitorStartedAt = new Date();
 const requestEvents: RequestMonitorEvent[] = [];
+
+export type RequestMonitorErrorDetails = {
+  code?: string;
+  message?: string;
+};
 
 function normalizePath(path: string) {
   return path
@@ -111,9 +126,16 @@ export function requestMonitorMiddleware(
     const finishedAt = process.hrtime.bigint();
     const durationMs = Number(finishedAt - startedAt) / 1_000_000;
     const route = getRoutePattern(req, originalPath);
+    const errorDetails =
+      res.locals.requestMonitorError &&
+      typeof res.locals.requestMonitorError === "object"
+        ? (res.locals.requestMonitorError as RequestMonitorErrorDetails)
+        : undefined;
     const event: RequestMonitorEvent = {
       app: inferAppFromPath(route),
       durationMs,
+      errorCode: errorDetails?.code,
+      errorMessage: errorDetails?.message,
       method: req.method,
       path: originalPath,
       route,
@@ -134,12 +156,22 @@ export function getRequestMonitorSnapshot() {
 
   const byApp = new Map<
     RequestMonitorApp,
-    { app: RequestMonitorApp; durations: number[]; errors: number; lastSeenAt: number; total: number }
+    {
+      actionableErrors: number;
+      app: RequestMonitorApp;
+      authSessionRequests: number;
+      durations: number[];
+      errors: number;
+      lastSeenAt: number;
+      total: number;
+    }
   >();
   const byEndpoint = new Map<
     string,
     {
       app: RequestMonitorApp;
+      actionableErrors: number;
+      authSessionRequests: number;
       durations: number[];
       errors: number;
       key: string;
@@ -149,6 +181,13 @@ export function getRequestMonitorSnapshot() {
       method: string;
       route: string;
       statusCounts: Record<string, number>;
+      errorSamples: Array<{
+        code: string;
+        message: string;
+        statusCode: number;
+        lastSeenAt: number;
+        count: number;
+      }>;
       total: number;
     }
   >();
@@ -158,6 +197,8 @@ export function getRequestMonitorSnapshot() {
       byApp.get(event.app) ??
       {
         app: event.app,
+        actionableErrors: 0,
+        authSessionRequests: 0,
         durations: [],
         errors: 0,
         lastSeenAt: 0,
@@ -166,6 +207,8 @@ export function getRequestMonitorSnapshot() {
     appRow.total += 1;
     appRow.durations.push(event.durationMs);
     appRow.errors += event.statusCode >= 400 ? 1 : 0;
+    appRow.actionableErrors += isActionableError(event) ? 1 : 0;
+    appRow.authSessionRequests += isAuthSessionStatus(event.statusCode) ? 1 : 0;
     appRow.lastSeenAt = Math.max(appRow.lastSeenAt, event.timestamp);
     byApp.set(event.app, appRow);
 
@@ -174,6 +217,8 @@ export function getRequestMonitorSnapshot() {
       byEndpoint.get(key) ??
       {
         app: event.app,
+        actionableErrors: 0,
+        authSessionRequests: 0,
         durations: [],
         errors: 0,
         key,
@@ -183,11 +228,14 @@ export function getRequestMonitorSnapshot() {
         method: event.method,
         route: event.route,
         statusCounts: {},
+        errorSamples: [],
         total: 0,
       };
     endpointRow.total += 1;
     endpointRow.durations.push(event.durationMs);
     endpointRow.errors += event.statusCode >= 400 ? 1 : 0;
+    endpointRow.actionableErrors += isActionableError(event) ? 1 : 0;
+    endpointRow.authSessionRequests += isAuthSessionStatus(event.statusCode) ? 1 : 0;
     const statusKey = String(event.statusCode);
     endpointRow.statusCounts[statusKey] =
       (endpointRow.statusCounts[statusKey] ?? 0) + 1;
@@ -196,11 +244,49 @@ export function getRequestMonitorSnapshot() {
       endpointRow.lastStatusCode = event.statusCode;
       endpointRow.lastSeenAt = event.timestamp;
     }
+    if (event.statusCode >= 400) {
+      const code = event.errorCode || defaultErrorCode(event.statusCode);
+      const message = event.errorMessage || defaultErrorMessage(event.statusCode);
+      const sample = endpointRow.errorSamples.find(
+        (item) => item.code === code && item.message === message,
+      );
+      if (sample) {
+        sample.count += 1;
+        sample.lastSeenAt = Math.max(sample.lastSeenAt, event.timestamp);
+      } else {
+        endpointRow.errorSamples.push({
+          code,
+          message,
+          statusCode: event.statusCode,
+          lastSeenAt: event.timestamp,
+          count: 1,
+        });
+      }
+    }
     byEndpoint.set(key, endpointRow);
   });
 
   const durations = requestEvents.map((event) => event.durationMs);
   const errors = requestEvents.filter((event) => event.statusCode >= 400).length;
+  const actionableErrors = requestEvents.filter(isActionableError).length;
+  const authSessionRequests = requestEvents.filter((event) =>
+    isAuthSessionStatus(event.statusCode),
+  ).length;
+  const serializeEvent = (event: RequestMonitorEvent) => ({
+    app: event.app,
+    durationMs: roundMs(event.durationMs),
+    method: event.method,
+    path: event.path,
+    route: event.route,
+    statusCode: event.statusCode,
+    errorCode:
+      event.errorCode ||
+      (event.statusCode >= 400 ? defaultErrorCode(event.statusCode) : ""),
+    errorMessage:
+      event.errorMessage ||
+      (event.statusCode >= 400 ? defaultErrorMessage(event.statusCode) : ""),
+    timestamp: new Date(event.timestamp).toISOString(),
+  });
 
   return {
     startedAt: monitorStartedAt.toISOString(),
@@ -211,6 +297,8 @@ export function getRequestMonitorSnapshot() {
     summary: {
       totalRequests: requestEvents.length,
       errorRequests: errors,
+      actionableErrorRequests: actionableErrors,
+      authSessionRequests,
       successRequests: requestEvents.length - errors,
       averageDurationMs: roundMs(average(durations)),
       p95DurationMs: roundMs(percentile(durations, 95)),
@@ -222,6 +310,8 @@ export function getRequestMonitorSnapshot() {
         app: row.app,
         totalRequests: row.total,
         errorRequests: row.errors,
+        actionableErrorRequests: row.actionableErrors,
+        authSessionRequests: row.authSessionRequests,
         averageDurationMs: roundMs(average(row.durations)),
         p95DurationMs: roundMs(percentile(row.durations, 95)),
         lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
@@ -236,10 +326,19 @@ export function getRequestMonitorSnapshot() {
         lastPath: row.lastPath,
         totalRequests: row.total,
         errorRequests: row.errors,
+        actionableErrorRequests: row.actionableErrors,
+        authSessionRequests: row.authSessionRequests,
         successRequests: row.total - row.errors,
         averageDurationMs: roundMs(average(row.durations)),
         p95DurationMs: roundMs(percentile(row.durations, 95)),
         statusCounts: row.statusCounts,
+        errorSamples: row.errorSamples
+          .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
+          .slice(0, 5)
+          .map((sample) => ({
+            ...sample,
+            lastSeenAt: new Date(sample.lastSeenAt).toISOString(),
+          })),
         lastStatusCode: row.lastStatusCode,
         lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
       }))
@@ -248,14 +347,33 @@ export function getRequestMonitorSnapshot() {
     recent: requestEvents
       .slice(-25)
       .reverse()
-      .map((event) => ({
-        app: event.app,
-        durationMs: roundMs(event.durationMs),
-        method: event.method,
-        path: event.path,
-        route: event.route,
-        statusCode: event.statusCode,
-        timestamp: new Date(event.timestamp).toISOString(),
-      })),
+      .map(serializeEvent),
+    recentErrors: requestEvents
+      .filter((event) => event.statusCode >= 400)
+      .slice(-25)
+      .reverse()
+      .map(serializeEvent),
   };
+}
+
+function defaultErrorCode(statusCode: number) {
+  if (statusCode === 401) return "UNAUTHORIZED";
+  if (statusCode === 403) return "FORBIDDEN";
+  if (statusCode === 404) return "NOT_FOUND";
+  if (statusCode === 429) return "RATE_LIMITED";
+  if (statusCode >= 500) return "SERVER_ERROR";
+  return "REQUEST_ERROR";
+}
+
+function defaultErrorMessage(statusCode: number) {
+  if (statusCode === 401) return "Authentication required or session expired.";
+  if (statusCode === 403) return "Authenticated user does not have access.";
+  if (statusCode === 404) return "No API route matched this request.";
+  if (statusCode === 429) return "Rate limit exceeded.";
+  if (statusCode >= 500) return "Server returned an internal error.";
+  return "Request failed.";
+}
+
+export function clearRequestMonitorEvents() {
+  requestEvents.splice(0, requestEvents.length);
 }

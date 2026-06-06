@@ -3,6 +3,12 @@ import { z } from "zod";
 
 dotenv.config();
 
+const optionalTrimmedString = z
+  .string()
+  .trim()
+  .optional()
+  .transform((value) => (value ? value : undefined));
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -89,6 +95,39 @@ const envSchema = z.object({
   SMS_API_URL: z.string().url().default("https://api.sms.net.bd/sendsms"),
   SMS_API_KEY: z.string().optional(),
   SMS_SENDER_ID: z.string().optional(),
+  ALERTS_ENABLED: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  ALERT_CHECK_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
+  ALERT_COOLDOWN_MINUTES: z.coerce.number().int().positive().default(30),
+  ALERT_RECIPIENT_EMAILS: z.string().optional(),
+  ALERT_FROM_EMAIL: z.string().email().optional(),
+  ALERT_FROM_NAME: z.string().default("Foodbela Monitor"),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  SMTP_SECURE: z
+    .string()
+    .default("true")
+    .transform((value) => value !== "false"),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  TELEGRAM_BOT_TOKEN: optionalTrimmedString,
+  TELEGRAM_CHAT_ID: optionalTrimmedString,
+  TELEGRAM_OPS_BOT_TOKEN: optionalTrimmedString,
+  TELEGRAM_OPS_CHAT_ID: optionalTrimmedString,
+  TELEGRAM_SYSTEM_BOT_TOKEN: optionalTrimmedString,
+  TELEGRAM_SYSTEM_CHAT_ID: optionalTrimmedString,
+  ALERT_BACKEND_HEALTH_URL: z.string().url().optional(),
+  ALERT_METRICS_URL: z.string().url().default("http://backend:5000/metrics"),
+  ALERT_SSL_HOSTS: z.string().default("foodbela.com,www.foodbela.com,api.foodbela.com,owner.foodbela.com,admin.foodbela.com"),
+  ALERT_SSL_EXPIRY_DAYS: z.coerce.number().int().positive().default(14),
+  ALERT_MEMORY_RSS_MB: z.coerce.number().int().positive().default(900),
+  ALERT_CPU_PERCENT: z.coerce.number().int().positive().default(85),
+  ALERT_5XX_THRESHOLD: z.coerce.number().int().min(1).default(5),
+  ALERT_SMS_LOW_BALANCE: z.coerce.number().min(0).default(100),
+  ALERT_REFUND_PENDING_MINUTES: z.coerce.number().int().positive().default(120),
+  ALERT_SUPPORT_SLA_OVERDUE_MINUTES: z.coerce.number().int().min(0).default(15),
 });
 
 const parsed = envSchema.safeParse(process.env);

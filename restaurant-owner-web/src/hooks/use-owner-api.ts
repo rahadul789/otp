@@ -53,12 +53,6 @@ type OtpTimingData = {
   resendAvailableInSeconds?: number
 }
 
-export type OwnerSignupResponse = MockOtpDebugData & OtpTimingData & {
-  ownerId: string
-  verificationSessionId: string
-  nextStatus: string
-}
-
 export type OtpVerifyResponse = {
   verified: boolean
   purpose: "owner_signup_verify" | "owner_phone_change" | "owner_payout_verify" | "password_reset"
@@ -92,16 +86,6 @@ export function useOwnerSigninMutation() {
   return useMutation({
     mutationFn: (payload: { phone: string; password: string }) =>
       api.post<OwnerSigninResponse>("/auth/owner/signin", payload, false),
-  })
-}
-
-export function useOwnerSignupMutation() {
-  return useMutation({
-    mutationFn: (payload: {
-      fullName: string
-      phone: string
-      password: string
-    }) => api.post<OwnerSignupResponse>("/auth/owner/signup", payload, false),
   })
 }
 

@@ -1040,18 +1040,11 @@ export function PayoutsPage() {
                   ) : null}
                   {payoutMethod.pendingAccountNumber ? (
                     <div className="mt-1 text-sm text-amber-700">
-                      Pending verification for {payoutMethod.pendingAccountNumber}
+                      Pending change for {payoutMethod.pendingAccountNumber}
                     </div>
                   ) : null}
                   <div className="mt-2">
-                    {payoutMethod.pendingAccountNumber ? (
-                      <Badge
-                        variant="outline"
-                        className="border-amber-200 bg-amber-50 text-amber-700"
-                      >
-                        Verification Pending
-                      </Badge>
-                    ) : payoutMethod.isVerified ? (
+                    {payoutMethod.isVerified ? (
                       <Badge className="bg-emerald-600 text-white hover:bg-emerald-600">
                         Verified
                       </Badge>

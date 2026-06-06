@@ -51,10 +51,7 @@ import {
   type OrderDateFilterValue,
 } from "@/components/orders/order-date-filter"
 import { useOrders } from "@/components/orders/orders-context"
-import {
-  liveOrderStatuses,
-  orderStatusLabels,
-} from "@/components/orders/types"
+import { liveOrderStatuses, orderStatusLabels } from "@/components/orders/types"
 import { usePayouts } from "@/components/payouts/payouts-context"
 import { usePromotions } from "@/components/promotions/promotions-context"
 import { useReviews } from "@/components/reviews/reviews-context"
@@ -100,7 +97,10 @@ function getTrendMeta(current: number, previous: number) {
   }
 }
 
-function isDateInInterval(value: string | null | undefined, interval: { start: Date; end: Date }) {
+function isDateInInterval(
+  value: string | null | undefined,
+  interval: { start: Date; end: Date }
+) {
   if (!value) return false
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return false
@@ -131,10 +131,7 @@ function getDashboardTrendKey(date: Date, useWeeklyBuckets: boolean) {
 function createDashboardTrendSeed(interval: { start: Date; end: Date }) {
   const days = differenceInCalendarDays(interval.end, interval.start) + 1
   const useWeeklyBuckets = days > 45
-  const trendByKey = new Map<
-    string,
-    DashboardTrendPoint
-  >()
+  const trendByKey = new Map<string, DashboardTrendPoint>()
 
   eachDayOfInterval(interval).forEach((day) => {
     const key = getDashboardTrendKey(day, useWeeklyBuckets)
@@ -186,14 +183,22 @@ function normalizeDashboardTrendSeries(
   interval: { start: Date; end: Date },
   rawSeries: DashboardTrendPoint[]
 ) {
-  const sourceInterval = rawSeries.length > 1
-    ? interval
-    : { start: subDays(startOfDay(interval.end), 6), end: startOfDay(interval.end) }
-  const { trendByKey, useWeeklyBuckets } = createDashboardTrendSeed(sourceInterval)
+  const sourceInterval =
+    rawSeries.length > 1
+      ? interval
+      : {
+          start: subDays(startOfDay(interval.end), 6),
+          end: startOfDay(interval.end),
+        }
+  const { trendByKey, useWeeklyBuckets } =
+    createDashboardTrendSeed(sourceInterval)
 
   rawSeries.forEach((entry) => {
     const key = entry.date
-      ? getDashboardTrendKey(new Date(`${entry.date}T00:00:00`), useWeeklyBuckets)
+      ? getDashboardTrendKey(
+          new Date(`${entry.date}T00:00:00`),
+          useWeeklyBuckets
+        )
       : entry.label
     const target = trendByKey.get(key) ?? {
       date: key,
@@ -213,13 +218,17 @@ function normalizeDashboardTrendSeries(
     target.orders += entry.orders ?? 0
     target.revenue += entry.revenue ?? 0
     target.placedValue = (target.placedValue ?? 0) + (entry.placedValue ?? 0)
-    target.deliveredValue = (target.deliveredValue ?? 0) + (entry.deliveredValue ?? entry.revenue ?? 0)
+    target.deliveredValue =
+      (target.deliveredValue ?? 0) +
+      (entry.deliveredValue ?? entry.revenue ?? 0)
     target.netEarnings = (target.netEarnings ?? 0) + (entry.netEarnings ?? 0)
     target.activeOrders = (target.activeOrders ?? 0) + (entry.activeOrders ?? 0)
     target.failedOrders = (target.failedOrders ?? 0) + (entry.failedOrders ?? 0)
     target.failedValue = (target.failedValue ?? 0) + (entry.failedValue ?? 0)
-    target.cancelledOrders = (target.cancelledOrders ?? 0) + (entry.cancelledOrders ?? 0)
-    target.rejectedOrders = (target.rejectedOrders ?? 0) + (entry.rejectedOrders ?? 0)
+    target.cancelledOrders =
+      (target.cancelledOrders ?? 0) + (entry.cancelledOrders ?? 0)
+    target.rejectedOrders =
+      (target.rejectedOrders ?? 0) + (entry.rejectedOrders ?? 0)
     trendByKey.set(key, target)
   })
 
@@ -229,6 +238,13 @@ function normalizeDashboardTrendSeries(
 function trendAxisMax(dataMax: number) {
   if (!Number.isFinite(dataMax) || dataMax <= 0) return 1000
   return Math.max(1000, Math.ceil(dataMax / 250) * 250)
+}
+
+function kpiSparklineAxisMax(dataMax: number) {
+  if (!Number.isFinite(dataMax) || dataMax <= 0) return 1
+  if (dataMax <= 10) return Math.max(1, Math.ceil(dataMax))
+  if (dataMax <= 100) return Math.ceil(dataMax / 10) * 10
+  return Math.ceil(dataMax / 100) * 100
 }
 
 function buildKpiSparklineData(
@@ -250,7 +266,10 @@ function buildKpiSparklineData(
       : [
           { label: "Start", value: 0 },
           { label: "Mid", value: 0 },
-          { label: "Near now", value: Math.max(1, Math.round(fallbackValue * 0.45)) },
+          {
+            label: "Near now",
+            value: Math.max(1, Math.round(fallbackValue * 0.45)),
+          },
           { label: "Now", value: fallbackValue },
         ]
     const lastIndex = fallbackRows.length - 1
@@ -267,7 +286,7 @@ function buildKpiSparklineData(
 function profileSectionRoute(sectionId: string) {
   if (sectionId === "payoutSetup") return "/payouts"
   if (sectionId === "openingHours") return "/hours"
-  return "/store-settings"
+  return "/settings"
 }
 
 function DashboardSkeleton() {
@@ -341,7 +360,9 @@ export function DashboardPage() {
   const ownerAccount = useAppStore((state) => state.ownerAccount)
   const queryClient = useQueryClient()
 
-  const [transitioningOrderId, setTransitioningOrderId] = React.useState<string | null>(null)
+  const [transitioningOrderId, setTransitioningOrderId] = React.useState<
+    string | null
+  >(null)
   const [dateFilter, setDateFilter] = React.useState<OrderDateFilterValue>({
     ...defaultOrderDateFilter,
     preset: "today",
@@ -395,7 +416,10 @@ export function DashboardPage() {
         (order) =>
           order.currentStatus === "Delivered" &&
           order.timestamps.deliveredAt &&
-          isWithinInterval(new Date(order.timestamps.deliveredAt), currentInterval)
+          isWithinInterval(
+            new Date(order.timestamps.deliveredAt),
+            currentInterval
+          )
       ),
     [currentInterval, orders]
   )
@@ -406,7 +430,10 @@ export function DashboardPage() {
         (order) =>
           order.currentStatus === "Delivered" &&
           order.timestamps.deliveredAt &&
-          isWithinInterval(new Date(order.timestamps.deliveredAt), previousInterval)
+          isWithinInterval(
+            new Date(order.timestamps.deliveredAt),
+            previousInterval
+          )
       ),
     [orders, previousInterval]
   )
@@ -455,7 +482,10 @@ export function DashboardPage() {
           getDashboardTrendKey(placedAt, useWeeklyBuckets)
         )
         if (trendEntry) {
-          if (order.currentStatus !== "Cancelled" && order.currentStatus !== "Rejected") {
+          if (
+            order.currentStatus !== "Cancelled" &&
+            order.currentStatus !== "Rejected"
+          ) {
             trendEntry.orders += 1
             trendEntry.placedValue = (trendEntry.placedValue ?? 0) + order.total
           }
@@ -488,9 +518,12 @@ export function DashboardPage() {
             getDashboardTrendKey(cancelledAt, useWeeklyBuckets)
           )
           if (failedTrendEntry) {
-            failedTrendEntry.failedOrders = (failedTrendEntry.failedOrders ?? 0) + 1
-            failedTrendEntry.cancelledOrders = (failedTrendEntry.cancelledOrders ?? 0) + 1
-            failedTrendEntry.failedValue = (failedTrendEntry.failedValue ?? 0) + order.total
+            failedTrendEntry.failedOrders =
+              (failedTrendEntry.failedOrders ?? 0) + 1
+            failedTrendEntry.cancelledOrders =
+              (failedTrendEntry.cancelledOrders ?? 0) + 1
+            failedTrendEntry.failedValue =
+              (failedTrendEntry.failedValue ?? 0) + order.total
           }
         }
       }
@@ -502,9 +535,12 @@ export function DashboardPage() {
             getDashboardTrendKey(rejectedAt, useWeeklyBuckets)
           )
           if (failedTrendEntry) {
-            failedTrendEntry.failedOrders = (failedTrendEntry.failedOrders ?? 0) + 1
-            failedTrendEntry.rejectedOrders = (failedTrendEntry.rejectedOrders ?? 0) + 1
-            failedTrendEntry.failedValue = (failedTrendEntry.failedValue ?? 0) + order.total
+            failedTrendEntry.failedOrders =
+              (failedTrendEntry.failedOrders ?? 0) + 1
+            failedTrendEntry.rejectedOrders =
+              (failedTrendEntry.rejectedOrders ?? 0) + 1
+            failedTrendEntry.failedValue =
+              (failedTrendEntry.failedValue ?? 0) + order.total
           }
         }
       }
@@ -515,19 +551,33 @@ export function DashboardPage() {
     })
 
     return {
-      orderTrend: Array.from(trendByKey.values()).map(({ label, orders, revenue, placedValue, deliveredValue, netEarnings, activeOrders, failedOrders, failedValue, cancelledOrders, rejectedOrders }) => ({
-        label,
-        orders,
-        revenue,
-        placedValue,
-        deliveredValue,
-        netEarnings,
-        activeOrders,
-        failedOrders,
-        failedValue,
-        cancelledOrders,
-        rejectedOrders,
-      })),
+      orderTrend: Array.from(trendByKey.values()).map(
+        ({
+          label,
+          orders,
+          revenue,
+          placedValue,
+          deliveredValue,
+          netEarnings,
+          activeOrders,
+          failedOrders,
+          failedValue,
+          cancelledOrders,
+          rejectedOrders,
+        }) => ({
+          label,
+          orders,
+          revenue,
+          placedValue,
+          deliveredValue,
+          netEarnings,
+          activeOrders,
+          failedOrders,
+          failedValue,
+          cancelledOrders,
+          rejectedOrders,
+        })
+      ),
       todayHourCounts,
     }
   }, [currentInterval, orders])
@@ -541,30 +591,32 @@ export function DashboardPage() {
     0
   )
   const currentNet = payoutTransactions
-    .filter(
-      (transaction) => {
-        if (transaction.type !== "earning") return false
-        const relatedOrder = orderById.get(transaction.orderId)
-        return Boolean(
-          relatedOrder?.currentStatus === "Delivered" &&
-            relatedOrder.timestamps.deliveredAt &&
-            isWithinInterval(new Date(relatedOrder.timestamps.deliveredAt), currentInterval)
+    .filter((transaction) => {
+      if (transaction.type !== "earning") return false
+      const relatedOrder = orderById.get(transaction.orderId)
+      return Boolean(
+        relatedOrder?.currentStatus === "Delivered" &&
+        relatedOrder.timestamps.deliveredAt &&
+        isWithinInterval(
+          new Date(relatedOrder.timestamps.deliveredAt),
+          currentInterval
         )
-      }
-    )
+      )
+    })
     .reduce((sum, transaction) => sum + transaction.netAmount, 0)
   const previousNet = payoutTransactions
-    .filter(
-      (transaction) => {
-        if (transaction.type !== "earning") return false
-        const relatedOrder = orderById.get(transaction.orderId)
-        return Boolean(
-          relatedOrder?.currentStatus === "Delivered" &&
-            relatedOrder.timestamps.deliveredAt &&
-            isWithinInterval(new Date(relatedOrder.timestamps.deliveredAt), previousInterval)
+    .filter((transaction) => {
+      if (transaction.type !== "earning") return false
+      const relatedOrder = orderById.get(transaction.orderId)
+      return Boolean(
+        relatedOrder?.currentStatus === "Delivered" &&
+        relatedOrder.timestamps.deliveredAt &&
+        isWithinInterval(
+          new Date(relatedOrder.timestamps.deliveredAt),
+          previousInterval
         )
-      }
-    )
+      )
+    })
     .reduce((sum, transaction) => sum + transaction.netAmount, 0)
   const currentCustomers = currentOrderMetrics.customerPhones.size
   const currentPending = currentOrderMetrics.pendingOrders
@@ -574,20 +626,14 @@ export function DashboardPage() {
         order.currentStatus !== "Cancelled" &&
         order.currentStatus !== "Rejected"
     )
-    .reduce(
-      (sum, order) => sum + order.total,
-      0
-    )
+    .reduce((sum, order) => sum + order.total, 0)
   const previousPlacedValue = previousOrders
     .filter(
       (order) =>
         order.currentStatus !== "Cancelled" &&
         order.currentStatus !== "Rejected"
     )
-    .reduce(
-      (sum, order) => sum + order.total,
-      0
-    )
+    .reduce((sum, order) => sum + order.total, 0)
   const currentCancelledOrders = orders.filter(
     (order) =>
       order.currentStatus === "Cancelled" &&
@@ -616,7 +662,8 @@ export function DashboardPage() {
     (sum, order) => sum + order.total,
     0
   )
-  const currentFailedOrders = currentCancelledOrders.length + currentRejectedOrders.length
+  const currentFailedOrders =
+    currentCancelledOrders.length + currentRejectedOrders.length
   const previousFailedOrders =
     previousCancelledOrders.length + previousRejectedOrders.length
   const currentFailedValue = currentCancelledValue + currentRejectedValue
@@ -667,14 +714,8 @@ export function DashboardPage() {
       key: "cancelled",
       label: "Cancelled / rejected",
       value: `${currentFailedOrders}`,
-      trend: getTrendLabel(
-        currentFailedOrders,
-        previousFailedOrders
-      ),
-      trendTone: getTrendMeta(
-        currentFailedOrders,
-        previousFailedOrders
-      ).tone,
+      trend: getTrendLabel(currentFailedOrders, previousFailedOrders),
+      trendTone: getTrendMeta(currentFailedOrders, previousFailedOrders).tone,
       icon: Ban,
       helper: `${formatCompactMoney(currentFailedValue)} failed order value`,
       chartKey: "failedOrders",
@@ -704,7 +745,9 @@ export function DashboardPage() {
         {
           key: "delivered",
           label: "Delivered sales",
-          value: formatCompactMoney(dashboardSummary.metrics.deliveredOrderValue),
+          value: formatCompactMoney(
+            dashboardSummary.metrics.deliveredOrderValue
+          ),
           trend: getTrendLabel(
             dashboardSummary.metrics.deliveredOrderValue,
             dashboardSummary.metrics.previousDeliveredOrderValue
@@ -867,7 +910,9 @@ export function DashboardPage() {
   )
 
   const voucherSnapshot = React.useMemo(() => {
-    const active = vouchers.filter((voucher) => voucher.status === "Active").length
+    const active = vouchers.filter(
+      (voucher) => voucher.status === "Active"
+    ).length
     const totalUsage = vouchers.reduce(
       (sum, voucher) => sum + voucher.analytics.totalUses,
       0
@@ -889,10 +934,15 @@ export function DashboardPage() {
       .filter((payout) => payout.status === "completed")
       .slice()
       .sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       )[0]
 
-    return { available: earningsSummary.available, pending: earningsSummary.pending, lastPayout }
+    return {
+      available: earningsSummary.available,
+      pending: earningsSummary.pending,
+      lastPayout,
+    }
   }, [earningsSummary.available, earningsSummary.pending, payouts])
 
   const statusSummary = React.useMemo(
@@ -921,9 +971,15 @@ export function DashboardPage() {
         onSuccess: (updated) => {
           patchOwnerOrderQueryCaches(queryClient, updated)
           queryClient.invalidateQueries({ queryKey: ["owner", "orders"] })
-          queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
-          queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
-          queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "transactions"] })
+          queryClient.invalidateQueries({
+            queryKey: ["owner", "dashboard", "summary"],
+          })
+          queryClient.invalidateQueries({
+            queryKey: ["owner", "payouts", "summary"],
+          })
+          queryClient.invalidateQueries({
+            queryKey: ["owner", "payouts", "transactions"],
+          })
           toast.success("Order accepted", {
             description: "The order moved to Accepted and synced with backend.",
           })
@@ -985,63 +1041,70 @@ export function DashboardPage() {
             kpi.chartKey,
             kpi.chartFallbackValue
           )
+          const sparklineMax = Math.max(
+            ...sparklineData.map((entry) => entry.value),
+            0
+          )
 
           return (
-          <Card key={kpi.key} className="rounded-2xl shadow-sm">
-            <CardHeader className="flex flex-row items-start justify-between space-y-0">
-              <div className="space-y-1">
-                <div className="text-sm font-medium text-muted-foreground">
-                  {kpi.label}
+            <Card key={kpi.key} className="rounded-2xl shadow-sm">
+              <CardHeader className="flex flex-row items-start justify-between space-y-0">
+                <div className="space-y-1">
+                  <div className="text-sm font-medium text-muted-foreground">
+                    {kpi.label}
+                  </div>
+                  <div className="text-3xl font-semibold">{kpi.value}</div>
                 </div>
-                <div className="text-3xl font-semibold">{kpi.value}</div>
-              </div>
-              <div className="inline-flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <kpi.icon className="size-5" />
-              </div>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <div
-                className={cn(
-                  "text-sm font-medium",
-                  kpi.trendTone === "positive" && "text-emerald-600",
-                  kpi.trendTone === "negative" && "text-rose-600",
-                  kpi.trendTone === "flat" && "text-muted-foreground"
-                )}
-              >
-                {kpi.trend}
-              </div>
-              <div className="mt-1 min-h-8 text-xs text-muted-foreground">
-                {kpi.helper}
-              </div>
-              <div className="mt-3 h-10">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={sparklineData}>
-                    <YAxis hide domain={[0, trendAxisMax]} />
-                    <Area
-                      type="monotone"
-                      dataKey="value"
-                      stroke="#0f766e"
-                      fill="#ccfbf1"
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={false}
-                      isAnimationActive={false}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-              <Button
-                asChild
-                variant="ghost"
-                className="-ml-3 mt-2 h-auto justify-start rounded-2xl px-3 text-sm text-muted-foreground hover:text-foreground"
-              >
-                <Link to={dashboardKpiLinks[kpi.key] ?? "/"}>
-                  View details
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
+                <div className="inline-flex size-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                  <kpi.icon className="size-5" />
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div
+                  className={cn(
+                    "text-sm font-medium",
+                    kpi.trendTone === "positive" && "text-emerald-600",
+                    kpi.trendTone === "negative" && "text-rose-600",
+                    kpi.trendTone === "flat" && "text-muted-foreground"
+                  )}
+                >
+                  {kpi.trend}
+                </div>
+                <div className="mt-1 min-h-8 text-xs text-muted-foreground">
+                  {kpi.helper}
+                </div>
+                <div className="mt-3 h-10">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={sparklineData}>
+                      <YAxis
+                        hide
+                        domain={[0, kpiSparklineAxisMax(sparklineMax)]}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="value"
+                        stroke="#0f766e"
+                        fill="#ccfbf1"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={false}
+                        isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+                <Button
+                  asChild
+                  variant="ghost"
+                  className="mt-2 -ml-3 h-auto justify-start rounded-2xl px-3 text-sm text-muted-foreground hover:text-foreground"
+                >
+                  <Link to={dashboardKpiLinks[kpi.key] ?? "/"}>
+                    View details
+                    <ArrowRight className="size-4" />
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
           )
         })}
       </div>
@@ -1093,8 +1156,12 @@ export function DashboardPage() {
             <div className="rounded-xl border bg-muted/20 p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm text-muted-foreground">Restaurant</div>
-                  <div className="mt-1 text-xl font-semibold">{statusSummary.title}</div>
+                  <div className="text-sm text-muted-foreground">
+                    Restaurant
+                  </div>
+                  <div className="mt-1 text-xl font-semibold">
+                    {statusSummary.title}
+                  </div>
                   <div className="text-sm text-muted-foreground">
                     {statusSummary.subtitle}
                   </div>
@@ -1106,14 +1173,18 @@ export function DashboardPage() {
                       : "bg-slate-900 text-white hover:bg-slate-900"
                   }
                 >
-                  {dashboardSummary?.restaurant.isOnline ?? isOnline ? "Live" : "Offline"}
+                  {(dashboardSummary?.restaurant.isOnline ?? isOnline)
+                    ? "Live"
+                    : "Offline"}
                 </Badge>
               </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-3">
               <div className="rounded-xl border bg-muted/20 p-3">
-                <div className="text-xs text-muted-foreground">Active Orders</div>
+                <div className="text-xs text-muted-foreground">
+                  Active Orders
+                </div>
                 <div className="mt-1 text-2xl font-semibold">
                   {dashboardSummary?.metrics.pendingOrders ?? liveOrders.length}
                 </div>
@@ -1121,17 +1192,29 @@ export function DashboardPage() {
               <div className="rounded-xl border bg-muted/20 p-3">
                 <div className="text-xs text-muted-foreground">Customers</div>
                 <div className="mt-1 text-2xl font-semibold">
-                  {dashboardSummary?.metrics.uniqueCustomers ?? currentCustomers}
+                  {dashboardSummary?.metrics.uniqueCustomers ??
+                    currentCustomers}
                 </div>
               </div>
               <div className="rounded-xl border bg-muted/20 p-3">
                 <div className="text-xs text-muted-foreground">Next Payout</div>
                 <div className="mt-1 text-lg font-semibold">
                   {dashboardSummary?.metrics.nextEstimatedPayoutAt
-                    ? format(new Date(dashboardSummary.metrics.nextEstimatedPayoutAt), "dd MMM")
+                    ? format(
+                        new Date(
+                          dashboardSummary.metrics.nextEstimatedPayoutAt
+                        ),
+                        "dd MMM"
+                      )
                     : payoutSummary.lastPayout
-                    ? format(subDays(new Date(payoutSummary.lastPayout.createdAt), -7), "dd MMM")
-                    : "--"}
+                      ? format(
+                          subDays(
+                            new Date(payoutSummary.lastPayout.createdAt),
+                            -7
+                          ),
+                          "dd MMM"
+                        )
+                      : "--"}
                 </div>
               </div>
             </div>
@@ -1176,15 +1259,22 @@ export function DashboardPage() {
                 Complete your profile gradually to improve trust and visibility.
               </div>
             </div>
-            <Badge variant="outline">{profileCompletion.percentage}% complete</Badge>
+            <Badge variant="outline">
+              {profileCompletion.percentage}% complete
+            </Badge>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="space-y-2">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Progress</span>
-                <span className="font-medium">{profileCompletion.completedWeight}/100</span>
+                <span className="font-medium">
+                  {profileCompletion.completedWeight}/100
+                </span>
               </div>
-              <Progress value={profileCompletion.percentage} className="h-2.5" />
+              <Progress
+                value={profileCompletion.percentage}
+                className="h-2.5"
+              />
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1216,24 +1306,28 @@ export function DashboardPage() {
                   Recommended next improvements
                 </div>
                 <div className="mt-3 space-y-2">
-                  {profileCompletion.incompleteSections.slice(0, 3).map((section) => (
-                    <div
-                      key={section.id}
-                      className="flex items-start justify-between gap-3 rounded-lg bg-white/70 px-3 py-2"
-                    >
-                      <div>
-                        <div className="text-sm font-medium text-amber-950">
-                          {section.hint}
+                  {profileCompletion.incompleteSections
+                    .slice(0, 3)
+                    .map((section) => (
+                      <div
+                        key={section.id}
+                        className="flex items-start justify-between gap-3 rounded-lg bg-white/70 px-3 py-2"
+                      >
+                        <div>
+                          <div className="text-sm font-medium text-amber-950">
+                            {section.hint}
+                          </div>
+                          <div className="text-xs text-amber-800/80">
+                            {section.benefit}
+                          </div>
                         </div>
-                        <div className="text-xs text-amber-800/80">
-                          {section.benefit}
-                        </div>
+                        <Button size="sm" variant="outline" asChild>
+                          <Link to={profileSectionRoute(section.id)}>
+                            Update
+                          </Link>
+                        </Button>
                       </div>
-                      <Button size="sm" variant="outline" asChild>
-                        <Link to={profileSectionRoute(section.id)}>Update</Link>
-                      </Button>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               </div>
             ) : null}
@@ -1255,50 +1349,52 @@ export function DashboardPage() {
           <CardContent className="space-y-3">
             {liveOrdersToRender.length ? (
               liveOrdersToRender.map((order) => (
-              <div
-                key={order.id}
-                className="flex flex-col gap-3 rounded-xl border bg-muted/20 p-4 lg:flex-row lg:items-center lg:justify-between"
-              >
-                <div className="grid gap-2 sm:grid-cols-4 sm:items-center lg:flex-1">
-                  <div>
-                    <div className="font-medium">{order.orderNumber}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {format(new Date(order.placedAt), "hh:mm a")}
+                <div
+                  key={order.id}
+                  className="flex flex-col gap-3 rounded-xl border bg-muted/20 p-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="grid gap-2 sm:grid-cols-4 sm:items-center lg:flex-1">
+                    <div>
+                      <div className="font-medium">{order.orderNumber}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {format(new Date(order.placedAt), "hh:mm a")}
+                      </div>
                     </div>
+                    <div className="font-medium">{order.customerName}</div>
+                    <div>{formatCompactMoney(order.value)}</div>
+                    <Badge variant="outline">
+                      {orderStatusLabels[
+                        order.status as keyof typeof orderStatusLabels
+                      ] ?? order.status}
+                    </Badge>
                   </div>
-                  <div className="font-medium">{order.customerName}</div>
-                  <div>{formatCompactMoney(order.value)}</div>
-                  <Badge variant="outline">
-                    {orderStatusLabels[order.status as keyof typeof orderStatusLabels] ?? order.status}
-                  </Badge>
-                </div>
-                <div className="flex gap-2">
-                  {order.status === "New" ? (
-                    <Button
-                      size="sm"
-                      onClick={() => handleAcceptOrder(order.id)}
-                      disabled={
-                        orderTransitionMutation.isPending &&
+                  <div className="flex gap-2">
+                    {order.status === "New" ? (
+                      <Button
+                        size="sm"
+                        onClick={() => handleAcceptOrder(order.id)}
+                        disabled={
+                          orderTransitionMutation.isPending &&
+                          transitioningOrderId === order.id
+                        }
+                      >
+                        {orderTransitionMutation.isPending &&
+                        transitioningOrderId === order.id ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="size-4" />
+                        )}
+                        {orderTransitionMutation.isPending &&
                         transitioningOrderId === order.id
-                      }
-                    >
-                      {orderTransitionMutation.isPending &&
-                      transitioningOrderId === order.id ? (
-                        <LoaderCircle className="size-4 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="size-4" />
-                      )}
-                      {orderTransitionMutation.isPending &&
-                      transitioningOrderId === order.id
-                        ? "Accepting..."
-                        : "Accept"}
+                          ? "Accepting..."
+                          : "Accept"}
+                      </Button>
+                    ) : null}
+                    <Button size="sm" variant="outline" asChild>
+                      <Link to="/orders">View</Link>
                     </Button>
-                  ) : null}
-                  <Button size="sm" variant="outline" asChild>
-                    <Link to="/orders">View</Link>
-                  </Button>
+                  </div>
                 </div>
-              </div>
               ))
             ) : (
               <DashboardEmptyState
@@ -1374,20 +1470,20 @@ export function DashboardPage() {
           <CardContent className="space-y-3">
             {topItemsToRender.length ? (
               topItemsToRender.map((item) => (
-              <div
-                key={item.id || item.name}
-                className="flex items-center justify-between rounded-xl border bg-muted/20 px-3 py-2"
-              >
-                <div>
-                  <div className="font-medium">{item.name}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {item.quantity} orders
+                <div
+                  key={item.id || item.name}
+                  className="flex items-center justify-between rounded-xl border bg-muted/20 px-3 py-2"
+                >
+                  <div>
+                    <div className="font-medium">{item.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {item.quantity} orders
+                    </div>
+                  </div>
+                  <div className="text-sm font-semibold">
+                    {formatCompactMoney(item.revenue)}
                   </div>
                 </div>
-                <div className="text-sm font-semibold">
-                  {formatCompactMoney(item.revenue)}
-                </div>
-              </div>
               ))
             ) : (
               <DashboardEmptyState
@@ -1410,18 +1506,22 @@ export function DashboardPage() {
           <CardContent className="space-y-3">
             {recentReviewsToRender.length ? (
               recentReviewsToRender.map((review) => (
-              <div key={review.id} className="rounded-xl border bg-muted/20 p-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium">{review.customerName}</div>
-                  <div className="inline-flex items-center gap-1 text-amber-600">
-                    <Star className="size-4 fill-current" />
-                    {review.rating}
+                <div
+                  key={review.id}
+                  className="rounded-xl border bg-muted/20 p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{review.customerName}</div>
+                    <div className="inline-flex items-center gap-1 text-amber-600">
+                      <Star className="size-4 fill-current" />
+                      {review.rating}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    {review.comment ||
+                      "Customer left a rating without comment."}
                   </div>
                 </div>
-                <div className="mt-2 text-sm text-muted-foreground">
-                  {review.comment || "Customer left a rating without comment."}
-                </div>
-              </div>
               ))
             ) : (
               <DashboardEmptyState
@@ -1436,7 +1536,9 @@ export function DashboardPage() {
 
         <Card className="rounded-2xl shadow-sm">
           <CardHeader>
-            <CardTitle className="text-base">Payout & Promotion Snapshot</CardTitle>
+            <CardTitle className="text-base">
+              Payout & Promotion Snapshot
+            </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
@@ -1459,10 +1561,14 @@ export function DashboardPage() {
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
                 <div>
                   <div className="text-xs text-muted-foreground">Active</div>
-                  <div className="text-lg font-semibold">{voucherSnapshot.active}</div>
+                  <div className="text-lg font-semibold">
+                    {voucherSnapshot.active}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-xs text-muted-foreground">Total Usage</div>
+                  <div className="text-xs text-muted-foreground">
+                    Total Usage
+                  </div>
                   <div className="text-lg font-semibold">
                     {voucherSnapshot.totalUsage}
                   </div>
@@ -1485,7 +1591,10 @@ export function DashboardPage() {
               </div>
               <div className="text-sm text-muted-foreground">
                 {payoutSummary.lastPayout
-                  ? format(new Date(payoutSummary.lastPayout.createdAt), "dd MMM yyyy")
+                  ? format(
+                      new Date(payoutSummary.lastPayout.createdAt),
+                      "dd MMM yyyy"
+                    )
                   : "No completed payout yet"}
               </div>
             </div>

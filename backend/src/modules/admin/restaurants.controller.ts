@@ -17,6 +17,7 @@ import {
   restoreAdminRestaurantReview,
   updateAdminRestaurantCommission,
   updateAdminRestaurantDeliveryPricing,
+  updateAdminRestaurantEnforcement,
   updateAdminRestaurantMerchandising,
   updateAdminRestaurantPayoutStatus,
   updateAdminRestaurantVisibility,
@@ -74,6 +75,21 @@ const listRestaurantOrdersQuerySchema = detailsQuerySchema.extend({
 
 const visibilitySchema = z.object({
   isVisible: z.boolean(),
+});
+
+const enforcementSchema = z.object({
+  status: z.enum([
+    "active",
+    "under_review",
+    "quality_hold",
+    "temporarily_suspended",
+    "permanently_disabled",
+  ]),
+  reason: z.string().trim().max(160).optional(),
+  ownerNote: z.string().trim().max(500).optional(),
+  customerMessage: z.string().trim().max(240).optional(),
+  internalNote: z.string().trim().max(1000).optional(),
+  expiresAt: z.string().datetime().nullable().optional(),
 });
 
 const merchandisingSchema = z.object({
@@ -216,6 +232,22 @@ export const patchAdminRestaurantVisibility = asyncHandler(
       message: payload.isVisible
         ? "Restaurant is visible to customers"
         : "Restaurant is hidden from customers",
+      data,
+    });
+  },
+);
+
+export const patchAdminRestaurantEnforcement = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const payload = enforcementSchema.parse(req.body);
+    const data = await updateAdminRestaurantEnforcement({
+      restaurantId: getStringParam(req.params.restaurantId),
+      adminId: getAdminId(req),
+      ...payload,
+    });
+
+    return sendSuccess(res, {
+      message: "Restaurant enforcement updated",
       data,
     });
   },

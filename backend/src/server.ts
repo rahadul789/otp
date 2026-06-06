@@ -15,6 +15,10 @@ import {
   startPlatformContentScheduler,
   stopPlatformContentScheduler,
 } from "./modules/public/content-scheduler"
+import {
+  startAppAlertScheduler,
+  stopAppAlertScheduler,
+} from "./modules/monitoring/app-alert-scheduler"
 
 async function bootstrap() {
   await connectDatabase()
@@ -25,6 +29,7 @@ async function bootstrap() {
   const socketServer = createSocketServer(server)
   startPlatformContentScheduler()
   startAdminNotificationScheduler()
+  startAppAlertScheduler()
 
   server.listen(env.PORT, () => {
     logger.info(`Backend running on port ${env.PORT}`)
@@ -38,6 +43,7 @@ async function bootstrap() {
     logger.info({ signal }, "Backend shutdown started")
     stopPlatformContentScheduler()
     stopAdminNotificationScheduler()
+    stopAppAlertScheduler()
 
     const forceExitTimer = setTimeout(() => {
       logger.error("Backend shutdown timed out")

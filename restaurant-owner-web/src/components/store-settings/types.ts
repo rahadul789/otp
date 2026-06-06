@@ -35,6 +35,16 @@ export type StoreSettings = {
   paymentSettings: StorePaymentSettings
   notifications: StoreNotificationSettings
   offlineReason: string
+  enforcement: {
+    status: string
+    effectiveStatus: string
+    isRestricted: boolean
+    reason: string
+    ownerNote: string
+    customerMessage: string
+    startsAt: string | null
+    expiresAt: string | null
+  }
   updatedAt: string
 }
 
@@ -69,5 +79,15 @@ export const initialStoreSettings: StoreSettings = {
     cancellation: true,
   },
   offlineReason: "",
+  enforcement: {
+    status: "active",
+    effectiveStatus: "active",
+    isRestricted: false,
+    reason: "",
+    ownerNote: "",
+    customerMessage: "",
+    startsAt: null,
+    expiresAt: null,
+  },
   updatedAt: "2026-04-11T10:00:00.000Z",
 }

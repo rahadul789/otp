@@ -9,6 +9,7 @@ const pageRoutes = require("./routes/page.routes");
 const leadRoutes = require("./routes/lead.routes");
 const analyticsRoutes = require("./routes/analytics.routes");
 const { site } = require("./data/site");
+const { buildPageSeo } = require("./services/seo.service");
 const { getWebsiteSettings } = require("./services/website-api.service");
 
 const app = express();
@@ -32,6 +33,7 @@ app.use(
         imgSrc: [
           "'self'",
           "data:",
+          "https://res.cloudinary.com",
           "https://cdn-icons-png.flaticon.com",
           "https://images.unsplash.com",
           "https://api.qrserver.com",
@@ -69,9 +71,16 @@ app.use("/leads", leadRoutes);
 app.use("/analytics", analyticsRoutes);
 
 app.use((req, res) => {
-  res.status(404).render("pages/not-found", {
-    title: "Page not found",
+  const seo = buildPageSeo(req, res.locals.websiteSettings, "home", {
+    title: "Page not found | Foodbela",
     description: "The page you are looking for could not be found.",
+    canonicalPath: req.path,
+    noindex: true,
+  });
+  res.status(404).render("pages/not-found", {
+    title: seo.title,
+    description: seo.description,
+    seo,
   });
 });
 
@@ -90,9 +99,17 @@ app.use((err, req, res, next) => {
     });
   }
 
-  res.status(err.statusCode || 500).render("pages/error", {
-    title: "Something went wrong",
+  const seo = buildPageSeo(req, res.locals.websiteSettings, "home", {
+    title: "Something went wrong | Foodbela",
     description: "Foodbela could not complete this request.",
+    canonicalPath: req.path,
+    noindex: true,
+  });
+
+  res.status(err.statusCode || 500).render("pages/error", {
+    title: seo.title,
+    description: seo.description,
+    seo,
   });
 });
 

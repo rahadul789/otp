@@ -62,7 +62,7 @@ export function AppSidebar() {
               size="lg"
               tooltip="Store Settings"
               isActive={location.pathname === "/settings"}
-              className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+              className="relative data-[active=true]:bg-primary/10 data-[active=true]:text-primary data-[active=true]:shadow-[inset_3px_0_0_currentColor] data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             >
               <NavLink to="/settings">
                 <div className="flex aspect-square size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground">
@@ -140,6 +140,7 @@ export function AppSidebar() {
                           asChild
                           tooltip={item.title}
                           isActive={location.pathname === item.to}
+                          className="relative data-[active=true]:bg-primary/10 data-[active=true]:font-medium data-[active=true]:text-primary data-[active=true]:shadow-[inset_3px_0_0_currentColor] data-[active=true]:hover:bg-primary/15 data-[active=true]:hover:text-primary [&[data-active=true]_svg]:text-primary"
                         >
                           <NavLink to={item.to} end={item.to === "/"}>
                             <item.icon className="size-4" />
