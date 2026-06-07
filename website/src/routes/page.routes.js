@@ -98,7 +98,7 @@ router.get("/areas", (req, res) => {
 router.get("/areas/:slug/restaurants", async (req, res, next) => {
   const area = findServiceAreaBySlug(getSettings(res), req.params.slug);
   if (!area) return next();
-  const restaurants = await getAreaRestaurants(area.name, 6);
+  const restaurants = await getAreaRestaurants(area.name, 36);
   const seo = buildAreaIntentSeo(req, getSettings(res), area, "restaurants", restaurants);
   res.render("pages/area-intent", {
     title: seo.title,

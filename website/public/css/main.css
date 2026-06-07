@@ -238,14 +238,41 @@ select {
 }
 
 .nav-links a {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  border-radius: 999px;
+  padding: 8px 11px;
   color: var(--ink);
   font-weight: 600;
   font-size: 1rem;
-  transition: color 0.3s;
+  transition:
+    color 0.24s ease,
+    background-color 0.24s ease,
+    box-shadow 0.24s ease;
 }
 
-.nav-links a:hover {
+.nav-links a:hover,
+.nav-links a.is-active {
   color: var(--hot);
+  background: rgba(248, 91, 138, 0.08);
+}
+
+.nav-links a.is-active {
+  box-shadow: inset 0 0 0 1px rgba(248, 91, 138, 0.14);
+}
+
+.nav-links a.is-active::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--hot), var(--orange));
+  transform: translateX(-50%);
 }
 
 .nav-actions {
@@ -3459,6 +3486,152 @@ select {
   padding: 90px 5%;
 }
 
+.area-reward-section {
+  max-width: 1300px;
+  margin: -28px auto 0;
+  padding: 0 5% 36px;
+}
+
+.area-reward-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 24px;
+  align-items: center;
+  min-height: 190px;
+  padding: 34px;
+  border-radius: 34px;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 184, 76, 0.34), transparent 34%),
+    radial-gradient(circle at 82% 18%, rgba(248, 91, 138, 0.24), transparent 30%),
+    linear-gradient(135deg, #111827, #1d2433);
+  color: var(--white);
+  box-shadow: 0 28px 70px rgba(17, 24, 39, 0.18);
+}
+
+.area-reward-copy,
+.area-reward-amount,
+.area-reward-card .btn-main {
+  position: relative;
+  z-index: 2;
+}
+
+.area-reward-copy .eyebrow {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--orange);
+  box-shadow: none;
+}
+
+.area-reward-copy h2 {
+  max-width: 680px;
+  margin-bottom: 12px;
+  font-size: clamp(1.8rem, 3.8vw, 3rem);
+  line-height: 1.05;
+  letter-spacing: -0.8px;
+}
+
+.area-reward-copy p {
+  max-width: 700px;
+  color: rgba(255, 255, 255, 0.74);
+  line-height: 1.7;
+}
+
+.area-reward-amount {
+  min-width: 190px;
+  padding: 22px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  text-align: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.area-reward-amount small {
+  display: block;
+  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.area-reward-amount strong {
+  display: block;
+  color: var(--orange);
+  font-size: clamp(2.15rem, 4vw, 3.6rem);
+  line-height: 1;
+  letter-spacing: -1px;
+  text-shadow: 0 14px 34px rgba(255, 184, 76, 0.28);
+  animation: rewardPulse 2.8s ease-in-out infinite;
+}
+
+.area-reward-card .btn-main {
+  background: var(--hot);
+  white-space: nowrap;
+}
+
+.reward-orbit {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.reward-orbit span {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--orange);
+  opacity: 0.75;
+  animation: rewardFloat 6s ease-in-out infinite;
+}
+
+.reward-orbit span:nth-child(1) {
+  left: 8%;
+  top: 28%;
+}
+
+.reward-orbit span:nth-child(2) {
+  right: 22%;
+  top: 18%;
+  width: 13px;
+  height: 13px;
+  background: var(--hot);
+  animation-delay: -1.2s;
+}
+
+.reward-orbit span:nth-child(3) {
+  left: 62%;
+  bottom: 18%;
+  animation-delay: -2.4s;
+}
+
+@keyframes rewardPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.045);
+  }
+}
+
+@keyframes rewardFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(16px, -14px, 0);
+  }
+}
+
 .local-status-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3486,6 +3659,50 @@ select {
   color: var(--muted);
   line-height: 1.7;
   font-size: 1.08rem;
+}
+
+.local-area-tabs {
+  width: min(920px, 90%);
+  margin: -36px auto 30px;
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 22px 60px rgba(17, 24, 39, 0.09);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.local-area-tabs a {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 10px 18px;
+  color: var(--ink);
+  font-weight: 900;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color 0.22s ease,
+    background-color 0.22s ease,
+    box-shadow 0.22s ease,
+    transform 0.22s ease;
+}
+
+.local-area-tabs a:hover,
+.local-area-tabs a.active {
+  background: linear-gradient(135deg, var(--hot), var(--orange));
+  color: var(--white);
+  box-shadow: 0 12px 28px rgba(248, 91, 138, 0.22);
+  transform: translateY(-1px);
 }
 
 .postal-list,
@@ -3665,6 +3882,20 @@ select {
 }
 
 @media (max-width: 900px) {
+  .area-reward-card {
+    grid-template-columns: 1fr;
+    padding: 28px;
+  }
+
+  .area-reward-card .btn-main {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .area-reward-amount {
+    width: 100%;
+  }
+
   .local-status-card,
   .local-intent-grid,
   .area-directory-grid,
@@ -3675,6 +3906,23 @@ select {
 
   .local-status-card {
     padding: 26px;
+  }
+
+  .local-area-tabs {
+    width: min(94%, 520px);
+    margin-top: -28px;
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .local-area-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .local-area-tabs a {
+    flex: 0 0 auto;
+    padding: 10px 15px;
   }
 }
 
@@ -5090,6 +5338,16 @@ select {
     box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.04);
   }
 
+  .nav-links a.is-active {
+    background: linear-gradient(135deg, var(--hot), var(--orange));
+    color: var(--white);
+    box-shadow: 0 12px 28px rgba(248, 91, 138, 0.2);
+  }
+
+  .nav-links a.is-active::before {
+    display: none;
+  }
+
   .nav-links a::after {
     content: "→";
     color: var(--hot);
@@ -5099,6 +5357,11 @@ select {
 
   .nav-links a:hover {
     background: var(--ink);
+    color: var(--white);
+  }
+
+  .nav-links a.is-active::after,
+  .nav-links a:hover::after {
     color: var(--white);
   }
 

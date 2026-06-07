@@ -2,6 +2,7 @@ import * as React from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { useCustomerActiveOrderQuery } from "@/src/hooks/use-customer-api";
 import { connectCustomerSocket, disconnectCustomerSocket, getCustomerSocket } from "@/src/lib/socket-client";
 import { useCustomerAuthStore } from "@/src/store/auth-store";
 import { useAppBannerStore } from "@/src/store/app-banner-store";
@@ -234,6 +235,12 @@ export function useCustomerSocketBridge() {
   const customer = useCustomerAuthStore((state) => state.customer);
   const accessToken = useCustomerAuthStore((state) => state.accessToken);
   const showBanner = useAppBannerStore((state) => state.showBanner);
+  const { data: activeOrder, refetch: refetchActiveOrder } = useCustomerActiveOrderQuery(
+    Boolean(customer?.id && accessToken)
+  );
+  const hasLiveOrder = Boolean(
+    activeOrder && isLiveOrderStatus(activeOrder.status)
+  );
   const joinedRef = React.useRef<string | null>(null);
   const appStateRef = React.useRef(AppState.currentState);
 
@@ -244,13 +251,20 @@ export function useCustomerSocketBridge() {
       return;
     }
 
-    if (appStateRef.current === "active") {
+    const connectIfNeeded = () => {
+      if (!hasLiveOrder) {
+        joinedRef.current = null;
+        disconnectCustomerSocket();
+        return null;
+      }
+
       connectCustomerSocket(customer.id, accessToken);
       joinedRef.current = customer.id;
-    }
+      return getCustomerSocket();
+    };
 
-    const socket = getCustomerSocket();
-    const ensureJoined = () => socket.emit("customer:join", customer.id);
+    const socket = appStateRef.current === "active" ? connectIfNeeded() : null;
+    const ensureJoined = () => socket?.emit("customer:join", customer.id);
 
     const handleOrderEvent = (payload: CustomerOrderPayload) => {
       queryClient.setQueryData<CustomerOrderPayload[]>(["customer", "orders"], (current) =>
@@ -272,6 +286,7 @@ export function useCustomerSocketBridge() {
       if (HISTORY_ORDER_STATUSES.includes(payload.status)) {
         queryClient.invalidateQueries({ queryKey: ["customer", "orders", "history"] });
       }
+      queryClient.invalidateQueries({ queryKey: ["customer", "orders", "presence"] });
 
       const banner = getOrderBanner(payload.status);
       if (banner) {
@@ -308,10 +323,11 @@ export function useCustomerSocketBridge() {
       appStateRef.current = nextState;
 
       if (nextState === "active") {
-        connectCustomerSocket(customer.id, accessToken);
-        joinedRef.current = customer.id;
-        ensureJoined();
-        queryClient.invalidateQueries({ queryKey: ["customer", "orders"] });
+        void refetchActiveOrder();
+        const activeSocket = connectIfNeeded();
+        activeSocket?.emit("customer:join", customer.id);
+        queryClient.invalidateQueries({ queryKey: ["customer", "orders", "active"] });
+        queryClient.invalidateQueries({ queryKey: ["customer", "orders", "live"] });
         queryClient.invalidateQueries({ queryKey: ["customer", "support-case"] });
         return;
       }
@@ -320,20 +336,20 @@ export function useCustomerSocketBridge() {
       disconnectCustomerSocket();
     };
 
-    socket.on("connect", ensureJoined);
-    socket.on("customer.order.created", handleOrderEvent);
-    socket.on("customer.order.updated", handleOrderEvent);
-    socket.on("customer.notification.created", handleNotificationCreated);
-    socket.on("customer.support.updated", handleSupportUpdated);
+    socket?.on("connect", ensureJoined);
+    socket?.on("customer.order.created", handleOrderEvent);
+    socket?.on("customer.order.updated", handleOrderEvent);
+    socket?.on("customer.notification.created", handleNotificationCreated);
+    socket?.on("customer.support.updated", handleSupportUpdated);
     const subscription = AppState.addEventListener("change", handleAppStateChange);
 
     return () => {
       subscription.remove();
-      socket.off("connect", ensureJoined);
-      socket.off("customer.order.created", handleOrderEvent);
-      socket.off("customer.order.updated", handleOrderEvent);
-      socket.off("customer.notification.created", handleNotificationCreated);
-      socket.off("customer.support.updated", handleSupportUpdated);
+      socket?.off("connect", ensureJoined);
+      socket?.off("customer.order.created", handleOrderEvent);
+      socket?.off("customer.order.updated", handleOrderEvent);
+      socket?.off("customer.notification.created", handleNotificationCreated);
+      socket?.off("customer.support.updated", handleSupportUpdated);
     };
-  }, [accessToken, customer?.id, queryClient, showBanner]);
+  }, [accessToken, customer?.id, hasLiveOrder, queryClient, refetchActiveOrder, showBanner]);
 }

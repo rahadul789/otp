@@ -4,6 +4,11 @@ const alertDeliverySettingsSchema = new Schema(
   {
     key: { type: String, required: true, unique: true, default: "global" },
     recipientEmails: { type: [String], default: [] },
+    notificationChannel: {
+      type: String,
+      enum: ["email", "telegram", "both"],
+      default: "both",
+    },
     fromEmail: { type: String, default: "" },
     fromName: { type: String, default: "Foodbela Monitor" },
     cooldownMinutes: { type: Number, default: 30 },

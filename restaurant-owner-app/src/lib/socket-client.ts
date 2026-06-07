@@ -44,4 +44,8 @@ export function disconnectOwnerSocket() {
   if (ownerSocket?.connected) {
     ownerSocket.disconnect();
   }
+  ownerSocketAuthToken = "";
+  if (ownerSocket) {
+    ownerSocket.auth = {};
+  }
 }

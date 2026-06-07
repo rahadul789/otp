@@ -87,7 +87,7 @@ function absoluteUrl(settings, path = "/") {
 function getOgImageUrl(settings = {}) {
   const configured = cleanExternalUrl(settings.seoOgImageUrl);
   if (configured) return configured;
-  return absoluteUrl(settings, "/images/foodbela-icon.png");
+  return absoluteUrl(settings, "/images/foodbela-og.png");
 }
 
 function normalizePhoneForSchema(phone) {

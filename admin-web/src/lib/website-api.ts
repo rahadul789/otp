@@ -69,6 +69,8 @@ export type WebsiteSettings = {
     name: string
     status: "active" | "coming_soon" | "paused"
     note?: string
+    noteBn?: string
+    noteEn?: string
     seoTitle?: string
     seoDescription?: string
     popularSearches?: string[]

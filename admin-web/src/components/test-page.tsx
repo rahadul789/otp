@@ -30,6 +30,13 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 
 function splitEmails(value: string) {
@@ -50,6 +57,7 @@ function numberInput(value: number, fallback: number) {
 
 const defaultDraft: AdminAlertDeliverySettings = {
   recipientEmails: [],
+  notificationChannel: "both",
   fromEmail: "alerts@foodbela.com",
   fromName: "Foodbela Monitor",
   cooldownMinutes: 30,
@@ -74,7 +82,11 @@ export function TestPage() {
   React.useEffect(() => {
     const settings = settingsQuery.data?.settings
     if (!settings) return
-    setDraft(settings)
+    setDraft({
+      ...defaultDraft,
+      ...settings,
+      notificationChannel: settings.notificationChannel ?? "both",
+    })
     setRecipientText(joinEmails(settings.recipientEmails))
   }, [settingsQuery.data?.settings])
 
@@ -315,6 +327,32 @@ export function TestPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
+          <div className="grid gap-2 md:max-w-sm">
+            <Label>Production notification channel</Label>
+            <Select
+              value={draft.notificationChannel}
+              onValueChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  notificationChannel: value as AdminAlertDeliverySettings["notificationChannel"],
+                }))
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="both">Email and Telegram</SelectItem>
+                <SelectItem value="telegram">Telegram only</SelectItem>
+                <SelectItem value="email">Email only</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Applies to production operations alerts. Test buttons still target
+              their own channel.
+            </p>
+          </div>
+
           <div className="grid gap-2">
             <Label>Alert recipient emails</Label>
             <Input

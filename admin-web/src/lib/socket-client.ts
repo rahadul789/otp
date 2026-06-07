@@ -56,4 +56,7 @@ export function leaveAdminSocketScope(scope: string) {
 
 export function disconnectAdminSocket() {
   if (adminSocket?.connected) adminSocket.disconnect()
+  if (adminSocket) {
+    adminSocket.auth = {}
+  }
 }

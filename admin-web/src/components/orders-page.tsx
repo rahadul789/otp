@@ -118,7 +118,7 @@ type PaymentStatusFilter =
   | "refund_pending"
   | "refunded"
 type AssignmentFilter = "all" | "assigned" | "unassigned" | "stale"
-type AttentionFilter = "all" | "riderDelay"
+type AttentionFilter = "all" | "riderDelay" | "extraTime"
 type OrderSort = "newest" | "oldest" | "highestValue" | "recentlyUpdated"
 type OrderPreset = Extract<
   AdminRestaurantOrderDateFilterPreset,
@@ -265,6 +265,12 @@ function getLateBadgeClass(order: Pick<AdminOrderListItem, "lateTone">) {
 
 function isRiderDelayedOrder(order: AdminOrderListItem) {
   return order.isLate && ["ReadyForPickup", "PickedUp"].includes(order.status)
+}
+
+function getExtraPrepMinutes(
+  order: Pick<AdminOrderListItem, "preparationTiming">
+) {
+  return Math.max(0, Math.round(order.preparationTiming?.extraMinutes ?? 0))
 }
 
 function isRefundCandidate(order: {
@@ -782,6 +788,8 @@ function OrderDetailsSheet({
   const target = details ? toOrderTarget(details) : null
   const statusActions = details ? getStatusActions(details.status) : []
   const timing = details?.operationalTiming
+  const prepTiming = details?.preparationTiming
+  const extraPrepMinutes = Math.max(0, Math.round(prepTiming?.extraMinutes ?? 0))
   const autoCancelRemainingSeconds =
     details?.autoCancel?.applies && details.autoCancel.autoCancelAt
       ? Math.max(
@@ -873,6 +881,15 @@ function OrderDetailsSheet({
                             : "Shared voucher"}
                       </Badge>
                     ))}
+                    {extraPrepMinutes > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-200 bg-amber-50 text-amber-700"
+                      >
+                        <Clock className="mr-1 size-3" />
+                        +{extraPrepMinutes} min prep
+                      </Badge>
+                    ) : null}
                   </div>
                   <h2 className="mt-2 text-xl font-semibold">
                     {details.restaurantName}
@@ -1077,11 +1094,26 @@ function OrderDetailsSheet({
                 <StatCard
                   label="Prep target"
                   value={
-                    timing?.targetMinutes
-                      ? formatMinutesLabel(timing.targetMinutes)
-                      : "N/A"
+                    prepTiming?.totalMinutes
+                      ? formatMinutesLabel(prepTiming.totalMinutes)
+                      : timing?.targetMinutes
+                        ? formatMinutesLabel(timing.targetMinutes)
+                        : "N/A"
                   }
-                  helper="Current stage target"
+                  helper={
+                    prepTiming?.targetReadyAt
+                      ? `Ready target ${formatDate(prepTiming.targetReadyAt)}`
+                      : "Current stage target"
+                  }
+                />
+                <StatCard
+                  label="Added prep time"
+                  value={extraPrepMinutes > 0 ? `+${extraPrepMinutes} min` : "None"}
+                  helper={
+                    prepTiming?.baseMinutes
+                      ? `${formatMinutesLabel(prepTiming.baseMinutes)} base kitchen time`
+                      : "No extension recorded"
+                  }
                 />
                 <StatCard
                   label="Remaining"
@@ -1846,6 +1878,21 @@ export function OrdersPage() {
                   </SelectContent>
                 </Select>
                 <Select
+                  value={attention}
+                  onValueChange={(value) =>
+                    setAttention(value as AttentionFilter)
+                  }
+                >
+                  <SelectTrigger className="w-full sm:w-44">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All attention</SelectItem>
+                    <SelectItem value="riderDelay">Rider delay</SelectItem>
+                    <SelectItem value="extraTime">Extra prep time</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
                   value={sortBy}
                   onValueChange={(value) => setSortBy(value as OrderSort)}
                 >
@@ -1903,6 +1950,7 @@ export function OrdersPage() {
               <TableBody>
               {orders.map((order) => {
                 const autoCancelSeconds = getAutoCancelRemainingSeconds(order, nowMs)
+                const extraPrepMinutes = getExtraPrepMinutes(order)
 
                 return (
                 <TableRow
@@ -1968,7 +2016,16 @@ export function OrdersPage() {
                             <Clock className="mr-1 size-3" />
                             {autoCancelSeconds === 0
                               ? "Auto-cancel due"
-                              : `Accept in ${formatDurationFromSeconds(autoCancelSeconds)}`}
+                            : `Accept in ${formatDurationFromSeconds(autoCancelSeconds)}`}
+                          </Badge>
+                        ) : null}
+                        {extraPrepMinutes > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-200 bg-amber-50 text-amber-700"
+                          >
+                            <Clock className="mr-1 size-3" />
+                            +{extraPrepMinutes} min prep
                           </Badge>
                         ) : null}
                         </div>
@@ -2029,6 +2086,8 @@ export function OrdersPage() {
                             ? autoCancelSeconds === 0
                               ? "Waiting for backend auto-cancel"
                               : `${formatDurationFromSeconds(autoCancelSeconds)} to accept`
+                            : extraPrepMinutes > 0
+                              ? `${extraPrepMinutes} min extra prep`
                             : order.riderTracking?.freshness?.state ?? "N/A"}
                         </div>
                       </TableCell>

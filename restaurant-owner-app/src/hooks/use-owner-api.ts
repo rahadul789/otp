@@ -58,6 +58,8 @@ export type OwnerOrder = {
   orderNumber: string;
   status: OwnerOrderStatus;
   paymentMethod: string;
+  createdAt?: string;
+  updatedAt?: string;
   pricing?: {
     subtotal?: number;
     deliveryFee?: number;

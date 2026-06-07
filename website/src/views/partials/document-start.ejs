@@ -6,7 +6,7 @@
       const pageTitle = seoData.title || title || "Foodbela";
       const pageDescription = seoData.description || description || "Foodbela food delivery, restaurant partners, and rider onboarding.";
       const canonicalUrl = seoData.canonicalUrl || "";
-      const ogImageUrl = seoData.ogImageUrl || "/images/foodbela-icon.png";
+      const ogImageUrl = seoData.ogImageUrl || "/images/foodbela-og.png";
       const robotsContent = seoData.robots || "index,follow";
     %>
     <meta charset="utf-8" />
@@ -34,10 +34,13 @@
     <meta name="twitter:title" content="<%= pageTitle %>" />
     <meta name="twitter:description" content="<%= pageDescription %>" />
     <meta name="twitter:image" content="<%= ogImageUrl %>" />
+    <meta name="application-name" content="Foodbela" />
+    <link rel="shortcut icon" href="/favicon.ico" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" href="/favicon-48x48.png" sizes="48x48" />
     <link rel="icon" type="image/svg+xml" href="/images/Foodbela.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

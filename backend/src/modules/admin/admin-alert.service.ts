@@ -1,5 +1,9 @@
 import { emitSocketEvent } from "../../config/socket";
+import { logger } from "../../config/logger";
 import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache";
+import { sendOperationalAlert } from "../monitoring/alert-notifier";
+import { RestaurantModel } from "../auth/auth.model";
+import { OrderModel } from "../owner/operational.model";
 import {
   classifyAdminAlertType,
   getAdminNotificationSettings,
@@ -57,6 +61,98 @@ function serializeAlert(alert: Record<string, any>) {
     snoozedUntil: alert.snoozedUntil
       ? new Date(alert.snoozedUntil).toISOString()
       : null,
+  };
+}
+
+function isOrderRelatedAlert(input: AdminOperationalAlertInput) {
+  const alertType = input.alertType;
+  return (
+    input.entityType === "order" ||
+    input.path?.startsWith("/orders") ||
+    alertType.startsWith("order_") ||
+    alertType.startsWith("rider_") ||
+    alertType.startsWith("delivery_") ||
+    alertType.startsWith("restaurant_") ||
+    alertType === "owner_response_late" ||
+    alertType === "prep_start_late" ||
+    alertType === "food_prepare_late"
+  );
+}
+
+function stringDetail(value: unknown) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function joinNameAndContact(name: unknown, contact: unknown) {
+  return [stringDetail(name), stringDetail(contact)].filter(Boolean).join(" · ");
+}
+
+async function buildExternalOrderAlertMessage(
+  payload: ReturnType<typeof serializeAlert>,
+  input: AdminOperationalAlertInput,
+) {
+  const metadata = (payload.metadata ?? {}) as Record<string, unknown>;
+  const orderId = stringDetail(metadata.orderId) || payload.entityId || input.entityId || "";
+  const order = orderId
+    ? await OrderModel.findById(orderId)
+        .select({
+          orderNumber: 1,
+          status: 1,
+          customerSnapshot: 1,
+          riderSnapshot: 1,
+          restaurantId: 1,
+          pricing: 1,
+        })
+        .lean()
+    : null;
+  const restaurant = order?.restaurantId
+    ? await RestaurantModel.findById(order.restaurantId)
+        .select({ name: 1, contact: 1 })
+        .lean()
+    : null;
+  const details: Record<string, unknown> = {
+    orderNumber:
+      stringDetail(metadata.orderNumber) ||
+      stringDetail(order?.orderNumber) ||
+      stringDetail(payload.entityId),
+    status: stringDetail(metadata.status) || stringDetail(order?.status),
+    customer: joinNameAndContact(
+      metadata.customerName || order?.customerSnapshot?.fullName,
+      metadata.customerPhone || order?.customerSnapshot?.phone,
+    ),
+    restaurant: joinNameAndContact(
+      metadata.restaurantName || restaurant?.name,
+      metadata.restaurantPhone || restaurant?.contact?.phone,
+    ),
+    rider: joinNameAndContact(
+      metadata.riderName || order?.riderSnapshot?.name,
+      metadata.riderPhone || order?.riderSnapshot?.phone,
+    ),
+    total: stringDetail(metadata.total || order?.pricing?.total)
+      ? `Tk ${Math.round(Number(metadata.total || order?.pricing?.total) || 0)}`
+      : "",
+    lateByMinutes: stringDetail(metadata.lateByMinutes),
+    readyMinutes: stringDetail(metadata.readyMinutes),
+    assignedMinutes: stringDetail(metadata.assignedMinutes),
+    pickupMinutes: stringDetail(metadata.pickupMinutes),
+    deliveryAddress: stringDetail(metadata.deliveryAddress),
+    path: payload.path,
+  };
+
+  return {
+    dedupeKey: `admin-alert:${input.dedupeKey}`,
+    severity: (payload.severity === "critical" || payload.severity === "info"
+      ? payload.severity
+      : "warning") as "critical" | "warning" | "info",
+    layer: "operations" as const,
+    title: payload.title,
+    body: [payload.description, payload.path ? `Admin path: ${payload.path}` : ""]
+      .filter(Boolean)
+      .join("\n"),
+    details: Object.fromEntries(
+      Object.entries(details).filter(([, value]) => stringDetail(value)),
+    ),
   };
 }
 
@@ -132,6 +228,16 @@ export async function createAdminOperationalAlert(
   const payload = serializeAlert(alert.toObject());
 
   emitSocketEvent("admin:ops", "admin.notification.created", payload);
+  if (isOrderRelatedAlert(input)) {
+    void buildExternalOrderAlertMessage(payload, input)
+      .then((message) => sendOperationalAlert(message))
+      .catch((error) => {
+        logger.warn(
+          { error, alertId: payload.id },
+          "Failed to send external admin order alert",
+        );
+      });
+  }
   invalidateAdminOperationalAlertsCache();
   invalidateAdminOperationalHealthCache();
   return { alert: payload, created: true };

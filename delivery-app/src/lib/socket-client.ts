@@ -45,4 +45,8 @@ export function disconnectRiderSocket() {
   if (riderSocket?.connected) {
     riderSocket.disconnect();
   }
+  riderSocketAuthToken = "";
+  if (riderSocket) {
+    riderSocket.auth = {};
+  }
 }

@@ -118,8 +118,9 @@ export default function OrderDetailsScreen() {
     title: string,
     nextStatus: "Rejected" | "Cancelled",
     note: string,
+    message = "This action will notify the customer.",
   ) {
-    Alert.alert(title, "This action will notify the customer.", [
+    Alert.alert(title, message, [
       { text: "Keep order", style: "cancel" },
       {
         text: nextStatus === "Rejected" ? "Reject" : "Cancel",
@@ -225,6 +226,7 @@ export default function OrderDetailsScreen() {
                       "Reject order?",
                       "Rejected",
                       "Rejected from owner mobile app.",
+                      "Rejecting too many orders can reduce customer trust and hurt your restaurant reputation.",
                     )
                   }
                   onCancel={() =>

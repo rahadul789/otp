@@ -258,6 +258,7 @@ export default function CheckoutScreen() {
     voucherCode: appliedVoucherCode || undefined,
     latitude: selectedLocation?.latitude,
     longitude: selectedLocation?.longitude,
+    requiresLocation: true,
   });
 
   useEffect(() => {

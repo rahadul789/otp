@@ -274,6 +274,13 @@ export default function ProfileScreen() {
                   />
                 ) : null}
                 <ProfileNavCard
+                  icon="reader-outline"
+                  tint="#E8FFF1"
+                  title="How to order"
+                  caption="Step-by-step Foodbela guide"
+                  onPress={() => router.push("/order-help")}
+                />
+                <ProfileNavCard
                   icon="notifications-outline"
                   tint="#EEF5FF"
                   title="Notifications center"

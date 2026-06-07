@@ -629,6 +629,21 @@ export function CustomerHomeCmsSection({
     updateCms({ ...currentCms, offerStrip: { ...currentCms.offerStrip, [key]: value } })
   }
 
+  function updateOfferMode(value: typeof currentCms.offerStrip.mode) {
+    updateCms({
+      ...currentCms,
+      offerStrip: {
+        ...currentCms.offerStrip,
+        mode: value,
+        isActive: value === "promo_block" ? true : false,
+        showVoucherStrip:
+          value === "voucher_strip"
+            ? true
+            : currentCms.offerStrip.showVoucherStrip,
+      },
+    })
+  }
+
   function updateHomeCategories(nextCategories: NonNullable<typeof currentCms.homeCategories>) {
     updateCms({ ...currentCms, homeCategories: nextCategories })
   }
@@ -1457,8 +1472,8 @@ export function CustomerHomeCmsSection({
           icon={<Image className="size-5" />}
           summary={
             <div className="hidden items-center gap-2 sm:flex">
-              <Badge variant={cms.offerStrip.isActive ? "default" : "outline"}>
-                {cms.offerStrip.isActive ? "Active" : "Off"}
+              <Badge variant={cms.offerStrip.mode === "promo_block" && cms.offerStrip.isActive ? "default" : "outline"}>
+                {cms.offerStrip.mode === "promo_block" && cms.offerStrip.isActive ? "Custom on" : "No custom"}
               </Badge>
               <Badge variant="secondary">{cms.offerStrip.mode.replace("_", " ")}</Badge>
             </div>
@@ -1468,10 +1483,14 @@ export function CustomerHomeCmsSection({
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="flex items-center justify-between rounded-lg border p-3 lg:col-span-3">
               <div>
-                <Label>CMS slot visible</Label>
-                <p className="text-xs text-muted-foreground">Controls the custom text/image/carousel block.</p>
+                <Label>Custom block visible</Label>
+                <p className="text-xs text-muted-foreground">Controls only the custom text/image/carousel block.</p>
               </div>
-              <Switch checked={cms.offerStrip.isActive} onCheckedChange={(checked) => updateOfferStrip("isActive", checked)} />
+              <Switch
+                checked={cms.offerStrip.mode === "promo_block" && cms.offerStrip.isActive}
+                disabled={cms.offerStrip.mode !== "promo_block"}
+                onCheckedChange={(checked) => updateOfferStrip("isActive", checked)}
+              />
             </div>
             <div className="flex items-center justify-between rounded-lg border p-3 lg:col-span-3">
               <div>
@@ -1496,7 +1515,7 @@ export function CustomerHomeCmsSection({
             </div>
             <div className="space-y-2">
               <Label>CMS slot content</Label>
-              <Select value={cms.offerStrip.mode} onValueChange={(value) => updateOfferStrip("mode", value as typeof cms.offerStrip.mode)}>
+              <Select value={cms.offerStrip.mode} onValueChange={(value) => updateOfferMode(value as typeof cms.offerStrip.mode)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="hidden">No custom block</SelectItem>

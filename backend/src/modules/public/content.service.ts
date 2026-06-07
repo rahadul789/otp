@@ -5,9 +5,11 @@ import { AdminModel } from "../admin/admin.model"
 import { AppError } from "../../common/utils/app-error"
 import { fetchWithTimeout } from "../../common/utils/fetch-with-timeout"
 import { createInMemoryAsyncCache } from "../../common/utils/in-memory-cache"
+import { emitSocketEvent } from "../../config/socket"
 import { CustomerModel } from "../customer/customer.model"
 import { sendPushToCustomer } from "../customer/push.service"
 import { OrderModel } from "../owner/operational.model"
+import { ServiceZoneModel } from "../service-area/service-area.model"
 import { PublicContentModel } from "./content.model"
 import { platformContent } from "./content"
 
@@ -543,6 +545,7 @@ type PlatformContentScope = { zoneId?: string; districtId?: string }
 const defaultPlatformContent = platformContentSchema.parse(platformContent)
 export type OperationalFinanceSettings = PlatformContent["operations"]["finance"]
 export type AuthRateLimitSettings = PlatformContent["auth"]["rateLimits"]
+type CustomerHomeCms = PlatformContent["customerApp"]["homeCms"]
 type AdminEditablePlatformContent = {
   content: PlatformContent
   meta: {
@@ -586,6 +589,42 @@ function deepMerge<T>(base: T, override: unknown): T {
   return result as T
 }
 
+function normalizeHomeCmsForRuntime(homeCms: CustomerHomeCms): CustomerHomeCms {
+  const offerStrip = {
+    ...homeCms.offerStrip,
+    showVoucherStrip: homeCms.offerStrip.showVoucherStrip !== false,
+    showRestaurantOfferSection:
+      homeCms.offerStrip.showRestaurantOfferSection !== false,
+    carouselImageUrls: Array.isArray(homeCms.offerStrip.carouselImageUrls)
+      ? homeCms.offerStrip.carouselImageUrls.filter((url) => url.trim())
+      : [],
+    carouselImages: Array.isArray(homeCms.offerStrip.carouselImages)
+      ? homeCms.offerStrip.carouselImages.filter((image) => image.url.trim())
+      : [],
+  }
+
+  return {
+    ...homeCms,
+    offerStrip:
+      offerStrip.mode === "promo_block"
+        ? offerStrip
+        : {
+            ...offerStrip,
+            isActive: false,
+          },
+  }
+}
+
+function normalizePlatformContentHomeCms<T extends PlatformContent>(content: T): T {
+  return {
+    ...content,
+    customerApp: {
+      ...content.customerApp,
+      homeCms: normalizeHomeCmsForRuntime(content.customerApp.homeCms),
+    },
+  } as T
+}
+
 function withDefaultHomeCategories(content: PlatformContent): PlatformContent {
   const defaultCategories = defaultPlatformContent.customerApp.homeCms.homeCategories.items
   const currentCategories = content.customerApp.homeCms.homeCategories
@@ -624,6 +663,13 @@ function contentScopeKey(scope?: PlatformContentScope) {
       : ""
 }
 
+function contentScopeKeys(scope?: PlatformContentScope) {
+  return [
+    scope?.zoneId?.trim() ? `zone:${scope.zoneId.trim()}` : "",
+    scope?.districtId?.trim() ? `district:${scope.districtId.trim()}` : "",
+  ].filter(Boolean)
+}
+
 function getHomeCmsAreaOverrides(content: Record<string, any>) {
   const customerApp = content.customerApp ?? {}
   return customerApp.homeCmsAreaOverrides && typeof customerApp.homeCmsAreaOverrides === "object"
@@ -632,12 +678,13 @@ function getHomeCmsAreaOverrides(content: Record<string, any>) {
 }
 
 function buildHomeCmsAreaOverride(homeCms: PlatformContent["customerApp"]["homeCms"]) {
+  const normalizedHomeCms = normalizeHomeCmsForRuntime(homeCms)
   return {
-    offerStrip: homeCms.offerStrip,
-    homeCategories: homeCms.homeCategories,
-    modal: homeCms.modal,
-    howToOrderGuide: homeCms.howToOrderGuide,
-    pushCampaign: homeCms.pushCampaign,
+    offerStrip: normalizedHomeCms.offerStrip,
+    homeCategories: normalizedHomeCms.homeCategories,
+    modal: normalizedHomeCms.modal,
+    howToOrderGuide: normalizedHomeCms.howToOrderGuide,
+    pushCampaign: normalizedHomeCms.pushCampaign,
   }
 }
 
@@ -645,17 +692,19 @@ function applyHomeCmsAreaOverride<T extends PlatformContent>(
   content: T,
   scope?: PlatformContentScope,
 ): T {
-  const key = contentScopeKey(scope)
-  if (!key) return content
-  const override = getHomeCmsAreaOverrides(content as unknown as Record<string, any>)[key]
-  if (!override) return content
-  return deepMerge(content, {
+  const overrides = getHomeCmsAreaOverrides(content as unknown as Record<string, any>)
+  const override = contentScopeKeys(scope)
+    .map((key) => overrides[key])
+    .find(Boolean)
+  if (!override) return normalizePlatformContentHomeCms(content)
+
+  return normalizePlatformContentHomeCms(deepMerge(content, {
     customerApp: {
       homeCms: {
         ...(override as Record<string, unknown>),
       },
     },
-  })
+  }))
 }
 
 export function applyServiceAreaHomeCmsOverride<T extends PlatformContent>(
@@ -677,6 +726,31 @@ const adminEditablePlatformContentCache =
     ttlMs: platformContentCacheTtlMs,
     maxEntries: 1,
   })
+const platformContentInvalidationListeners = new Set<() => void>()
+
+export function registerPlatformContentInvalidationListener(listener: () => void) {
+  platformContentInvalidationListeners.add(listener)
+  return () => platformContentInvalidationListeners.delete(listener)
+}
+
+function notifyPlatformContentInvalidated() {
+  for (const listener of platformContentInvalidationListeners) {
+    try {
+      listener()
+    } catch {
+      // Cache invalidation listeners must never block CMS publishing.
+    }
+  }
+}
+
+function emitPlatformContentUpdated(payload: {
+  updatedAt: string
+  updatedByAdminId: string
+  updatedByAdminName: string
+  changedSections: string[]
+}) {
+  emitSocketEvent("admin:ops", "admin.platform-content.updated", payload)
+}
 
 const SECTION_LABELS = {
   branding: "Branding",
@@ -812,7 +886,7 @@ export async function getPlatformContent(scope?: PlatformContentScope) {
     const content = contentDoc?.content
       ? deepMerge(defaultPlatformContent, contentDoc.content)
       : defaultPlatformContent
-    return withDefaultHomeCategories(content)
+    return normalizePlatformContentHomeCms(withDefaultHomeCategories(content))
   })
   return applyHomeCmsAreaOverride(baseContent, scope)
 }
@@ -865,21 +939,46 @@ export async function updatePlatformContent(params: {
 }) {
   platformContentCache.clear()
   adminEditablePlatformContentCache.clear()
-  const parsed = platformContentSchema.parse(params.content)
+  const parsed = normalizePlatformContentHomeCms(
+    platformContentSchema.parse(params.content),
+  )
   const [admin, currentDoc] = await Promise.all([
     AdminModel.findById(params.adminId).select({ fullName: 1 }).lean(),
     PublicContentModel.findOne({ key: CONTENT_KEY }).select({ content: 1 }).lean(),
   ])
   const adminName = admin?.fullName ?? "Support Team"
   const currentContent = currentDoc?.content
-    ? deepMerge(defaultPlatformContent, currentDoc.content)
+    ? normalizePlatformContentHomeCms(
+        withDefaultHomeCategories(deepMerge(defaultPlatformContent, currentDoc.content)),
+      )
     : null
   const scopeKey = contentScopeKey(params.scope)
-  const nextContent: PlatformContent = scopeKey && currentContent
-    ? deepMerge(currentContent, {
+  const baseContent = currentContent ?? normalizePlatformContentHomeCms(
+    withDefaultHomeCategories(defaultPlatformContent),
+  )
+  const currentHomeCmsAreaOverrides = {
+    ...getHomeCmsAreaOverrides(baseContent as unknown as Record<string, any>),
+  }
+  const districtScopeId =
+    params.scope?.districtId?.trim() && !params.scope.zoneId?.trim()
+      ? params.scope.districtId.trim()
+      : ""
+  if (districtScopeId) {
+    const districtZones = await ServiceZoneModel.find({
+      districtId: districtScopeId,
+      status: { $ne: "archived" },
+    })
+      .select({ _id: 1 })
+      .lean()
+    for (const zone of districtZones) {
+      delete currentHomeCmsAreaOverrides[`zone:${zone._id.toString()}`]
+    }
+  }
+  const nextContent: PlatformContent = scopeKey
+    ? deepMerge(baseContent, {
         customerApp: {
           homeCmsAreaOverrides: {
-            ...getHomeCmsAreaOverrides(currentContent as unknown as Record<string, any>),
+            ...currentHomeCmsAreaOverrides,
             [scopeKey]: buildHomeCmsAreaOverride(parsed.customerApp.homeCms),
           },
         },
@@ -933,6 +1032,13 @@ export async function updatePlatformContent(params: {
   })
   adminEditablePlatformContentCache.clear()
   platformContentCache.clear()
+  notifyPlatformContentInvalidated()
+  emitPlatformContentUpdated({
+    updatedAt: nextUpdatedAt.toISOString(),
+    updatedByAdminId: params.adminId,
+    updatedByAdminName: adminName,
+    changedSections,
+  })
   return mapped
 }
 
@@ -1754,11 +1860,22 @@ export async function rollbackPlatformContent(params: {
     )
   }
 
-  const restoredContent = platformContentSchema.parse(
+  const restoredParsed = platformContentSchema.parse(
     deepMerge(defaultPlatformContent, historyEntry.content)
   )
+  const restoredContent = normalizePlatformContentHomeCms(
+    deepMerge(restoredParsed, {
+      customerApp: {
+        homeCmsAreaOverrides: getHomeCmsAreaOverrides(
+          historyEntry.content as unknown as Record<string, any>,
+        ),
+      },
+    })
+  )
   const currentContent = currentDoc.content
-    ? deepMerge(defaultPlatformContent, currentDoc.content)
+    ? normalizePlatformContentHomeCms(
+        withDefaultHomeCategories(deepMerge(defaultPlatformContent, currentDoc.content)),
+      )
     : null
   const nextUpdatedAt = new Date()
   const changedSections = [
@@ -1799,5 +1916,12 @@ export async function rollbackPlatformContent(params: {
   })
   adminEditablePlatformContentCache.clear()
   platformContentCache.clear()
+  notifyPlatformContentInvalidated()
+  emitPlatformContentUpdated({
+    updatedAt: nextUpdatedAt.toISOString(),
+    updatedByAdminId: params.adminId,
+    updatedByAdminName: adminName,
+    changedSections,
+  })
   return mapped
 }

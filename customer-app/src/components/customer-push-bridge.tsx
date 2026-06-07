@@ -15,6 +15,10 @@ import {
   saveRegisteredCustomerPushToken,
 } from "@/src/lib/customer-push-token-store";
 import { getStableCustomerInstallId } from "@/src/lib/customer-install-id";
+import {
+  getCustomerOrderIdFromPath,
+  refreshCustomerOrderCacheForPath,
+} from "@/src/lib/customer-order-cache";
 import { resolveCustomerPushRoute } from "@/src/lib/customer-routes";
 import { queryClient } from "@/src/lib/query-client";
 import { useIsOnline } from "@/src/hooks/use-network-status";
@@ -43,10 +47,6 @@ function wait(ms: number) {
 
 function isOrderRoute(path: string) {
   return /^\/orders\/[A-Za-z0-9_-]+(?:\/tracking)?$/.test(path);
-}
-
-function getOrderIdFromRoute(path: string) {
-  return path.match(/^\/orders\/([A-Za-z0-9_-]+)(?:\/tracking)?$/)?.[1] ?? "";
 }
 
 function getRoutePathname(path: string) {
@@ -160,13 +160,11 @@ export function CustomerPushBridge({ children }: PropsWithChildren) {
     const recordOpen = (data?: Record<string, unknown>) => {
       if (!data) return;
       const pushTarget = resolveCustomerPushRoute(data);
-      const orderId = getOrderIdFromRoute(pushTarget);
+      const orderId = getCustomerOrderIdFromPath(pushTarget);
 
       if (orderId) {
+        void refreshCustomerOrderCacheForPath(queryClient, pushTarget, 0);
         void queryClient.invalidateQueries({ queryKey: ["customer", "orders"] });
-        void queryClient.invalidateQueries({
-          queryKey: ["customer", "orders", orderId],
-        });
       }
 
       void apiPost("/customer/push-events/open", {
@@ -183,7 +181,7 @@ export function CustomerPushBridge({ children }: PropsWithChildren) {
         .catch(() => undefined);
     };
 
-    const openNotificationTarget = (data?: Record<string, unknown>) => {
+    const openNotificationTarget = async (data?: Record<string, unknown>) => {
       const target = resolveCustomerPushRoute(data);
       const navigationKey = `${String(data?.notificationId ?? data?.campaignId ?? "")}:${target}`;
       const recentNavigation = recentNavigationRef.current;
@@ -202,6 +200,10 @@ export function CustomerPushBridge({ children }: PropsWithChildren) {
 
       if (currentPath === target) {
         return;
+      }
+
+      if (isOrderRoute(target)) {
+        await refreshCustomerOrderCacheForPath(queryClient, target);
       }
 
       if (
@@ -224,7 +226,7 @@ export function CustomerPushBridge({ children }: PropsWithChildren) {
       (response) => {
         const data = response.notification.request.content.data;
         recordOpen(data);
-        openNotificationTarget(data);
+        void openNotificationTarget(data);
         void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
       }
     );
@@ -233,7 +235,7 @@ export function CustomerPushBridge({ children }: PropsWithChildren) {
       if (!response) return;
       const data = response.notification.request.content.data;
       recordOpen(data);
-      openNotificationTarget(data);
+      void openNotificationTarget(data);
       void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
     });
 

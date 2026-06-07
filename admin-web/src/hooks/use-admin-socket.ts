@@ -130,23 +130,36 @@ export function useAdminSocketBridge(enabled: boolean) {
       void queryClient.invalidateQueries({ queryKey: ["admin-orders-monitor"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-payments"] })
       void queryClient.invalidateQueries({ queryKey: ["admin-operational-health"] })
+      void queryClient.refetchQueries({ queryKey: ["admin-orders"], type: "active" })
+      void queryClient.refetchQueries({ queryKey: ["admin-orders-monitor"], type: "active" })
+      void queryClient.refetchQueries({ queryKey: ["admin-dashboard-orders"], type: "active" })
       if (payload.orderId) {
         void queryClient.invalidateQueries({ queryKey: ["admin-order", payload.orderId] })
+        void queryClient.refetchQueries({ queryKey: ["admin-order", payload.orderId], type: "active" })
       }
+    }
+
+    const handlePlatformContentUpdated = () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin-cms"] })
+      void queryClient.invalidateQueries({ queryKey: ["platform-content"] })
+      void queryClient.refetchQueries({ queryKey: ["admin-cms"], type: "active" })
     }
 
     socket.on("admin.notification.created", handleNotification)
     socket.on("admin.order.updated", handleOrderUpdated)
+    socket.on("admin.platform-content.updated", handlePlatformContentUpdated)
 
     return () => {
       socket.off("admin.notification.created", handleNotification)
       socket.off("admin.order.updated", handleOrderUpdated)
+      socket.off("admin.platform-content.updated", handlePlatformContentUpdated)
       socket.off("connect", ensureJoined)
       socket.off("connect_error", handleConnectError)
       window.removeEventListener(
         ADMIN_ACCESS_TOKEN_UPDATED_EVENT,
         reconnectWithFreshToken
       )
+      disconnectAdminSocket()
     }
   }, [enabled, navigate, queryClient])
 
@@ -155,6 +168,7 @@ export function useAdminSocketBridge(enabled: boolean) {
       const socket = getAdminSocket()
       socket.off("admin.notification.created")
       socket.off("admin.order.updated")
+      socket.off("admin.platform-content.updated")
     }
   }, [])
 }

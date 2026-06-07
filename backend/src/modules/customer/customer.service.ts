@@ -26,6 +26,7 @@ import {
 import {
   applyServiceAreaHomeCmsOverride,
   getPlatformContent,
+  registerPlatformContentInvalidationListener,
 } from "../public/content.service";
 import {
   compareOtpCode,
@@ -122,6 +123,7 @@ const CUSTOMER_ORDER_LIST_SELECT = [
   "itemsSnapshot.unitPrice",
   "itemsSnapshot.selectedVariantOptions",
   "itemsSnapshot.selectedAddOnOptions",
+  "preparationMeta",
   "timestamps",
   "createdAt",
   "updatedAt",
@@ -2720,7 +2722,7 @@ export async function getCustomerDiscoveryHome(params?: {
         homeCms.howToOrderGuide.isActive = false;
       }
       const shouldShowHomeVoucherChips = Boolean(
-        homeCms.offerStrip?.isActive && homeCms.offerStrip?.showVoucherStrip,
+        homeCms.offerStrip?.showVoucherStrip !== false,
       );
       const shouldShowRestaurantOfferSection =
         homeCms.offerStrip?.showRestaurantOfferSection !== false;
@@ -2732,24 +2734,7 @@ export async function getCustomerDiscoveryHome(params?: {
         homeCms,
         featuredRestaurants,
         restaurantsWithOffers: shouldShowRestaurantOfferSection ? offerRestaurants : [],
-        campaignPlacements: shouldShowHomeVoucherChips
-          ? visibleActiveOffers
-              .filter((offer) => (offer as any).display?.showOnHome)
-              .map((offer) => ({
-                _id: offer._id.toString(),
-                voucherId: offer._id.toString(),
-                name: offer.name,
-                code: offer.code,
-                scopeType: (offer as any).scopeType,
-                audienceType: (offer as any).audienceType,
-                display: (offer as any).display ?? {},
-              }))
-              .sort(
-                (left, right) =>
-                  (left.display?.position ?? 0) -
-                  (right.display?.position ?? 0),
-              )
-          : [],
+        campaignPlacements: [],
         activeOffers: visibleActiveOffers.map((offer) => ({
               _id: offer._id.toString(),
               restaurantId: offer.restaurantId?.toString?.() ?? "",
@@ -3054,6 +3039,25 @@ type CustomerDeliveryAddressInput = {
   latitude: number;
   longitude: number;
 };
+
+function assertPinnedDeliveryCoordinates(deliveryAddress: CustomerDeliveryAddressInput) {
+  const hasLatitude =
+    typeof deliveryAddress.latitude === "number" &&
+    Number.isFinite(deliveryAddress.latitude);
+  const hasLongitude =
+    typeof deliveryAddress.longitude === "number" &&
+    Number.isFinite(deliveryAddress.longitude);
+
+  if (hasLatitude && hasLongitude) {
+    return;
+  }
+
+  throw new AppError(
+    StatusCodes.BAD_REQUEST,
+    "DELIVERY_LOCATION_REQUIRED",
+    "Select a pinned delivery location before placing the order.",
+  );
+}
 
 function normalizeClientOrderId(value?: string | null) {
   return typeof value === "string" ? value.trim().slice(0, 120) : "";
@@ -4222,6 +4226,8 @@ export async function placeCustomerOrder(params: {
     };
   }
 
+  assertPinnedDeliveryCoordinates(params.deliveryAddress);
+
   const quote = await quoteCustomerCart({
     restaurantId: params.restaurantId,
     items: params.items,
@@ -4572,6 +4578,42 @@ export async function placeCustomerOrder(params: {
       status: order.status,
       path: `/orders?orderId=${order.id}`,
     });
+    void createAdminOperationalAlert({
+      alertType: "order_placed",
+      severity: "info",
+      title: `${order.orderNumber} placed`,
+      description: `${customer.fullName || "Customer"} placed an order from ${restaurant.name || "restaurant"}.`,
+      source: "Orders",
+      entityType: "order",
+      entityId: order.id,
+      path: `/orders?orderId=${order.id}`,
+      iconKey: "receipt",
+      dedupeKey: `order:${order.id}:placed`,
+      metadata: {
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        customerId: customer.id,
+        customerName: customer.fullName ?? "",
+        customerPhone: customer.phone ?? "",
+        restaurantId: restaurant.id,
+        restaurantName: restaurant.name ?? "",
+        restaurantPhone: restaurant.contact?.phone ?? "",
+        deliveryAddress:
+          order.customerSnapshot?.deliveryAddress?.addressLine ??
+          order.customerSnapshot?.deliveryAddress?.addressDetails ??
+          "",
+        total: order.pricing?.total ?? 0,
+        placedAt: order.createdAt?.toISOString?.() ?? new Date().toISOString(),
+      },
+    }).catch((error) => {
+      logger.warn(
+        { error, orderId: order.id },
+        "Failed to create admin order placed alert",
+      );
+    });
 
     enqueueBackgroundTask("customer.order_created.owner_notification", async () => {
       await createOwnerNotification({
@@ -4637,6 +4679,8 @@ export async function initiateBkashPayment(params: {
       "Enter a valid bKash number",
     );
   }
+
+  assertPinnedDeliveryCoordinates(params.deliveryAddress);
 
   const quote = await quoteCustomerCart({
     restaurantId: params.restaurantId,
@@ -5938,3 +5982,7 @@ export function invalidateCustomerRestaurantAvailabilityCaches() {
   customerRestaurantDetailsCache.clear();
   customerCartQuoteCache.clear();
 }
+
+registerPlatformContentInvalidationListener(() => {
+  invalidateCustomerRestaurantAvailabilityCaches();
+});

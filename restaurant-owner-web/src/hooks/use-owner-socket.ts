@@ -248,6 +248,7 @@ export function useOwnerSocketBridge() {
         }
       )
       void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard", "summary"] })
+      void queryClient.refetchQueries({ queryKey: ["owner", "orders"], type: "active" })
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "summary"] })
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "history"] })
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts", "transactions"] })
@@ -296,6 +297,7 @@ export function useOwnerSocketBridge() {
       socket.off("promotion.updated", handlePromotionUpdated)
       socket.off("connect", ensureJoined)
       window.removeEventListener(OWNER_ACCESS_TOKEN_UPDATED_EVENT, reconnectWithFreshToken)
+      disconnectOwnerSocket()
     }
   }, [ownerAccount.isAuthenticated, queryClient, setNotifications, setOrders])
 }

@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 
 import type { OwnerOrder } from "@/src/hooks/use-owner-api";
 import {
@@ -16,6 +17,7 @@ export function OwnerSocketBridge() {
   const accessToken = useOwnerAuthStore((state) => state.accessToken);
   const joinedRef = useRef("");
   const tokenRef = useRef("");
+  const appStateRef = useRef(AppState.currentState);
 
   useEffect(() => {
     if (!owner?.id || !accessToken) {
@@ -25,20 +27,49 @@ export function OwnerSocketBridge() {
       return;
     }
 
-    if (joinedRef.current !== owner.id || tokenRef.current !== accessToken) {
+    const connectIfActive = () => {
+      if (appStateRef.current !== "active") {
+        joinedRef.current = "";
+        tokenRef.current = "";
+        disconnectOwnerSocket();
+        return;
+      }
+
       connectOwnerSocket(owner.id, accessToken);
       joinedRef.current = owner.id;
       tokenRef.current = accessToken;
+    };
+
+    if (
+      appStateRef.current === "active" &&
+      (joinedRef.current !== owner.id || tokenRef.current !== accessToken)
+    ) {
+      connectIfActive();
     }
 
     const socket = getOwnerSocket();
     const ensureJoined = () => socket.emit("owner:join", owner.id);
+    const refetchOwnerRealtimeState = () => {
+      void queryClient.refetchQueries({ queryKey: ["owner", "orders"], type: "active" });
+      void queryClient.refetchQueries({ queryKey: ["owner", "orders", "details"], type: "active" });
+      void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner", "notifications"] });
+    };
     const handleOrderUpdated = (payload: OwnerOrder) => {
       patchOwnerOrderQueryCaches(queryClient, payload);
       void queryClient.invalidateQueries({
         queryKey: ["owner", "orders", "details", payload._id],
       });
       void queryClient.invalidateQueries({ queryKey: ["owner", "orders"] });
+      void queryClient.refetchQueries({
+        queryKey: ["owner", "orders"],
+        type: "active",
+      });
+      void queryClient.refetchQueries({
+        queryKey: ["owner", "orders", "details", payload._id],
+        type: "active",
+      });
       void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
       void queryClient.invalidateQueries({ queryKey: ["owner", "payouts"] });
     };
@@ -66,6 +97,20 @@ export function OwnerSocketBridge() {
       void queryClient.invalidateQueries({ queryKey: ["owner", "vouchers"] });
       void queryClient.invalidateQueries({ queryKey: ["owner", "dashboard"] });
     };
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      appStateRef.current = nextState;
+
+      if (nextState === "active") {
+        connectIfActive();
+        ensureJoined();
+        refetchOwnerRealtimeState();
+        return;
+      }
+
+      joinedRef.current = "";
+      tokenRef.current = "";
+      disconnectOwnerSocket();
+    };
 
     socket.on("connect", ensureJoined);
     socket.on("order.updated", handleOrderUpdated);
@@ -75,8 +120,10 @@ export function OwnerSocketBridge() {
     socket.on("menu.updated", handleMenuUpdated);
     socket.on("store.updated", handleStoreUpdated);
     socket.on("promotion.updated", handlePromotionUpdated);
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
 
     return () => {
+      subscription.remove();
       socket.off("connect", ensureJoined);
       socket.off("order.updated", handleOrderUpdated);
       socket.off("notification.created", handleNotificationCreated);
@@ -85,6 +132,7 @@ export function OwnerSocketBridge() {
       socket.off("menu.updated", handleMenuUpdated);
       socket.off("store.updated", handleStoreUpdated);
       socket.off("promotion.updated", handlePromotionUpdated);
+      disconnectOwnerSocket();
     };
   }, [accessToken, owner?.id, queryClient]);
 

@@ -15,11 +15,15 @@ export function formatTime(value?: string | null) {
   }).format(date);
 }
 
-export function getOrderPlacedAt(order: { timestamps?: Record<string, string | undefined> }) {
+export function getOrderPlacedAt(order: {
+  timestamps?: Record<string, string | undefined>;
+  createdAt?: string | null;
+}) {
   return (
     order.timestamps?.createdAt ??
     order.timestamps?.placedAt ??
     order.timestamps?.New ??
+    order.createdAt ??
     ""
   );
 }

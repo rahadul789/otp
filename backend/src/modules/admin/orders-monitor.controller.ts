@@ -89,7 +89,7 @@ const ordersQuerySchema = z.object({
     .enum(["all", "pending", "paid", "refund_pending", "refunded"])
     .optional(),
   assignment: z.enum(["all", "assigned", "unassigned", "stale"]).optional(),
-  attention: z.enum(["all", "riderDelay"]).optional(),
+  attention: z.enum(["all", "riderDelay", "extraTime"]).optional(),
   zoneId: z.string().optional(),
   districtId: z.string().optional(),
   sortBy: z.enum(["newest", "oldest", "highestValue", "recentlyUpdated"]).optional(),

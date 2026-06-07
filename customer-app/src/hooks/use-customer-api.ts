@@ -651,6 +651,13 @@ export type CartQuoteResponse = {
     id: string;
     name: string;
   };
+  serviceArea?: {
+    districtId?: string;
+    districtName?: string;
+    zoneId?: string;
+    zoneName?: string;
+    radiusKm?: number;
+  } | null;
   items: {
     itemId: string;
     name: string;
@@ -691,9 +698,12 @@ export function useCustomerCartQuoteQuery(params: {
   voucherCode?: string;
   latitude?: number;
   longitude?: number;
+  requiresLocation?: boolean;
 }) {
   const itemsKey = JSON.stringify(params.items);
   const accessToken = useCustomerAuthStore((state) => state.accessToken);
+  const hasPinnedLocation =
+    typeof params.latitude === "number" && typeof params.longitude === "number";
 
   return useQuery({
     queryKey: [
@@ -705,8 +715,12 @@ export function useCustomerCartQuoteQuery(params: {
       params.longitude ?? null,
       itemsKey,
       Boolean(accessToken),
+      Boolean(params.requiresLocation),
     ],
-    enabled: Boolean(params.restaurantId) && params.items.length > 0,
+    enabled:
+      Boolean(params.restaurantId) &&
+      params.items.length > 0 &&
+      (!params.requiresLocation || hasPinnedLocation),
     placeholderData: keepPreviousData,
     staleTime: 30_000,
     gcTime: 5 * 60_000,

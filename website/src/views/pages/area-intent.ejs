@@ -45,6 +45,13 @@
   </div>
 </section>
 
+<nav class="local-area-tabs gs-fade" aria-label="<%= areaName %> local pages">
+  <a href="<%= baseAreaPath %>" data-i18n="areaLinkDelivery">খাবার ডেলিভারি</a>
+  <a class="<%= isRestaurantIntent ? 'active' : '' %>" href="<%= baseAreaPath %>/restaurants" data-i18n="areaLinkRestaurants">রেস্টুরেন্ট</a>
+  <a class="<%= isPartnerIntent ? 'active' : '' %>" href="<%= baseAreaPath %>/restaurant-partner" data-i18n="areaLinkPartner">পার্টনার</a>
+  <a class="<%= !isRestaurantIntent && !isPartnerIntent ? 'active' : '' %>" href="<%= baseAreaPath %>/riders" data-i18n="areaLinkRiders">রাইডার</a>
+</nav>
+
 <% if (isRestaurantIntent) { %>
   <section class="local-seo-section">
     <div class="sec-title gs-fade">

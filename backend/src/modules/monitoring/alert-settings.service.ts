@@ -5,6 +5,7 @@ import { AlertDeliverySettingsModel } from "./alert-settings.model";
 
 export type AlertDeliverySettings = {
   recipientEmails: string[];
+  notificationChannel: "email" | "telegram" | "both";
   fromEmail: string;
   fromName: string;
   cooldownMinutes: number;
@@ -50,6 +51,7 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
 export function getEnvAlertDeliverySettings(): AlertDeliverySettings {
   return {
     recipientEmails: uniqueEmails(splitCsv(env.ALERT_RECIPIENT_EMAILS)),
+    notificationChannel: "both",
     fromEmail: (env.ALERT_FROM_EMAIL ?? "").trim().toLowerCase(),
     fromName: env.ALERT_FROM_NAME,
     cooldownMinutes: env.ALERT_COOLDOWN_MINUTES,
@@ -72,6 +74,12 @@ function mergeSettings(
         ? override.recipientEmails.map(String)
         : fallback.recipientEmails,
     ),
+    notificationChannel:
+      override.notificationChannel === "email" ||
+      override.notificationChannel === "telegram" ||
+      override.notificationChannel === "both"
+        ? override.notificationChannel
+        : fallback.notificationChannel,
     fromEmail:
       typeof override.fromEmail === "string" && override.fromEmail.trim()
         ? override.fromEmail.trim().toLowerCase()

@@ -19,17 +19,44 @@ import {
 
 const emailSchema = z.string().trim().email().transform((value) => value.toLowerCase());
 
-const alertSettingsSchema = z.object({
-  recipientEmails: z.array(emailSchema).min(1).max(20),
-  fromEmail: emailSchema,
-  fromName: z.string().trim().min(1).max(80),
-  cooldownMinutes: z.coerce.number().int().min(1).max(24 * 60),
-  checkIntervalSeconds: z.coerce.number().int().min(15).max(3600),
-  memoryRssMb: z.coerce.number().int().min(128).max(8192),
-  cpuPercent: z.coerce.number().int().min(1).max(100),
-  fivexxThreshold: z.coerce.number().int().min(1).max(1000),
-  sslExpiryDays: z.coerce.number().int().min(1).max(90),
-});
+const optionalEmailSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toLowerCase());
+
+const alertSettingsSchema = z
+  .object({
+    recipientEmails: z.array(emailSchema).max(20).default([]),
+    notificationChannel: z.enum(["email", "telegram", "both"]).default("both"),
+    fromEmail: optionalEmailSchema,
+    fromName: z.string().trim().min(1).max(80),
+    cooldownMinutes: z.coerce.number().int().min(1).max(24 * 60),
+    checkIntervalSeconds: z.coerce.number().int().min(15).max(3600),
+    memoryRssMb: z.coerce.number().int().min(128).max(8192),
+    cpuPercent: z.coerce.number().int().min(1).max(100),
+    fivexxThreshold: z.coerce.number().int().min(1).max(1000),
+    sslExpiryDays: z.coerce.number().int().min(1).max(90),
+  })
+  .superRefine((settings, ctx) => {
+    const emailEnabled =
+      settings.notificationChannel === "email" ||
+      settings.notificationChannel === "both";
+    if (!emailEnabled) return;
+    if (!settings.recipientEmails.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["recipientEmails"],
+        message: "Add at least one email recipient or choose Telegram only.",
+      });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.fromEmail)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["fromEmail"],
+        message: "Enter a valid from email or choose Telegram only.",
+      });
+    }
+  });
 
 const testAlertSchema = z.object({
   recipientEmails: z.array(emailSchema).min(1).max(20),
@@ -113,6 +140,7 @@ export const postAdminAlertTestController = asyncHandler(
         force: true,
         ignoreCooldown: true,
         requireEmail: true,
+        channels: { email: true, telegram: false },
       },
     );
 

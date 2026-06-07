@@ -194,6 +194,22 @@ export type OwnerOrderResponse = {
     autoCancelAt: string | null
     remainingSeconds: number | null
   }
+  preparationTiming?: {
+    phase: "not_started" | "accepted" | "preparing" | "preparing_late" | "completed" | string
+    label: string
+    baseMinutes: number
+    extraMinutes: number
+    totalMinutes: number
+    maxExtraMinutes: number
+    startedAt: string | null
+    targetStartAt: string | null
+    targetReadyAt: string | null
+    remainingSeconds: number | null
+    lateBySeconds: number
+    canExtend: boolean
+    extensionOptions: number[]
+    autoStarted: boolean
+  }
   history?: Array<{
     status: OrderStatus
     actor: "owner" | "customer" | "system" | "rider"
@@ -1431,6 +1447,7 @@ export function mapOwnerOrder(order: OwnerOrderResponse): Order {
     kitchenNote: "",
     timestamps: buildOrderTimestamps(order.timestamps),
     autoCancel: order.autoCancel,
+    preparationTiming: order.preparationTiming,
     appliedVouchers: order.appliedVouchers ?? [],
     history: mapHistory(order.history),
   }

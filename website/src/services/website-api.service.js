@@ -43,6 +43,8 @@ const fallbackSettings = {
       name: "Dhaka",
       status: "active",
       note: "Selected zones now live",
+      noteBn: "ঢাকার নির্বাচিত এলাকায় Foodbela কভারেজ লাইভ আছে।",
+      noteEn: "Foodbela coverage is live in selected Dhaka zones.",
       popularSearches: ["Dhaka food delivery", "Dhaka restaurant delivery", "food delivery app Dhaka"],
       cuisineKeywords: ["Burger", "Biryani", "Fast food", "Dessert"],
       postalCodes: [],
@@ -51,6 +53,8 @@ const fallbackSettings = {
       name: "Mirpur",
       status: "active",
       note: "Fast local delivery coverage",
+      noteBn: "মিরপুরে দ্রুত লোকাল ডেলিভারি কভারেজ চালু আছে।",
+      noteEn: "Fast local delivery coverage is active in Mirpur.",
       popularSearches: ["Mirpur food delivery", "Mirpur restaurant", "burger delivery Mirpur"],
       cuisineKeywords: ["Burger", "Biryani", "Chinese", "Cafe"],
       postalCodes: [],
@@ -59,6 +63,8 @@ const fallbackSettings = {
       name: "Dhanmondi",
       status: "coming_soon",
       note: "Launching soon",
+      noteBn: "ধানমন্ডিতে Foodbela শিগগির চালুর পরিকল্পনায় আছে।",
+      noteEn: "Foodbela is planned to launch in Dhanmondi soon.",
       popularSearches: ["Dhanmondi food delivery", "Dhanmondi restaurant partner"],
       cuisineKeywords: ["Cafe", "Dessert", "Fast food"],
       postalCodes: [],
@@ -157,34 +163,38 @@ async function sendWebsiteAnalyticsEvent(payload) {
   return postBackend("/website/analytics/events", payload);
 }
 
-async function getAreaRestaurants(areaName, limit = 6) {
-  const search = String(areaName || "").trim();
-  if (!search) return [];
+async function getAreaRestaurants(areaName, limit = 36) {
+  const area = String(areaName || "").trim();
+  if (!area) return [];
 
   try {
     const query = new URLSearchParams({
-      search,
-      pageSize: String(Math.max(1, Math.min(12, limit))),
+      area,
+      limit: String(Math.max(1, Math.min(60, limit))),
     });
     const response = await fetch(
-      `${getBackendApiBaseUrl()}/customer/restaurants/search?${query.toString()}`,
+      `${getBackendApiBaseUrl()}/website/area-restaurants?${query.toString()}`,
       { headers: { accept: "application/json" } },
     );
     if (!response.ok) return [];
     const payload = await response.json();
-    const items = payload?.data?.items || payload?.data || [];
+    const items = payload?.data?.items || [];
     return Array.isArray(items)
       ? items.slice(0, limit).map((item) => ({
-          id: String(item._id || item.id || ""),
+          id: String(item.id || item._id || ""),
+          slug: String(item.slug || ""),
           name: String(item.name || ""),
           description: String(item.description || ""),
-          cuisines: Array.isArray(item.cuisineTypes)
-            ? item.cuisineTypes
-            : Array.isArray(item.cuisines)
-              ? item.cuisines
+          cuisines: Array.isArray(item.cuisines)
+            ? item.cuisines
+            : Array.isArray(item.cuisineTypes)
+              ? item.cuisineTypes
               : [],
-          imageUrl: item.coverImage?.url || item.logo?.url || "",
+          city: String(item.city || ""),
+          address: String(item.address || ""),
+          imageUrl: item.imageUrl || item.logoUrl || "",
           isOpen: item.isOpen !== false,
+          serviceArea: item.serviceArea || {},
         }))
       : [];
   } catch {

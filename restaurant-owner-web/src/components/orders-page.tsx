@@ -1374,7 +1374,8 @@ export function OrdersPage() {
           <DialogHeader>
             <DialogTitle>Reject Order</DialogTitle>
             <DialogDescription>
-              Select a reason before rejecting {rejectingOrder?.orderNumber}.
+              Select a reason before rejecting {rejectingOrder?.orderNumber}. Too many
+              rejected orders can reduce customer trust and hurt your reputation.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

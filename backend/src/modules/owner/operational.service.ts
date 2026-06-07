@@ -1017,12 +1017,18 @@ export async function listOrders(params: {
     query.$and = andClauses
   }
 
+  const isHistoryList =
+    params.tab === "history" || Boolean(params.status && historyStatuses.has(params.status))
   const sort: Record<string, SortOrder> =
     params.sortBy === "oldest"
-      ? { createdAt: 1 }
+      ? isHistoryList
+        ? { updatedAt: 1, createdAt: 1 }
+        : { createdAt: 1 }
       : params.sortBy === "highestValue"
         ? { "pricing.subtotal": -1, createdAt: -1 }
-        : { createdAt: -1 }
+        : isHistoryList
+          ? { updatedAt: -1, createdAt: -1 }
+          : { createdAt: -1 }
   const page = Math.max(1, params.page ?? 1)
   const pageSize = Math.min(100, Math.max(1, params.pageSize ?? 20))
 

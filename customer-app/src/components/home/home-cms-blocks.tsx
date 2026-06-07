@@ -211,6 +211,10 @@ export function HomeCmsPromoBlock({ cms }: { cms: CustomerHomeCms }) {
   const visibleCarouselImages = carouselImages.slice(0, 5);
   const slideWidth = Math.max(320, windowWidth);
 
+  if (!block.isActive || block.mode !== "promo_block") return null;
+  if (block.variant === "carousel" && !visibleCarouselImages.length) return null;
+  if (block.variant === "image" && !block.imageUrl) return null;
+
   if (block.variant === "carousel") {
     return (
       <View style={styles.cmsCarouselOnly}>

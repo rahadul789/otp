@@ -1041,9 +1041,16 @@ export type AdminOperationalHealthSnapshot = {
       connections: Array<{
         id: string
         userId: string
+        displayName?: string
+        contact?: string
+        actorLabel?: string
         role: string
         connectedAt: string | null
+        connectedForSeconds?: number | null
         rooms: string[]
+        businessRooms?: string[]
+        primaryRoom?: string
+        lifecycleNote?: string
         transport: string
         ipAddress: string
         userAgent: string
@@ -2665,6 +2672,22 @@ export type AdminOrderDetails = {
     autoCancelAt: string | null
     remainingSeconds: number | null
   }
+  preparationTiming?: {
+    phase: string
+    label: string
+    baseMinutes: number
+    extraMinutes: number
+    totalMinutes: number
+    maxExtraMinutes: number
+    startedAt: string | null
+    targetStartAt: string | null
+    targetReadyAt: string | null
+    remainingSeconds: number | null
+    lateBySeconds: number
+    canExtend: boolean
+    extensionOptions: number[]
+    autoStarted: boolean
+  }
   operationalTiming?: {
     averagePreparationMinutes: number
     currentPhaseLabel: string
@@ -2757,6 +2780,7 @@ export type AdminOrderListItem = {
   lateTone: "none" | "warning" | "critical" | string
   riderTracking?: AdminOrderDetails["riderTracking"]
   autoCancel?: AdminOrderDetails["autoCancel"]
+  preparationTiming?: AdminOrderDetails["preparationTiming"]
   operationalTiming?: AdminOrderDetails["operationalTiming"]
 }
 
@@ -4707,7 +4731,7 @@ export async function listAdminOrders(params?: {
   paymentMethod?: "all" | "Cash" | "Bkash"
   paymentStatus?: "all" | "pending" | "paid" | "refund_pending" | "refunded"
   assignment?: "all" | "assigned" | "unassigned" | "stale"
-  attention?: "all" | "riderDelay"
+  attention?: "all" | "riderDelay" | "extraTime"
   sortBy?: "newest" | "oldest" | "highestValue" | "recentlyUpdated"
   page?: number
   pageSize?: number

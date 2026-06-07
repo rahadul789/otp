@@ -1,4 +1,5 @@
 import { createAdminOperationalAlert } from "../admin/admin-alert.service";
+import { RestaurantModel } from "../auth/auth.model";
 import { ServiceZoneModel } from "../service-area/service-area.model";
 import {
   WebsiteAnalyticsEventModel,
@@ -46,6 +47,11 @@ export type WebsiteLeadStatus =
   | "qualified"
   | "converted"
   | "closed";
+
+export type WebsiteAreaRestaurantParams = {
+  area: string;
+  limit?: number;
+};
 
 const defaultHeroTitle =
   "খাবার অর্ডার, রেস্টুরেন্ট বড় করা আর রাইডার আয়—সব একসাথে Foodbela.";
@@ -103,6 +109,93 @@ function serializeLead(row: any) {
       : null,
     createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
     updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+  };
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function exactTextRegex(value: string) {
+  return new RegExp(`^${escapeRegex(value.trim())}$`, "i");
+}
+
+function splitAreaName(areaName: string) {
+  const parts = areaName
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return {
+    zoneName: parts[0] ?? areaName.trim(),
+    districtName: parts.length > 1 ? parts.at(-1) ?? "" : "",
+  };
+}
+
+function expandAreaAliases(values: string[]) {
+  const aliases = new Set<string>();
+  values.forEach((value) => {
+    const text = value.trim();
+    if (!text) return;
+    aliases.add(text);
+    aliases.add(text.replace(/netrokona/gi, "Netrakona"));
+    aliases.add(text.replace(/netrakona/gi, "Netrokona"));
+  });
+  return [...aliases].filter(Boolean);
+}
+
+function getWebsiteRestaurantQuery(areaName: string) {
+  const cleanArea = areaName.trim();
+  const { zoneName, districtName } = splitAreaName(cleanArea);
+  const areaTerms = expandAreaAliases([cleanArea, zoneName, districtName]);
+  const cityTerms = expandAreaAliases([districtName, zoneName, cleanArea]);
+
+  return {
+    "runtime.isVisible": true,
+    $and: [
+      {
+        $or: [
+          { "enforcement.status": { $exists: false } },
+          { "enforcement.status": { $in: ["active", "under_review"] } },
+          { "enforcement.expiresAt": { $lte: new Date() } },
+        ],
+      },
+      {
+        $or: [
+          ...areaTerms.map((term) => ({
+            "serviceArea.zoneName": exactTextRegex(term),
+          })),
+          ...areaTerms.map((term) => ({
+            "serviceArea.districtName": exactTextRegex(term),
+          })),
+          ...cityTerms.map((term) => ({
+            "address.city": exactTextRegex(term),
+          })),
+        ],
+      },
+    ],
+  };
+}
+
+function serializeWebsiteRestaurant(row: Record<string, any>) {
+  return {
+    id: String(row._id ?? row.id ?? ""),
+    slug: String(row.slug ?? ""),
+    name: String(row.name ?? ""),
+    description: String(row.description ?? ""),
+    cuisines: Array.isArray(row.cuisineTypes) ? row.cuisineTypes : [],
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    city: String(row.address?.city ?? ""),
+    address: String(row.address?.address ?? ""),
+    imageUrl: String(row.coverImage?.url || row.logo?.url || ""),
+    logoUrl: String(row.logo?.url || ""),
+    isOpen: row.runtime?.isOnline === true,
+    isVisible: row.runtime?.isVisible !== false,
+    serviceArea: {
+      districtId: String(row.serviceArea?.districtId ?? ""),
+      districtName: String(row.serviceArea?.districtName ?? ""),
+      zoneId: String(row.serviceArea?.zoneId ?? ""),
+      zoneName: String(row.serviceArea?.zoneName ?? ""),
+    },
   };
 }
 
@@ -172,6 +265,8 @@ async function getServiceAreasForWebsite(row: any) {
             ? area.status
             : "active",
         note: String(area.note ?? "").trim(),
+        noteBn: String(area.noteBn ?? "").trim(),
+        noteEn: String(area.noteEn ?? "").trim(),
         seoTitle: String(area.seoTitle ?? "").trim(),
         seoDescription: String(area.seoDescription ?? "").trim(),
         popularSearches: normalizeTextList(area.popularSearches),
@@ -206,6 +301,8 @@ async function getServiceAreasForWebsite(row: any) {
         note:
           String(zone.notes ?? "").trim() ||
           (zone.status === "active" ? "Available now" : "Temporarily paused"),
+        noteBn: "",
+        noteEn: "",
         seoTitle: "",
         seoDescription: "",
         popularSearches: [],
@@ -306,6 +403,54 @@ export async function getWebsiteSettings() {
   }
 
   return serializeSettings(settings ?? {});
+}
+
+export async function listWebsiteAreaRestaurants(
+  params: WebsiteAreaRestaurantParams,
+) {
+  const areaName = params.area.trim();
+  if (!areaName) {
+    return {
+      area: "",
+      items: [],
+      total: 0,
+    };
+  }
+
+  const limit = Math.min(60, Math.max(1, Math.floor(params.limit ?? 24)));
+  const query = getWebsiteRestaurantQuery(areaName);
+  const [rows, total] = await Promise.all([
+    RestaurantModel.find(query)
+      .select({
+        name: 1,
+        slug: 1,
+        description: 1,
+        cuisineTypes: 1,
+        tags: 1,
+        logo: 1,
+        coverImage: 1,
+        address: 1,
+        runtime: 1,
+        serviceArea: 1,
+        discovery: 1,
+        createdAt: 1,
+      })
+      .sort({
+        "runtime.isOnline": -1,
+        "discovery.isFeatured": -1,
+        "discovery.featuredSortOrder": 1,
+        name: 1,
+      })
+      .limit(limit)
+      .lean(),
+    RestaurantModel.countDocuments(query),
+  ]);
+
+  return {
+    area: areaName,
+    items: rows.map((row) => serializeWebsiteRestaurant(row)),
+    total,
+  };
 }
 
 export async function updateWebsiteSettings(

@@ -10,7 +10,10 @@ import { getSocketConnectionSnapshot } from "../../config/socket";
 import { getInfrastructureHealthSnapshot } from "../monitoring/infrastructure-health.service";
 import mongoose from "mongoose";
 import { AdminOperationalAlertModel } from "./admin-alert.model";
+import { AdminModel } from "./admin.model";
 import { AdminBusinessEventModel } from "./business-event.model";
+import { OwnerModel, RiderModel } from "../auth/auth.model";
+import { CustomerModel } from "../customer/customer.model";
 import { OrderModel } from "../owner/operational.model";
 
 type BusinessEventCategory =
@@ -177,6 +180,126 @@ function serializeLiveLocationOrder(order: Record<string, any>) {
   };
 }
 
+function getRoleFallbackName(role: string, userId: string) {
+  const label =
+    role === "admin"
+      ? "Admin"
+      : role === "owner"
+        ? "Restaurant owner"
+        : role === "rider"
+          ? "Rider"
+          : role === "customer"
+            ? "Customer"
+            : "User";
+  return userId ? `${label} ${userId.slice(-6)}` : label;
+}
+
+function secondsSinceIso(value: string | null) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return null;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
+async function enrichSocketConnectionSnapshot() {
+  const snapshot = getSocketConnectionSnapshot();
+  const idsByRole = snapshot.connections.reduce<Record<string, string[]>>(
+    (summary, connection) => {
+      if (!connection.userId) return summary;
+      summary[connection.role] = [
+        ...(summary[connection.role] ?? []),
+        connection.userId,
+      ];
+      return summary;
+    },
+    {},
+  );
+
+  const [admins, owners, riders, customers] = await Promise.all([
+    idsByRole.admin?.length
+      ? AdminModel.find({ _id: { $in: idsByRole.admin } })
+          .select({ fullName: 1, email: 1 })
+          .lean()
+      : [],
+    idsByRole.owner?.length
+      ? OwnerModel.find({ _id: { $in: idsByRole.owner } })
+          .select({ fullName: 1, phone: 1, email: 1 })
+          .lean()
+      : [],
+    idsByRole.rider?.length
+      ? RiderModel.find({ _id: { $in: idsByRole.rider } })
+          .select({ fullName: 1, phone: 1 })
+          .lean()
+      : [],
+    idsByRole.customer?.length
+      ? CustomerModel.find({ _id: { $in: idsByRole.customer } })
+          .select({ fullName: 1, phone: 1, email: 1 })
+          .lean()
+      : [],
+  ]);
+
+  const actorByKey = new Map<
+    string,
+    { displayName: string; contact: string; actorLabel: string }
+  >();
+
+  admins.forEach((admin: any) => {
+    const displayName = String(admin.fullName ?? admin.email ?? "").trim();
+    actorByKey.set(`admin:${admin._id}`, {
+      displayName,
+      contact: String(admin.email ?? ""),
+      actorLabel: "Admin web",
+    });
+  });
+  owners.forEach((owner: any) => {
+    const displayName = String(owner.fullName ?? owner.phone ?? "").trim();
+    actorByKey.set(`owner:${owner._id}`, {
+      displayName,
+      contact: String(owner.phone ?? owner.email ?? ""),
+      actorLabel: "Restaurant owner",
+    });
+  });
+  riders.forEach((rider: any) => {
+    const displayName = String(rider.fullName ?? rider.phone ?? "").trim();
+    actorByKey.set(`rider:${rider._id}`, {
+      displayName,
+      contact: String(rider.phone ?? ""),
+      actorLabel: "Delivery rider",
+    });
+  });
+  customers.forEach((customer: any) => {
+    const displayName = String(customer.fullName ?? customer.phone ?? "").trim();
+    actorByKey.set(`customer:${customer._id}`, {
+      displayName,
+      contact: String(customer.phone ?? customer.email ?? ""),
+      actorLabel: "Customer app",
+    });
+  });
+
+  return {
+    ...snapshot,
+    connections: snapshot.connections.map((connection) => {
+      const actor = actorByKey.get(`${connection.role}:${connection.userId}`);
+      const businessRooms = connection.rooms.filter(
+        (room) => room !== "public:content",
+      );
+      const connectedForSeconds = secondsSinceIso(connection.connectedAt);
+      return {
+        ...connection,
+        displayName:
+          actor?.displayName || getRoleFallbackName(connection.role, connection.userId),
+        contact: actor?.contact ?? "",
+        actorLabel: actor?.actorLabel ?? getRoleFallbackName(connection.role, ""),
+        primaryRoom: businessRooms[0] ?? connection.rooms[0] ?? "",
+        businessRooms,
+        connectedForSeconds,
+        lifecycleNote:
+          "Ends when the app closes, the user signs out, the session expires, or the network drops.",
+      };
+    }),
+  };
+}
+
 async function getRealtimeOperationsSnapshot() {
   const liveTrackingQuery = {
     status: "PickedUp",
@@ -261,7 +384,7 @@ async function getRealtimeOperationsSnapshot() {
   );
 
   return {
-    socket: getSocketConnectionSnapshot(),
+    socket: await enrichSocketConnectionSnapshot(),
     liveLocation: {
       activeShares: summary.activeShares,
       focusedShares: summary.focusedShares,

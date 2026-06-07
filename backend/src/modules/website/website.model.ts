@@ -145,6 +145,8 @@ const websiteSettingsSchema = new Schema(
             default: "active",
           },
           note: { type: String, default: "" },
+          noteBn: { type: String, default: "" },
+          noteEn: { type: String, default: "" },
           seoTitle: { type: String, default: "" },
           seoDescription: { type: String, default: "" },
           popularSearches: { type: [String], default: [] },

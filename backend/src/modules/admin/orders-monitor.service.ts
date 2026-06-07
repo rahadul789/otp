@@ -186,7 +186,7 @@ type AdminOrderListParams = {
   paymentMethod?: "all" | "Cash" | "Bkash";
   paymentStatus?: "all" | "pending" | "paid" | "refund_pending" | "refunded";
   assignment?: "all" | "assigned" | "unassigned" | "stale";
-  attention?: "all" | "riderDelay";
+  attention?: "all" | "riderDelay" | "extraTime";
   zoneId?: string;
   districtId?: string;
   sortBy?: "newest" | "oldest" | "highestValue" | "recentlyUpdated";
@@ -2509,6 +2509,9 @@ async function buildAdminOrderQuery(params: AdminOrderListParams = {}) {
   }
   if (params.attention === "riderDelay") {
     query.status = { $in: ["ReadyForPickup", "PickedUp"] };
+  }
+  if (params.attention === "extraTime") {
+    query["preparationMeta.extraMinutes"] = { $gt: 0 };
   }
 
   if (params.paymentMethod && params.paymentMethod !== "all") {
@@ -6601,16 +6604,34 @@ function buildOrderAutoCancelSnapshot(
 
 async function emitOrderRealtimeUpdates(order: Record<string, any>) {
   const restaurantId = String(order.restaurantId ?? "");
-  const owner = restaurantId
-    ? await OwnerModel.findOne({ activeRestaurantId: restaurantId }, { _id: 1 }).lean()
-    : null;
-  const content = await getPlatformContent();
+  const [owner, restaurant, content] = await Promise.all([
+    restaurantId
+      ? OwnerModel.findOne({ activeRestaurantId: restaurantId }, { _id: 1 }).lean()
+      : null,
+    restaurantId
+      ? RestaurantModel.findById(restaurantId)
+          .select({ preparationTimeMinutes: 1 })
+          .lean<Record<string, any>>()
+      : null,
+    getPlatformContent(),
+  ]);
+  const dispatchSettings = getDispatchSettingsFromContent(content);
+  const decoratedOrder = {
+    ...order,
+    autoCancel: buildOrderAutoCancelSnapshot(order, dispatchSettings),
+    preparationTiming: buildOrderPreparationTiming({
+      order,
+      restaurant,
+      prepStartGraceMinutes: dispatchSettings.prepStartGraceMinutes,
+      maxExtraMinutes: dispatchSettings.preparationMaxExtraMinutes,
+    }),
+  };
   const showCustomerPhone =
     content.operations?.ownerApp?.showCustomerPhoneNumbers !== false;
   const ownerFacingOrder = showCustomerPhone
-    ? order
+    ? decoratedOrder
     : {
-        ...order,
+        ...decoratedOrder,
         customerSnapshot: {
           ...(order.customerSnapshot ?? {}),
           phone: "",
@@ -6618,7 +6639,7 @@ async function emitOrderRealtimeUpdates(order: Record<string, any>) {
       };
 
   if (owner?._id) emitSocketEvent(`owner:${owner._id.toString()}`, "order.updated", ownerFacingOrder);
-  if (restaurantId) emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", order);
+  if (restaurantId) emitSocketEvent(`restaurant:${restaurantId}`, "order.updated", ownerFacingOrder);
   if (order.customerId) emitSocketEvent(`customer:${order.customerId}`, "customer.order.updated", order);
   if (order.riderId) emitSocketEvent(`rider:${order.riderId}`, "rider.order.updated", order);
   emitSocketEvent("admin:ops", "admin.order.updated", {

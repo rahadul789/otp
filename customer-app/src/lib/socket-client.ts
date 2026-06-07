@@ -53,4 +53,8 @@ export function disconnectCustomerSocket() {
   if (customerSocket?.connected) {
     customerSocket.disconnect();
   }
+  customerSocketAuthToken = "";
+  if (customerSocket) {
+    customerSocket.auth = {};
+  }
 }

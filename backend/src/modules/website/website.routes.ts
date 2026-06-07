@@ -7,6 +7,7 @@ import {
   getAdminWebsiteLeads,
   getAdminWebsiteOverview,
   getAdminWebsiteSettings,
+  getPublicWebsiteAreaRestaurants,
   getPublicWebsiteSettings,
   patchAdminWebsiteLead,
   patchAdminWebsiteSettings,
@@ -18,6 +19,7 @@ export const websitePublicRouter = Router();
 export const adminWebsiteRouter = Router();
 
 websitePublicRouter.get("/settings", getPublicWebsiteSettings);
+websitePublicRouter.get("/area-restaurants", getPublicWebsiteAreaRestaurants);
 websitePublicRouter.post("/leads", postPublicWebsiteLead);
 websitePublicRouter.post("/analytics/events", postPublicWebsiteAnalyticsEvent);
 

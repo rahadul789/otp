@@ -2,7 +2,7 @@ export const RESTAURANT_OUT_OF_DELIVERY_AREA_MESSAGE =
   "This restaurant does not deliver to your selected location.";
 
 export function isRestaurantOutOfDeliveryAreaError(message?: string | null) {
-  return /does not deliver to your selected location|outside delivery area/i.test(
+  return /does not deliver to your selected location|outside delivery area|service area|not available at this location|selected service area/i.test(
     message ?? "",
   );
 }

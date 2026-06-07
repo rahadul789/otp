@@ -2,6 +2,7 @@ import { adminRequest } from "./api"
 
 export type AdminAlertDeliverySettings = {
   recipientEmails: string[]
+  notificationChannel: "email" | "telegram" | "both"
   fromEmail: string
   fromName: string
   cooldownMinutes: number

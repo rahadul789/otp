@@ -483,6 +483,21 @@ function socketRoleTone(role: string) {
   return "border-slate-200 bg-slate-50 text-slate-600"
 }
 
+function formatSocketRoom(room: string) {
+  if (room === "admin:ops") return "Admin ops"
+  if (room === "admin:live-map") return "Admin live map"
+  if (room === "public:content") return "Public content updates"
+  if (room.startsWith("owner:")) return `Owner room ${room.slice("owner:".length).slice(-6)}`
+  if (room.startsWith("restaurant:")) {
+    return `Restaurant room ${room.slice("restaurant:".length).slice(-6)}`
+  }
+  if (room.startsWith("customer:")) {
+    return `Customer room ${room.slice("customer:".length).slice(-6)}`
+  }
+  if (room.startsWith("rider:")) return `Rider room ${room.slice("rider:".length).slice(-6)}`
+  return room
+}
+
 function trackingFreshnessTone(state: string) {
   if (state === "live") return "border-emerald-200 bg-emerald-50 text-emerald-700"
   if (state === "stale") return "border-amber-200 bg-amber-50 text-amber-700"
@@ -606,7 +621,7 @@ function RealtimeOpsPanel({
                 {activeRooms.length ? (
                   activeRooms.map(([room, count]) => (
                     <Badge key={room} variant="secondary">
-                      {room} - {count}
+                      {formatSocketRoom(room)} - {count}
                     </Badge>
                   ))
                 ) : (
@@ -630,22 +645,50 @@ function RealtimeOpsPanel({
                         >
                           {titleCase(connection.role)}
                         </Badge>
+                        {connection.actorLabel ? (
+                          <Badge variant="outline">{connection.actorLabel}</Badge>
+                        ) : null}
                         <Badge variant="secondary">{connection.transport}</Badge>
+                        {typeof connection.connectedForSeconds === "number" ? (
+                          <Badge variant="secondary">
+                            {formatUptime(connection.connectedForSeconds)} online
+                          </Badge>
+                        ) : null}
                       </div>
-                      <div className="mt-2 break-all text-sm font-medium">
-                        {connection.userId || connection.id}
+                      <div className="mt-2 text-sm font-medium">
+                        {connection.displayName || connection.userId || connection.id}
+                      </div>
+                      {connection.contact ? (
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          {connection.contact}
+                        </div>
+                      ) : null}
+                      <div className="mt-1 break-all text-[11px] text-muted-foreground">
+                        User ID {connection.userId || "anonymous"} · Socket {connection.id}
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         Connected {formatDateTime(connection.connectedAt)} - IP{" "}
                         {connection.ipAddress || "Unknown"}
                       </div>
                     </div>
-                    <div className="max-w-full text-right text-xs text-muted-foreground">
-                      {connection.rooms.length
-                        ? connection.rooms.slice(0, 3).join(", ")
-                        : "No room"}
+                    <div className="max-w-full space-y-1 text-right text-xs text-muted-foreground">
+                      <div>
+                        {connection.primaryRoom
+                          ? formatSocketRoom(connection.primaryRoom)
+                          : "No room"}
+                      </div>
+                      {connection.businessRooms?.length ? (
+                        <div className="max-w-sm">
+                          {connection.businessRooms.slice(0, 3).map(formatSocketRoom).join(", ")}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
+                  {connection.lifecycleNote ? (
+                    <div className="mt-2 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                      {connection.lifecycleNote}
+                    </div>
+                  ) : null}
                   {connection.userAgent ? (
                     <div className="mt-2 line-clamp-2 text-xs text-muted-foreground">
                       {connection.userAgent}

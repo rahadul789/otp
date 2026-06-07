@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { AppState, Pressable, StyleSheet, Text, View, type AppStateStatus } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
 import NetInfo from "@react-native-community/netinfo";
 
-import { connectRiderSocket, disconnectRiderSocket } from "@/src/lib/socket-client";
+import { connectRiderSocket, disconnectRiderSocket, getRiderSocket } from "@/src/lib/socket-client";
 import { useDeliveryCopy } from "@/src/lib/copy";
 import { patchRiderOrderCaches, type RiderOrder } from "@/src/hooks/use-rider-api";
 import { useRiderAuthStore } from "@/src/store/auth-store";
@@ -54,6 +54,7 @@ export function RiderSocketBridge() {
   const { copy, language } = useDeliveryCopy();
   const [assignmentNotice, setAssignmentNotice] = useState<AssignmentNotice | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const appStateRef = useRef(AppState.currentState);
   const riderSocketCopy = useMemo(() => {
     const riderSocketText = (copy as Record<string, unknown>).riderSocket as Record<string, unknown> | undefined;
 
@@ -117,12 +118,25 @@ export function RiderSocketBridge() {
       return;
     }
 
-    const socket = connectRiderSocket(riderId, accessToken);
-    const handleSocketConnected = () => {
-      setDeliveryNetworkOnline(true);
+    const socket = getRiderSocket();
+    const refetchRiderRealtimeState = () => {
       void queryClient.refetchQueries({ queryKey: ["rider", "orders", "available"], type: "active" });
       void queryClient.refetchQueries({ queryKey: ["rider", "orders", "active"], type: "active" });
       void queryClient.invalidateQueries({ queryKey: ["rider", "live-map"] });
+    };
+    const connectIfActive = () => {
+      if (appStateRef.current !== "active") {
+        disconnectRiderSocket();
+        return;
+      }
+
+      connectRiderSocket(riderId, accessToken);
+    };
+
+    connectIfActive();
+    const handleSocketConnected = () => {
+      setDeliveryNetworkOnline(true);
+      refetchRiderRealtimeState();
     };
     const handleSocketDisconnected = (reason: string) => {
       if (reason !== "io client disconnect") {
@@ -192,6 +206,17 @@ export function RiderSocketBridge() {
         queryClient.invalidateQueries({ queryKey: ["rider", "order", payload.orderId] });
       }
     };
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      appStateRef.current = nextState;
+
+      if (nextState === "active") {
+        connectIfActive();
+        refetchRiderRealtimeState();
+        return;
+      }
+
+      disconnectRiderSocket();
+    };
 
     socket.on("connect", handleSocketConnected);
     socket.on("disconnect", handleSocketDisconnected);
@@ -200,8 +225,10 @@ export function RiderSocketBridge() {
     socket.on("rider.assignment.updated", handleAssignmentUpdated);
     socket.on("rider.profile.updated", handleProfileUpdated);
     socket.on("rider.restaurant.updated", handleRestaurantUpdated);
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
 
     return () => {
+      subscription.remove();
       socket.off("connect", handleSocketConnected);
       socket.off("disconnect", handleSocketDisconnected);
       socket.off("connect_error", handleConnectError);

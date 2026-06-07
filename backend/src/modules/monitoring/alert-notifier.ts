@@ -33,6 +33,8 @@ type AlertSendOptions = {
 };
 
 const lastSentAtByKey = new Map<string, number>();
+const lastTelegramSentAtByText = new Map<string, number>();
+const TELEGRAM_DUPLICATE_WINDOW_MS = 60_000;
 
 function getTelegramTarget(layer: AlertLayer = "operations") {
   const layerToken =
@@ -79,12 +81,30 @@ function shouldSend(key: string, severity: AlertSeverity, cooldownMinutes: numbe
   return true;
 }
 
+function humanizeDetailKey(key: string) {
+  return key
+    .replace(/[_-]/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatDetailValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "N/A";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 function formatDetails(details?: Record<string, unknown>) {
   if (!details || !Object.keys(details).length) return "";
   return [
     "",
     "Details:",
-    ...Object.entries(details).map(([key, value]) => `${key}: ${String(value)}`),
+    ...Object.entries(details).map(
+      ([key, value]) => `${humanizeDetailKey(key)}: ${formatDetailValue(value)}`,
+    ),
   ].join("\n");
 }
 
@@ -232,6 +252,15 @@ async function sendTelegramAlert(message: AlertMessage) {
   ]
     .filter(Boolean)
     .join("\n");
+  const now = Date.now();
+  const previousSentAt = lastTelegramSentAtByText.get(text) ?? 0;
+  if (now - previousSentAt < TELEGRAM_DUPLICATE_WINDOW_MS) return;
+  lastTelegramSentAtByText.set(text, now);
+  for (const [key, sentAt] of lastTelegramSentAtByText.entries()) {
+    if (now - sentAt > TELEGRAM_DUPLICATE_WINDOW_MS) {
+      lastTelegramSentAtByText.delete(key);
+    }
+  }
 
   const response = await fetch(
     `https://api.telegram.org/bot${target.token}/sendMessage`,
@@ -259,8 +288,12 @@ export async function sendOperationalAlert(
     ? mergeAlertDeliverySettings(options.delivery)
     : await getAlertDeliverySettings();
   const readiness = getChannelReadiness(settings, message);
-  const wantsEmail = options.channels?.email !== false;
-  const wantsTelegram = options.channels?.telegram !== false;
+  const channelSetting = settings.notificationChannel;
+  const wantsEmail =
+    options.channels?.email ?? (channelSetting === "email" || channelSetting === "both");
+  const wantsTelegram =
+    options.channels?.telegram ??
+    (channelSetting === "telegram" || channelSetting === "both");
   if (
     !(wantsEmail && readiness.emailReady) &&
     !(wantsTelegram && readiness.telegramReady)

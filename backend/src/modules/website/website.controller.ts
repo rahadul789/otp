@@ -12,6 +12,7 @@ import {
   getWebsiteLead,
   getWebsiteOverview,
   getWebsiteSettings,
+  listWebsiteAreaRestaurants,
   listWebsiteLeads,
   recordWebsiteAnalyticsEvent,
   updateWebsiteLead,
@@ -81,6 +82,11 @@ const analyticsQuerySchema = z.object({
   eventPageSize: z.coerce.number().int().positive().max(100).optional(),
 });
 
+const areaRestaurantsQuerySchema = z.object({
+  area: z.string().trim().min(1).max(160),
+  limit: z.coerce.number().int().positive().max(60).optional(),
+});
+
 const updateLeadSchema = z.object({
   status: z.enum(["new", "contacted", "qualified", "converted", "closed"]).optional(),
   notes: z.string().trim().max(2000).optional(),
@@ -92,6 +98,8 @@ const serviceAreaSchema = z.object({
   name: z.string().trim().min(1).max(120),
   status: z.enum(["active", "coming_soon", "paused"]),
   note: z.string().trim().max(240).optional(),
+  noteBn: z.string().trim().max(260).optional(),
+  noteEn: z.string().trim().max(260).optional(),
   seoTitle: z.string().trim().max(180).optional(),
   seoDescription: z.string().trim().max(320).optional(),
   popularSearches: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
@@ -211,6 +219,14 @@ export const postPublicWebsiteLead = asyncHandler(
       message: "Website lead created",
       data,
     });
+  },
+);
+
+export const getPublicWebsiteAreaRestaurants = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response) => {
+    const query = areaRestaurantsQuerySchema.parse(req.query);
+    const data = await listWebsiteAreaRestaurants(query);
+    return sendSuccess(res, { data });
   },
 );
 

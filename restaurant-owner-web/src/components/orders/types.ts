@@ -88,6 +88,23 @@ export type OrderAutoCancelSnapshot = {
   remainingSeconds: number | null
 }
 
+export type OrderPreparationTiming = {
+  phase: "not_started" | "accepted" | "preparing" | "preparing_late" | "completed" | string
+  label: string
+  baseMinutes: number
+  extraMinutes: number
+  totalMinutes: number
+  maxExtraMinutes: number
+  startedAt: string | null
+  targetStartAt: string | null
+  targetReadyAt: string | null
+  remainingSeconds: number | null
+  lateBySeconds: number
+  canExtend: boolean
+  extensionOptions: number[]
+  autoStarted: boolean
+}
+
 export type Order = {
   id: string
   orderNumber: string
@@ -110,6 +127,7 @@ export type Order = {
   kitchenNote: string
   timestamps: OrderStatusTimestamps
   autoCancel?: OrderAutoCancelSnapshot
+  preparationTiming?: OrderPreparationTiming
   appliedVouchers: OrderVoucherSnapshot[]
   history: OrderStatusHistoryItem[]
 }

@@ -79,7 +79,7 @@ export function ResetPasswordPage() {
       })
       setPasswordResetState(getDefaultPasswordResetState())
       toast.success("Password reset successful. Sign in with the new password.")
-      navigate("/auth/signin")
+      navigate("/auth/signin", { replace: true })
     } catch (resetError) {
       const message =
         resetError instanceof Error

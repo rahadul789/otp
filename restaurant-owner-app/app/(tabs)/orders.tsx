@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -52,6 +52,56 @@ const filters: { label: string; status: OwnerOrderStatus | "" }[] = [
 ];
 const OWNER_ORDER_PAGE_STEP = 20;
 
+type OrderListItem =
+  | { type: "date"; key: string; label: string; count: number }
+  | { type: "order"; key: string; order: OwnerOrder };
+
+function getLocalDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getOrderHistoryDateValue(order: OwnerOrder) {
+  if (order.status === "Delivered") {
+    return order.timestamps?.Delivered ?? order.timestamps?.deliveredAt ?? order.updatedAt ?? getOrderPlacedAt(order);
+  }
+
+  if (order.status === "Cancelled") {
+    return order.timestamps?.Cancelled ?? order.timestamps?.cancelledAt ?? order.updatedAt ?? getOrderPlacedAt(order);
+  }
+
+  if (order.status === "Rejected") {
+    return order.timestamps?.Rejected ?? order.timestamps?.rejectedAt ?? order.updatedAt ?? getOrderPlacedAt(order);
+  }
+
+  return order.updatedAt ?? getOrderPlacedAt(order);
+}
+
+function getHistoryDateKey(order: OwnerOrder) {
+  const value = getOrderHistoryDateValue(order);
+  const date = value ? new Date(value) : null;
+  return date && !Number.isNaN(date.getTime()) ? getLocalDateKey(date) : "unknown";
+}
+
+function formatHistoryDateLabel(key: string) {
+  if (key === "unknown") return "Unknown date";
+  const date = new Date(`${key}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+  const today = new Date();
+  const todayKey = getLocalDateKey(today);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (key === todayKey) return "Today";
+  if (key === getLocalDateKey(yesterday)) return "Yesterday";
+  return date.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export default function OrdersScreen() {
   const router = useRouter();
   const [selectedStatus, setSelectedStatus] = useState<OwnerOrderStatus | "">("");
@@ -66,7 +116,46 @@ export default function OrdersScreen() {
     pageSize: isHistoryStatus ? orderPageSize : 80,
   });
   const transitionMutation = useOwnerOrderTransitionMutation();
-  const orders = ordersQuery.data?.items ?? [];
+  const orders = useMemo(
+    () =>
+      Array.isArray(ordersQuery.data?.items)
+        ? ordersQuery.data.items.filter((order) => Boolean(order?._id))
+        : [],
+    [ordersQuery.data?.items],
+  );
+  const displayOrders = useMemo<OrderListItem[]>(() => {
+    if (!isHistoryStatus) {
+      return orders.map((order, index) => ({
+        type: "order" as const,
+        key: String(order._id || order.orderNumber || index),
+        order,
+      }));
+    }
+
+    const counts = orders.reduce<Record<string, number>>((result, order) => {
+      const key = getHistoryDateKey(order);
+      result[key] = (result[key] ?? 0) + 1;
+      return result;
+    }, {});
+    const items: OrderListItem[] = [];
+    let currentDateKey = "";
+
+    for (const order of orders) {
+      const dateKey = getHistoryDateKey(order);
+      if (dateKey !== currentDateKey) {
+        currentDateKey = dateKey;
+        items.push({
+          type: "date",
+          key: `date:${dateKey}`,
+          label: formatHistoryDateLabel(dateKey),
+          count: counts[dateKey] ?? 0,
+        });
+      }
+      items.push({ type: "order", key: String(order._id || order.orderNumber), order });
+    }
+
+    return items;
+  }, [isHistoryStatus, orders]);
   const canLoadMoreOrders = Boolean(
     isHistoryStatus &&
       ordersQuery.data?.total &&
@@ -100,7 +189,7 @@ export default function OrdersScreen() {
   function confirmReject(order: OwnerOrder) {
     Alert.alert(
       "Reject order?",
-      "This will notify the customer that the restaurant cannot accept the order.",
+      "Rejecting too many orders can reduce customer trust and hurt your restaurant reputation.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -145,19 +234,29 @@ export default function OrdersScreen() {
     } as never);
   }
 
-  function renderOrder({ item }: { item: OwnerOrder }) {
-    const isCardPending = pendingAction.startsWith(`${item._id}:`);
+  function renderOrder({ item }: { item: OrderListItem }) {
+    if (item.type === "date") {
+      return (
+        <View style={styles.dateHeader}>
+          <Text style={styles.dateHeaderText}>{item.label}</Text>
+          <Text style={styles.dateHeaderCount}>{item.count} orders</Text>
+        </View>
+      );
+    }
+
+    const order = item.order;
+    const isCardPending = pendingAction.startsWith(`${order._id}:`);
     const isActionPending = (nextStatus: string) =>
-      pendingAction === `${item._id}:${nextStatus}`;
-    const autoCancelSeconds = getAutoCancelRemainingSeconds(item, now);
-    const prepStartSeconds = getPrepStartRemainingSeconds(item, now);
-    const prepRemainingSeconds = getPreparationRemainingSeconds(item, now);
-    const prepLateSeconds = getPreparationLateSeconds(item, now);
+      pendingAction === `${order._id}:${nextStatus}`;
+    const autoCancelSeconds = getAutoCancelRemainingSeconds(order, now);
+    const prepStartSeconds = getPrepStartRemainingSeconds(order, now);
+    const prepRemainingSeconds = getPreparationRemainingSeconds(order, now);
+    const prepLateSeconds = getPreparationLateSeconds(order, now);
     const showPrepPill = prepStartSeconds !== null || prepRemainingSeconds !== null;
     const prepPillText =
-      item.status === "Accepted" && prepStartSeconds !== null
+      order.status === "Accepted" && prepStartSeconds !== null
         ? `Prep in ${formatAutoCancelCountdown(prepStartSeconds)}`
-        : item.status === "Preparing" && prepRemainingSeconds !== null
+        : order.status === "Preparing" && prepRemainingSeconds !== null
           ? prepRemainingSeconds > 0
             ? `Prep ${formatAutoCancelCountdown(prepRemainingSeconds)}`
             : `Late ${formatAutoCancelCountdown(prepLateSeconds)}`
@@ -166,20 +265,20 @@ export default function OrdersScreen() {
     return (
       <Pressable
         style={styles.orderCard}
-        onPress={() => openOrderDetails(item._id)}
+        onPress={() => openOrderDetails(order._id)}
       >
         <View style={styles.orderTop}>
           <View style={styles.orderMain}>
-            <Text style={styles.orderNumber}>{item.orderNumber}</Text>
+            <Text style={styles.orderNumber}>{order.orderNumber}</Text>
             <Text style={styles.orderMeta}>
-              {formatTime(getOrderPlacedAt(item)) || "Just now"} -{" "}
-              {item.itemsSnapshot?.length ?? 0} items
+              {formatTime(getOrderPlacedAt(order)) || "Just now"} -{" "}
+              {order.itemsSnapshot?.length ?? 0} items
             </Text>
           </View>
           <View style={styles.orderStatusStack}>
             <StatusPill
-              label={getOrderStatusLabel(item.status)}
-              tone={getOrderStatusTone(item.status)}
+              label={getOrderStatusLabel(order.status)}
+              tone={getOrderStatusTone(order.status)}
             />
             {autoCancelSeconds !== null ? (
               <View style={styles.autoCancelPill}>
@@ -215,30 +314,30 @@ export default function OrdersScreen() {
         </View>
 
         <Text style={styles.customerText}>
-          {item.customerSnapshot?.fullName || "Customer"} -{" "}
-          {formatCurrency(getOwnerOrderNetSales(item))}
+          {order.customerSnapshot?.fullName || "Customer"} -{" "}
+          {formatCurrency(getOwnerOrderNetSales(order))}
         </Text>
 
-        {item.appliedVouchers?.length ? (
+        {order.appliedVouchers?.length ? (
           <View style={styles.voucherAppliedPill}>
             <Ionicons name="pricetag-outline" size={13} color={palette.warning} />
             <Text style={styles.voucherAppliedText}>Voucher applied</Text>
           </View>
         ) : null}
 
-        {item.itemsSnapshot?.slice(0, 3).map((orderItem, index) => (
+        {order.itemsSnapshot?.slice(0, 3).map((orderItem, index) => (
           <Text key={`${orderItem.itemId ?? orderItem.name}-${index}`} style={styles.itemText}>
             {orderItem.quantity ?? 1}x {orderItem.name ?? "Item"}
           </Text>
         ))}
 
         <View style={styles.actions}>
-          {item.status === "New" ? (
+          {order.status === "New" ? (
             <>
               <Pressable
                 style={[styles.actionButton, styles.rejectButton]}
                 disabled={isCardPending}
-                onPress={() => confirmReject(item)}
+                onPress={() => confirmReject(order)}
               >
                 {isActionPending("Rejected") ? (
                   <ActivityIndicator size="small" color={palette.danger} />
@@ -249,7 +348,7 @@ export default function OrdersScreen() {
               <Pressable
                 style={[styles.actionButton, styles.acceptButton]}
                 disabled={isCardPending}
-                onPress={() => transitionOrder(item, "Accepted")}
+                onPress={() => transitionOrder(order, "Accepted")}
               >
                 {isActionPending("Accepted") ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -258,13 +357,13 @@ export default function OrdersScreen() {
                 )}
               </Pressable>
             </>
-          ) : item.status === "Accepted" ? (
+          ) : order.status === "Accepted" ? (
             <>
-              {canOwnerCancelOrder(item.status) ? (
+              {canOwnerCancelOrder(order.status) ? (
                 <Pressable
                   style={[styles.actionButton, styles.rejectButton]}
                   disabled={isCardPending}
-                  onPress={() => confirmCancel(item)}
+                  onPress={() => confirmCancel(order)}
                 >
                   {isActionPending("Cancelled") ? (
                     <ActivityIndicator size="small" color={palette.danger} />
@@ -276,7 +375,7 @@ export default function OrdersScreen() {
               <Pressable
                 style={[styles.actionButton, styles.acceptButton]}
                 disabled={isCardPending}
-                onPress={() => transitionOrder(item, "Preparing")}
+                onPress={() => transitionOrder(order, "Preparing")}
               >
                 {isActionPending("Preparing") ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -285,13 +384,13 @@ export default function OrdersScreen() {
                 )}
               </Pressable>
             </>
-          ) : item.status === "Preparing" ? (
+          ) : order.status === "Preparing" ? (
             <>
-              {canOwnerCancelOrder(item.status) ? (
+              {canOwnerCancelOrder(order.status) ? (
                 <Pressable
                   style={[styles.actionButton, styles.rejectButton]}
                   disabled={isCardPending}
-                  onPress={() => confirmCancel(item)}
+                  onPress={() => confirmCancel(order)}
                 >
                   {isActionPending("Cancelled") ? (
                     <ActivityIndicator size="small" color={palette.danger} />
@@ -303,7 +402,7 @@ export default function OrdersScreen() {
               <Pressable
                 style={[styles.actionButton, styles.acceptButton]}
                 disabled={isCardPending}
-                onPress={() => transitionOrder(item, "ReadyForPickup")}
+                onPress={() => transitionOrder(order, "ReadyForPickup")}
               >
                 {isActionPending("ReadyForPickup") ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -315,7 +414,7 @@ export default function OrdersScreen() {
           ) : (
             <Pressable
               style={[styles.actionButton, styles.viewButton]}
-              onPress={() => openOrderDetails(item._id)}
+              onPress={() => openOrderDetails(order._id)}
             >
               <Text style={styles.viewButtonText}>Open details</Text>
             </Pressable>
@@ -363,8 +462,8 @@ export default function OrdersScreen() {
       </ScrollView>
 
       <FlatList
-        data={orders}
-        keyExtractor={(item) => item._id}
+        data={displayOrders}
+        keyExtractor={(item) => item.key}
         renderItem={renderOrder}
         contentContainerStyle={styles.listContent}
         ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
@@ -470,6 +569,26 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 18,
     paddingBottom: 28,
+  },
+  dateHeader: {
+    marginTop: 4,
+    marginBottom: 2,
+    minHeight: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  dateHeaderText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "900",
+    color: palette.foreground,
+  },
+  dateHeaderCount: {
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "800",
+    color: palette.mutedForeground,
   },
   orderCard: {
     borderRadius: 22,

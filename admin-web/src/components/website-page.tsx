@@ -205,6 +205,8 @@ function settingsToForm(settings?: WebsiteSettings) {
           (area.popularSearches ?? []).join(", "),
           (area.cuisineKeywords ?? []).join(", "),
           (area.postalCodes ?? []).join(", "),
+          area.noteBn ?? "",
+          area.noteEn ?? "",
         ].join("|"),
       )
       .join("\n"),
@@ -232,6 +234,8 @@ function parseServiceAreas(value: string): WebsiteSettings["serviceAreas"] {
         popularSearches = "",
         cuisineKeywords = "",
         postalCodes = "",
+        noteBn = "",
+        noteEn = "",
       ] = line.split("|").map((part) => part.trim())
       return {
         name,
@@ -239,6 +243,8 @@ function parseServiceAreas(value: string): WebsiteSettings["serviceAreas"] {
           ? (status as "active" | "coming_soon" | "paused")
           : "active",
         note,
+        noteBn,
+        noteEn,
         seoTitle,
         seoDescription,
         popularSearches: parseList(popularSearches),
@@ -1618,13 +1624,13 @@ export function WebsitePage() {
                 <Textarea
                   value={settingsForm.serviceAreas}
                   rows={5}
-                  placeholder="Netrokona|active|Live now|Food delivery in Netrokona|Order food from local restaurants in Netrokona|Netrokona food delivery, Netrokona restaurant|Biryani, Burger, Fast food|2400"
+                  placeholder="Netrokona|active|Live now|Food delivery in Netrokona|Order food from local restaurants in Netrokona|Netrokona food delivery, Netrokona restaurant|Biryani, Burger, Fast food|2400|নেত্রকোনায় লাইভ ডেলিভারি কভারেজ|Live delivery coverage in Netrokona"
                   onChange={(event) =>
                     setSettingsForm((current) => ({ ...current, serviceAreas: event.target.value }))
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  Foodbela.com coverage is controlled manually from here. Format: name|active/coming_soon/paused|note|SEO title|SEO description|popular searches comma list|cuisines comma list|postal codes comma list.
+                  Foodbela.com coverage is controlled manually from here. Format: name|active/coming_soon/paused|fallback note|SEO title|SEO description|popular searches comma list|cuisines comma list|postal codes comma list|Bangla note|English note.
                 </p>
               </div>
               <div className="grid gap-2">

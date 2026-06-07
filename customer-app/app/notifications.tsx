@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
@@ -15,6 +16,7 @@ import {
   useCustomerNotificationsQuery,
 } from "@/src/hooks/use-customer-api";
 import { resolveCustomerPushRoute } from "@/src/lib/customer-routes";
+import { refreshCustomerOrderCacheForPath } from "@/src/lib/customer-order-cache";
 import { formatDateTimeAmPm } from "@/src/lib/date-time";
 import { palette } from "@/src/theme/palette";
 
@@ -77,6 +79,7 @@ function getToneStyle(type: string) {
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<{
     fromPush?: string;
     notificationId?: string;
@@ -136,6 +139,7 @@ export default function NotificationsScreen() {
       campaignId: notification.campaignId,
     });
     if (safePath) {
+      await refreshCustomerOrderCacheForPath(queryClient, safePath);
       router.push(safePath as never);
       return;
     }
@@ -182,7 +186,11 @@ export default function NotificationsScreen() {
             </View>
             <Pressable
               style={styles.pushContextAction}
-              onPress={() => {
+              onPress={async () => {
+                await refreshCustomerOrderCacheForPath(
+                  queryClient,
+                  safePushTargetPath,
+                );
                 router.push(safePushTargetPath as never);
               }}
             >

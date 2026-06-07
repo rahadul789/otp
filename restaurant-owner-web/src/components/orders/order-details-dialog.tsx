@@ -150,6 +150,11 @@ export function OrderDetailsDialog({
   const canCancelOrder =
     currentOrder.currentStatus === "Accepted" ||
     currentOrder.currentStatus === "Preparing"
+  const prepTiming = currentOrder.preparationTiming
+  const extraPrepMinutes = Math.max(
+    0,
+    Math.round(prepTiming?.extraMinutes ?? 0)
+  )
   const autoCancelRemainingSeconds =
     currentOrder.autoCancel?.applies && currentOrder.autoCancel.autoCancelAt
       ? Math.max(
@@ -217,6 +222,15 @@ export function OrderDetailsDialog({
                 <Badge variant="secondary">
                   {getPaymentMethodLabel(currentOrder.paymentMethod)}
                 </Badge>
+                {extraPrepMinutes > 0 ? (
+                  <Badge
+                    variant="outline"
+                    className="border-amber-200 bg-amber-50 text-amber-700"
+                  >
+                    <Clock3 className="mr-1 size-3" />
+                    +{extraPrepMinutes} min prep
+                  </Badge>
+                ) : null}
               </div>
               <SheetDescription>
                 Placed{" "}
@@ -316,10 +330,21 @@ export function OrderDetailsDialog({
               <Clock3 className="size-5 text-muted-foreground" />
               <div>
                 <div className="text-xs font-medium text-muted-foreground uppercase">
-                  Average prep target
+                  Prep target
                 </div>
                 <div className="text-sm font-semibold">
-                  {averagePreparationMinutes} min
+                  {prepTiming?.totalMinutes ?? averagePreparationMinutes} min
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {extraPrepMinutes > 0
+                    ? `${prepTiming?.baseMinutes ?? averagePreparationMinutes} min base + ${extraPrepMinutes} min added`
+                    : "No extra preparation time added"}
+                  {prepTiming?.targetReadyAt
+                    ? ` - ready target ${format(
+                        new Date(prepTiming.targetReadyAt),
+                        "hh:mm a"
+                      )}`
+                    : ""}
                 </div>
               </div>
             </div>

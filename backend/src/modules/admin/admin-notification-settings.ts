@@ -41,6 +41,9 @@ export async function getAdminNotificationSettings() {
 export function classifyAdminAlertType(
   alertType: string,
 ): AdminNotificationSettingKey {
+  if (alertType === "order_placed" || alertType === "order_created") {
+    return "orderPlaced";
+  }
   if (alertType.startsWith("payment_") || alertType.startsWith("payment.")) {
     return "paymentExceptions";
   }

@@ -15,14 +15,11 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import { AppBottomSheet } from "@/src/components/app-bottom-sheet";
 import { EmptyStateCard } from "@/src/components/empty-state-card";
 import {
-  CampaignPlacementCard,
   getBannerToneStyle,
   HomeCmsPromoBlock,
   HowToOrderGuideBlock,
-  recordCampaignEvent,
   recordHomeCmsEvent,
 } from "@/src/components/home/home-cms-blocks";
 import { styles } from "@/src/components/home/home-screen.styles";
@@ -49,7 +46,7 @@ import { resolveCustomerRoute } from "@/src/lib/customer-routes";
 import { formatCustomerAddressLine } from "@/src/lib/location-address";
 import { openLocationPermissionSettings } from "@/src/lib/location-permissions";
 import type {
-  CustomerCampaignPlacement,
+  CustomerHomeCms,
   CustomerVoucherOffer,
   DiscoverableRestaurant,
 } from "@/src/types/restaurant";
@@ -92,6 +89,23 @@ function buildRestaurantOfferMap(offers: CustomerVoucherOffer[]) {
   }
 
   return next;
+}
+
+function hasRenderableHomePromoBlock(homeCms?: CustomerHomeCms | null) {
+  const block = homeCms?.offerStrip;
+  if (!block?.isActive || block.mode !== "promo_block") return false;
+  if (block.variant === "carousel") {
+    return Boolean(
+      block.carouselImages?.some((image) => image.url.trim()) ||
+        block.carouselImageUrls?.some((url) => url.trim()),
+    );
+  }
+  if (block.variant === "image") return Boolean(block.imageUrl.trim());
+  return Boolean(
+    block.title.trim() ||
+      block.subtitle.trim() ||
+      (block.variant === "image_text" && block.imageUrl.trim()),
+  );
 }
 
 function NearbyHeaderSpinner({ visible }: { visible: boolean }) {
@@ -305,8 +319,6 @@ function mapRestaurantCardSubtitle(restaurant: DiscoverableRestaurant) {
 export default function HomeScreen() {
   const router = useRouter();
   const searchQuery = "";
-  const [modalCampaign, setModalCampaign] =
-    useState<CustomerCampaignPlacement | null>(null);
   const [showHomeCmsModal, setShowHomeCmsModal] = useState(false);
   const [homeCmsModalShown, setHomeCmsModalShown] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -356,13 +368,10 @@ export default function HomeScreen() {
   const homeFeed = homeQuery.data;
   const homeBanner = !isSearching ? (homeFeed?.homeBanner ?? null) : null;
   const homeCms = !isSearching ? (homeFeed?.homeCms ?? null) : null;
+  const homeOfferStrip = homeCms?.offerStrip;
   const activeOffers = useMemo(
     () => (!isSearching ? (homeFeed?.activeOffers ?? []) : []),
     [homeFeed?.activeOffers, isSearching],
-  );
-  const campaignPlacements = useMemo(
-    () => (!isSearching ? (homeFeed?.campaignPlacements ?? []) : []),
-    [homeFeed?.campaignPlacements, isSearching],
   );
   const homeCategoryItems = useMemo(
     () =>
@@ -374,13 +383,14 @@ export default function HomeScreen() {
   );
   const shouldShowVoucherStrip =
     !isSearching &&
-    Boolean(
-      homeCms?.offerStrip.isActive &&
-        homeCms.offerStrip.showVoucherStrip !== false,
-    );
+    Boolean(homeOfferStrip && homeOfferStrip.showVoucherStrip !== false);
+  const shouldShowHomePromoBlock =
+    !isSearching && hasRenderableHomePromoBlock(homeCms);
   const shouldShowRestaurantOfferSection =
     !isSearching &&
-    homeCms?.offerStrip.showRestaurantOfferSection !== false;
+    Boolean(
+      homeOfferStrip && homeOfferStrip.showRestaurantOfferSection !== false,
+    );
   const stripOffers = useMemo(
     () => (shouldShowVoucherStrip ? activeOffers : []),
     [
@@ -519,25 +529,18 @@ export default function HomeScreen() {
   ]);
 
   useEffect(() => {
-    campaignPlacements.forEach((campaign) => {
-      recordCampaignEvent(campaign.voucherId, "impression");
-    });
-  }, [campaignPlacements]);
-
-  useEffect(() => {
-    if (!homeCms?.offerStrip.isActive) return;
-    if (
-      homeCms.offerStrip.mode === "voucher_strip" &&
-      homeCms.offerStrip.showVoucherStrip !== false
-    ) {
+    if (!homeOfferStrip) return;
+    if (shouldShowVoucherStrip && stripOffers.length > 0) {
       recordHomeCmsEvent("strip_impression");
-    } else if (homeCms.offerStrip.mode === "promo_block") {
+    }
+    if (shouldShowHomePromoBlock) {
       recordHomeCmsEvent("block_impression");
     }
   }, [
-    homeCms?.offerStrip.isActive,
-    homeCms?.offerStrip.mode,
-    homeCms?.offerStrip.showVoucherStrip,
+    homeOfferStrip,
+    shouldShowHomePromoBlock,
+    shouldShowVoucherStrip,
+    stripOffers.length,
   ]);
 
   useEffect(() => {
@@ -889,20 +892,9 @@ export default function HomeScreen() {
             </Pressable>
           ) : null}
 
-          {campaignPlacements
-            .filter((campaign) => campaign.display?.placement !== "offers_row")
-            .slice(0, 3)
-            .map((campaign) => (
-              <CampaignPlacementCard
-                key={campaign._id}
-                campaign={campaign}
-                onOpenModal={setModalCampaign}
-              />
-            ))}
-
           {!isSearching &&
-          homeCms?.offerStrip.isActive &&
-          homeCms.offerStrip.mode === "promo_block" ? (
+          shouldShowHomePromoBlock &&
+          homeCms ? (
             <HomeCmsPromoBlock cms={homeCms} />
           ) : null}
 
@@ -1244,49 +1236,6 @@ export default function HomeScreen() {
           </>
         )}
       </ScrollView>
-      <AppBottomSheet
-        visible={Boolean(modalCampaign)}
-        onClose={() => setModalCampaign(null)}
-        title={
-          modalCampaign?.display.title || modalCampaign?.name || "Campaign"
-        }
-        subtitle={modalCampaign?.display.subtitle || "Limited time campaign"}
-        leadingIcon="sparkles-outline"
-        snapPoints={[0.7, 0.9]}
-        initialSnapPoint={0.7}
-      >
-        {modalCampaign ? (
-          <>
-            {modalCampaign.display.imageUrl ? (
-              <RemoteImage
-                uri={modalCampaign.display.imageUrl}
-                style={styles.campaignModalImage}
-                fallbackIcon="sparkles-outline"
-                accessibilityLabel={modalCampaign.display.title || modalCampaign.name}
-              />
-            ) : null}
-            {resolveCustomerRoute(modalCampaign.display.ctaPath, null) ? (
-              <Pressable
-                style={styles.campaignModalAction}
-                onPress={() => {
-                  recordCampaignEvent(modalCampaign.voucherId, "click");
-                  const path = resolveCustomerRoute(
-                    modalCampaign.display.ctaPath,
-                    null,
-                  );
-                  setModalCampaign(null);
-                  if (path) router.push(path as never);
-                }}
-              >
-                <Text style={styles.campaignModalActionText}>
-                  {modalCampaign.display.ctaLabel || "Order now"}
-                </Text>
-              </Pressable>
-            ) : null}
-          </>
-        ) : null}
-      </AppBottomSheet>
-
       <Modal
         visible={Boolean(showHomeCmsModal && homeCms?.modal.isActive)}
         transparent
